@@ -38,13 +38,15 @@ import androidx.wear.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.Icon
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
+import androidx.compose.ui.text.style.TextAlign
 import com.nutritionscribe.wear.data.WearRepository
 import kotlinx.coroutines.launch
 
 private object WearRoutes {
     const val HOME = "home"
     const val LISTENING = "listening"
-    const val CONFIRM = "confirm"
+    const val CONFIRM = "confirm/{reached}"
+    fun confirm(reachedPhone: Boolean) = "confirm/$reachedPhone"
 }
 
 class WearMainActivity : ComponentActivity() {
@@ -63,6 +65,9 @@ class WearMainActivity : ComponentActivity() {
 private fun WearNavHost(repository: WearRepository) {
     val navController = rememberNavController()
 
+    // Opening the app is the cheap moment to notice the phone is back in range.
+    LaunchedEffect(Unit) { repository.flushPending() }
+
     NavHost(navController, startDestination = WearRoutes.HOME) {
         composable(WearRoutes.HOME) {
             WearHomeScreen(
@@ -73,13 +78,16 @@ private fun WearNavHost(repository: WearRepository) {
         composable(WearRoutes.LISTENING) {
             WearListeningScreen(
                 repository = repository,
-                onDone = { navController.navigate(WearRoutes.CONFIRM) { popUpTo(WearRoutes.HOME) } },
+                onDone = { reached ->
+                    navController.navigate(WearRoutes.confirm(reached)) { popUpTo(WearRoutes.HOME) }
+                },
                 onCancel = { navController.popBackStack() },
             )
         }
-        composable(WearRoutes.CONFIRM) {
+        composable(WearRoutes.CONFIRM) { backStackEntry ->
             WearConfirmScreen(
                 repository = repository,
+                reachedPhone = backStackEntry.arguments?.getString("reached")?.toBoolean() ?: true,
                 onDone = { navController.popBackStack(WearRoutes.HOME, inclusive = false) },
                 onRedo = { navController.navigate(WearRoutes.LISTENING) { popUpTo(WearRoutes.HOME) } },
             )
@@ -109,7 +117,11 @@ private fun WearHomeScreen(repository: WearRepository, onStartListening: () -> U
 }
 
 @Composable
-private fun WearListeningScreen(repository: WearRepository, onDone: () -> Unit, onCancel: () -> Unit) {
+private fun WearListeningScreen(
+    repository: WearRepository,
+    onDone: (reachedPhone: Boolean) -> Unit,
+    onCancel: () -> Unit,
+) {
     val context = LocalContext.current
     var isListening by remember { mutableStateOf(true) }
 
@@ -120,8 +132,11 @@ private fun WearListeningScreen(repository: WearRepository, onDone: () -> Unit, 
             onCancel()
         } else {
             (context as ComponentActivity).lifecycleScope.launch {
-                repository.relayToPhone(spoken)
-                onDone()
+                // The result used to be thrown away, so a failed relay looked
+                // exactly like a successful one and the next screen waited for a
+                // reply that was never coming.
+                val reached = repository.relayToPhone(spoken)
+                onDone(reached)
             }
         }
     }
@@ -145,9 +160,15 @@ private fun WearListeningScreen(repository: WearRepository, onDone: () -> Unit, 
 }
 
 @Composable
-private fun WearConfirmScreen(repository: WearRepository, onDone: () -> Unit, onRedo: () -> Unit) {
+private fun WearConfirmScreen(
+    repository: WearRepository,
+    reachedPhone: Boolean,
+    onDone: () -> Unit,
+    onRedo: () -> Unit,
+) {
     val context = LocalContext.current
     val confirmed by repository.lastConfirmed.collectAsState()
+    var timedOut by remember { mutableStateOf(false) }
 
     LaunchedEffect(confirmed) {
         if (confirmed != null) {
@@ -156,12 +177,43 @@ private fun WearConfirmScreen(repository: WearRepository, onDone: () -> Unit, on
         }
     }
 
+    // The phone can accept the message and still never answer — it may be asleep,
+    // or the app may not be running. Waiting forever is not an option on a wrist.
+    LaunchedEffect(reachedPhone) {
+        if (reachedPhone) {
+            kotlinx.coroutines.delay(10_000)
+            timedOut = true
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        if (confirmed == null) {
+        if (confirmed == null && !reachedPhone) {
+            // Saved on the watch, not lost. It goes up next time the app is
+            // opened near the phone.
+            Icon(Icons.Filled.Check, contentDescription = null)
+            Text("Saved on your watch", modifier = Modifier.padding(top = 4.dp))
+            Text(
+                "Your phone wasn't in range. It'll sync next time you open this.",
+                style = MaterialTheme.typography.caption2,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+            Button(onClick = onDone, modifier = Modifier.padding(top = 12.dp)) { Text("Done") }
+        } else if (confirmed == null && timedOut) {
+            Icon(Icons.Filled.Check, contentDescription = null)
+            Text("Sent to your phone", modifier = Modifier.padding(top = 4.dp))
+            Text(
+                "It'll appear once your phone processes it.",
+                style = MaterialTheme.typography.caption2,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+            Button(onClick = onDone, modifier = Modifier.padding(top = 12.dp)) { Text("Done") }
+        } else if (confirmed == null) {
             CircularProgressIndicator(modifier = Modifier.size(48.dp))
             Text("Sending to phone...", modifier = Modifier.padding(top = 8.dp))
         } else {

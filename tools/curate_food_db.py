@@ -101,6 +101,12 @@ CURATED = {
     "green tea":        (2346093, "Tea, iced, brewed, green, unsweetened"),
     "beer":             (2346192, "Beer"),
     "orange juice":     (2344681, "Orange juice, 100%, NFS"),
+
+    # --- compound dishes, where ranking matches one ingredient ---
+    # "spaghetti with meat sauce" matched "Spaghetti sauce with meat" at 65 g,
+    # logging the sauce and none of the pasta: 58 kcal for a 520 kcal plate.
+    "spaghetti meat sauce": (172089, "Spaghetti with meat sauce"),
+    "pasta meat sauce":     (172089, "Spaghetti with meat sauce"),
 }
 
 

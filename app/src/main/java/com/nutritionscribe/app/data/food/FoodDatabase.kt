@@ -60,7 +60,7 @@ class FoodDatabase(private val context: Context) {
      * Bump when the bundled asset changes so installed copies refresh. Without
      * this, an app update ships new food data that no existing install ever reads.
      */
-    private val assetVersion = 3
+    private val assetVersion = 4
 
     private val dbFile: File get() = File(context.filesDir, "food-v$assetVersion.db")
 
