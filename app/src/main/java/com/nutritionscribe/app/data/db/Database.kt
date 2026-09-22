@@ -230,6 +230,18 @@ interface EntryDao {
 
     @Query("DELETE FROM entries WHERE timestampEpochMillis < :cutoffEpochMillis")
     suspend fun deleteBefore(cutoffEpochMillis: Long)
+
+    @Query("SELECT COUNT(*) FROM entries")
+    suspend fun count(): Int
+
+    /**
+     * Every logged entry. entry_nutrient is declared ON DELETE CASCADE, so the
+     * numbers go with the rows — but only while foreign keys are actually
+     * enforced, which is why ResetTest checks the nutrient table is empty too
+     * rather than trusting the declaration.
+     */
+    @Query("DELETE FROM entries")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -248,6 +260,9 @@ interface MetricGoalDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(row: MetricGoalRow)
+
+    @Query("DELETE FROM metric_goal")
+    suspend fun deleteAll()
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(rows: List<MetricGoalRow>)
@@ -275,6 +290,9 @@ interface FixedFoodCacheDao {
 
     @Query("SELECT * FROM fixed_food_cache WHERE normalizedName = :normalizedName LIMIT 1")
     suspend fun find(normalizedName: String): FixedFoodCacheRow?
+
+    @Query("DELETE FROM fixed_food_cache")
+    suspend fun deleteAll()
 }
 
 @Database(

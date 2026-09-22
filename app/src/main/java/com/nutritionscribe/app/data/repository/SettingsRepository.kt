@@ -1,5 +1,6 @@
 package com.nutritionscribe.app.data.repository
 
+import android.annotation.SuppressLint
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
@@ -7,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.nutritionscribe.shared.retention.RetentionUnit
@@ -14,7 +16,24 @@ import com.nutritionscribe.shared.retention.RetentionWindow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-private val Context.dataStore by preferencesDataStore(name = "protein_scribe_settings")
+private val Context.dataStore by preferencesDataStore(name = SettingsRepository.PRODUCTION_STORE)
+
+/**
+ * Where settings live. Named so a test can point at its own files instead of the
+ * real ones: a test that writes to the production store erases the settings and
+ * the API key of whoever's device it happens to run on, which makes the whole
+ * suite unsafe to run against a phone someone is using.
+ */
+data class SettingsStorage(val preferencesName: String, val secureName: String) {
+    companion object {
+        val PRODUCTION = SettingsStorage(
+            preferencesName = SettingsRepository.PRODUCTION_STORE,
+            secureName = SettingsRepository.PRODUCTION_SECURE_STORE,
+        )
+    }
+}
+
+private val scratchStores = mutableMapOf<String, androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>>()
 
 enum class AiBackendKind { OPENAI, ANTHROPIC }
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
@@ -38,7 +57,35 @@ enum class LookupSource { AI, OFFLINE }
  * Non-secret settings live in DataStore; the API key lives in EncryptedSharedPreferences
  * (Jetpack Security) so it is never written in plaintext (Section 3, Section 11).
  */
-class SettingsRepository(private val context: Context) {
+class SettingsRepository(
+    private val context: Context,
+    private val storage: SettingsStorage = SettingsStorage.PRODUCTION,
+) {
+
+    companion object {
+        // Both keep their pre-rename names on purpose: changing either would
+        // strand the settings and the API key of every existing install.
+        const val PRODUCTION_STORE = "protein_scribe_settings"
+        const val PRODUCTION_SECURE_STORE = "protein_scribe_secure_prefs"
+    }
+
+    /**
+     * The production store goes through the `by preferencesDataStore` delegate,
+     * which is the only way to get the one-instance-per-file guarantee DataStore
+     * requires. A named test store is built and cached here instead.
+     */
+    private val store: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>
+        get() = if (storage.preferencesName == PRODUCTION_STORE) {
+            context.dataStore
+        } else {
+            synchronized(scratchStores) {
+                scratchStores.getOrPut(storage.preferencesName) {
+                    androidx.datastore.preferences.core.PreferenceDataStoreFactory.create {
+                        context.preferencesDataStoreFile(storage.preferencesName)
+                    }
+                }
+            }
+        }
 
     private object Keys {
         val ONBOARDED = booleanPreferencesKey("onboarded")
@@ -60,7 +107,7 @@ class SettingsRepository(private val context: Context) {
             .build()
         EncryptedSharedPreferences.create(
             context,
-            "protein_scribe_secure_prefs",
+            storage.secureName,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
@@ -74,6 +121,22 @@ class SettingsRepository(private val context: Context) {
         encryptedPrefs.edit().putString("api_key_${backend.name}", key).apply()
     }
 
+    /**
+     * Forgets every stored API key. `commit()` rather than `apply()` on purpose:
+     * a reset is followed immediately by the app restarting itself, and apply()
+     * writes on a background thread that the restart could outrun, leaving the
+     * key on disk after the user was told it was gone.
+     */
+    @SuppressLint("ApplySharedPref")
+    fun clearApiKeys() {
+        encryptedPrefs.edit().clear().commit()
+    }
+
+    /** Forgets every non-secret preference, back to first-launch defaults. */
+    suspend fun clearAllPreferences() {
+        store.edit { it.clear() }
+    }
+
     /** True if any backend has a usable key — decides whether AI lookup is even offered. */
     fun hasAnyApiKey(): Boolean =
         AiBackendKind.entries.any { !getApiKey(it).isNullOrBlank() }
@@ -84,29 +147,29 @@ class SettingsRepository(private val context: Context) {
      * key, and it stays available as a deliberate choice even once a key is set —
      * useful offline, or when you already know the number and don't want to spend a call.
      */
-    val manualMode: Flow<Boolean> = context.dataStore.data.map { it[Keys.MANUAL_MODE] ?: false }
+    val manualMode: Flow<Boolean> = store.data.map { it[Keys.MANUAL_MODE] ?: false }
 
     suspend fun setManualMode(value: Boolean) {
-        context.dataStore.edit { it[Keys.MANUAL_MODE] = value }
+        store.edit { it[Keys.MANUAL_MODE] = value }
     }
 
-    val isOnboarded: Flow<Boolean> = context.dataStore.data.map { it[Keys.ONBOARDED] ?: false }
+    val isOnboarded: Flow<Boolean> = store.data.map { it[Keys.ONBOARDED] ?: false }
 
     suspend fun setOnboarded(value: Boolean) {
-        context.dataStore.edit { it[Keys.ONBOARDED] = value }
+        store.edit { it[Keys.ONBOARDED] = value }
     }
 
-    val dailyGoalGrams: Flow<Double> = context.dataStore.data.map { it[Keys.DAILY_GOAL_GRAMS] ?: 160.0 }
+    val dailyGoalGrams: Flow<Double> = store.data.map { it[Keys.DAILY_GOAL_GRAMS] ?: 160.0 }
 
     suspend fun setDailyGoalGrams(grams: Double) {
-        context.dataStore.edit { it[Keys.DAILY_GOAL_GRAMS] = grams }
+        store.edit { it[Keys.DAILY_GOAL_GRAMS] = grams }
     }
 
     /** Second History-chart reference line (Section 12 extension): a below-baseline day reads red instead of blue. */
-    val dailyBaselineGrams: Flow<Double> = context.dataStore.data.map { it[Keys.DAILY_BASELINE_GRAMS] ?: 112.0 }
+    val dailyBaselineGrams: Flow<Double> = store.data.map { it[Keys.DAILY_BASELINE_GRAMS] ?: 112.0 }
 
     suspend fun setDailyBaselineGrams(grams: Double) {
-        context.dataStore.edit { it[Keys.DAILY_BASELINE_GRAMS] = grams }
+        store.edit { it[Keys.DAILY_BASELINE_GRAMS] = grams }
     }
 
     /**
@@ -115,35 +178,35 @@ class SettingsRepository(private val context: Context) {
      * the offline database when no API key is configured, so someone who was handed
      * the app still gets real numbers instead of an error.
      */
-    val lookupSource: Flow<LookupSource> = context.dataStore.data.map {
+    val lookupSource: Flow<LookupSource> = store.data.map {
         LookupSource.valueOf(it[Keys.LOOKUP_SOURCE] ?: LookupSource.AI.name)
     }
 
     suspend fun setLookupSource(source: LookupSource) {
-        context.dataStore.edit { it[Keys.LOOKUP_SOURCE] = source.name }
+        store.edit { it[Keys.LOOKUP_SOURCE] = source.name }
     }
 
     /** What the app will actually do, once a missing API key is taken into account. */
     fun effectiveLookupSource(preferred: LookupSource): LookupSource =
         if (preferred == LookupSource.AI && !hasAnyApiKey()) LookupSource.OFFLINE else preferred
 
-    val backend: Flow<AiBackendKind> = context.dataStore.data.map {
+    val backend: Flow<AiBackendKind> = store.data.map {
         AiBackendKind.valueOf(it[Keys.BACKEND] ?: AiBackendKind.OPENAI.name)
     }
 
     suspend fun setBackend(backend: AiBackendKind) {
-        context.dataStore.edit { it[Keys.BACKEND] = backend.name }
+        store.edit { it[Keys.BACKEND] = backend.name }
     }
 
-    val theme: Flow<ThemeMode> = context.dataStore.data.map {
+    val theme: Flow<ThemeMode> = store.data.map {
         ThemeMode.valueOf(it[Keys.THEME] ?: ThemeMode.SYSTEM.name)
     }
 
     suspend fun setTheme(mode: ThemeMode) {
-        context.dataStore.edit { it[Keys.THEME] = mode.name }
+        store.edit { it[Keys.THEME] = mode.name }
     }
 
-    val retainProteinTotals: Flow<RetentionWindow> = context.dataStore.data.map {
+    val retainProteinTotals: Flow<RetentionWindow> = store.data.map {
         RetentionWindow(
             amount = it[Keys.RETAIN_TOTALS_AMOUNT] ?: RetentionWindow.DEFAULT_PROTEIN_TOTALS.amount,
             unit = RetentionUnit.valueOf(it[Keys.RETAIN_TOTALS_UNIT] ?: RetentionWindow.DEFAULT_PROTEIN_TOTALS.unit.name),
@@ -151,13 +214,13 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setRetainProteinTotals(window: RetentionWindow) {
-        context.dataStore.edit {
+        store.edit {
             it[Keys.RETAIN_TOTALS_AMOUNT] = window.amount
             it[Keys.RETAIN_TOTALS_UNIT] = window.unit.name
         }
     }
 
-    val retainFoodDetails: Flow<RetentionWindow> = context.dataStore.data.map {
+    val retainFoodDetails: Flow<RetentionWindow> = store.data.map {
         RetentionWindow(
             amount = it[Keys.RETAIN_DETAILS_AMOUNT] ?: RetentionWindow.DEFAULT_FOOD_DETAILS.amount,
             unit = RetentionUnit.valueOf(it[Keys.RETAIN_DETAILS_UNIT] ?: RetentionWindow.DEFAULT_FOOD_DETAILS.unit.name),
@@ -165,7 +228,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setRetainFoodDetails(window: RetentionWindow) {
-        context.dataStore.edit {
+        store.edit {
             it[Keys.RETAIN_DETAILS_AMOUNT] = window.amount
             it[Keys.RETAIN_DETAILS_UNIT] = window.unit.name
         }

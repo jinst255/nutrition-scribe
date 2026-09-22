@@ -8,6 +8,7 @@ import com.nutritionscribe.app.data.repository.AiBackendKind
 import com.nutritionscribe.app.data.repository.EntryRepository
 import com.nutritionscribe.app.data.repository.GoalsRepository
 import com.nutritionscribe.app.data.repository.LookupSource
+import com.nutritionscribe.app.data.repository.ResetManager
 import com.nutritionscribe.app.data.repository.SettingsRepository
 import com.nutritionscribe.app.network.anthropic.AnthropicBackend
 import com.nutritionscribe.app.network.backend.AiBackend
@@ -44,6 +45,8 @@ object ServiceLocator {
         private set
     lateinit var goalsRepository: GoalsRepository
         private set
+    lateinit var resetManager: ResetManager
+        private set
 
     /**
      * Warm cache of the current backend choice, kept in sync in the background so
@@ -62,6 +65,13 @@ object ServiceLocator {
         exportImportManager = ExportImportManager(appContext, database.entryDao())
         foodDatabase = FoodDatabase(appContext)
         goalsRepository = GoalsRepository(database.metricGoalDao(), settingsRepository)
+        resetManager = ResetManager(
+            entryDao = database.entryDao(),
+            unprocessedDao = database.unprocessedDao(),
+            fixedFoodCacheDao = database.fixedFoodCacheDao(),
+            metricGoalDao = database.metricGoalDao(),
+            settingsRepository = settingsRepository,
+        )
         backgroundScope.launch {
             // Carries a pre-Goals-tab protein goal and baseline across from
             // DataStore, which the Room migration had no way to read.
