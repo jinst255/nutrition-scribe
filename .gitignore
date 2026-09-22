@@ -15,3 +15,6 @@ nutrition-scribe-export*.json
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Kotlin compiler scratch
+.kotlin/
