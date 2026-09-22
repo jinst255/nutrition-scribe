@@ -106,8 +106,12 @@ fun AddEntryScreen(
 ) {
     val manualPreference by viewModel.manualMode.collectAsState(initial = false)
     val frequentFoods by viewModel.frequentFoods.collectAsState(initial = emptyList())
-    // Manual mode is either chosen or forced: with no key there is nothing to call.
-    val manual = manualPreference || !viewModel.hasApiKey()
+    // Manual mode is now only ever CHOSEN, never forced. It used to be forced
+    // whenever there was no API key, on the reasoning that there was nothing to
+    // call — which stopped being true when the offline food database shipped.
+    // Leaving it in made that database unreachable for precisely the people it
+    // was built for: anyone who was handed the app without a key.
+    val manual = manualPreference
     var manualOverride by remember { mutableStateOf(false) }
 
     if (manual || manualOverride) {

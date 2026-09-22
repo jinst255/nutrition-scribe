@@ -116,13 +116,24 @@ def candidate_sql(words, prefix_last=False):
     app pays for it only on the screen that actually needs it.
     """
     terms = list(words)
-    ors = " OR ".join(["word = ?"] * len(terms))
+    ors = " OR ".join(["w.word = ?"] * len(terms))
     params = list(terms)
     if prefix_last and terms:
-        ors += " OR word LIKE ?"
+        ors += " OR w.word LIKE ?"
         params.append(terms[-1] + "%")
-    sql = (f"SELECT fdc_id, COUNT(DISTINCT word) AS hits FROM word_index"
-           f" WHERE {ors} GROUP BY fdc_id ORDER BY hits DESC LIMIT {CANDIDATES}")
+    # The LENGTH tie-break is load-bearing, not cosmetic. For a single-word query
+    # every candidate scores exactly one hit, so ordering by hits alone leaves the
+    # LIMIT to truncate arbitrarily -- and "Egg, whole, raw" was being cut before
+    # ranking ever saw it, leaving "egg" to resolve to "Egg burrito". USDA's
+    # generic forms have the shortest descriptions, so length is a good proxy for
+    # "the plain version of this food".
+    #
+    # It costs one match case: "tuna sandwich" degrades from "Tuna salad sandwich
+    # wrap" to "Sandwich, NFS". That is worth fixing egg, eggs and milk.
+    sql = (f"SELECT w.fdc_id FROM word_index w JOIN food f ON f.fdc_id = w.fdc_id"
+           f" WHERE {ors} GROUP BY w.fdc_id"
+           f" ORDER BY COUNT(DISTINCT w.word) DESC, LENGTH(f.description) ASC"
+           f" LIMIT {CANDIDATES}")
     return sql, params
 
 

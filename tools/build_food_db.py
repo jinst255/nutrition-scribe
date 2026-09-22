@@ -74,7 +74,10 @@ def build(base, out):
             fdc_id INTEGER PRIMARY KEY,
             description TEXT NOT NULL,
             source TEXT NOT NULL,
-            {", ".join(c + " REAL" for c in COLUMNS)}
+            {", ".join(c + " REAL" for c in COLUMNS)},
+            -- How much of this food "one of it" means, when the user names no
+            -- quantity. See the note where this is computed.
+            default_grams REAL
         );
         CREATE TABLE portion (fdc_id INTEGER, label TEXT, grams REAL);
         CREATE TABLE word_index (word TEXT NOT NULL, fdc_id INTEGER NOT NULL);
@@ -155,6 +158,55 @@ def build(base, out):
                 db.execute("INSERT INTO portion VALUES (?,?,?)", (fid, label, grams))
                 portions += 1
     print(f"portions: {portions}")
+
+    # DEFAULT SERVING SIZE.
+    #
+    # Someone who logs "banana" named no quantity, so the app has to choose one,
+    # and the obvious choices are both wrong. The smallest portion gives "1 slice"
+    # = 6 g of banana and "1 nut" = 1.2 g of almonds. A flat 100 g gives two eggs
+    # as 200 g.
+    #
+    # FNDDS already answers this: portion code 90000 is its "quantity not
+    # specified" amount -- what a person eats when they don't say. It lines up
+    # with common sense everywhere it exists: banana 126 g (one banana), bread
+    # 28 g (one slice), milk 244 g (one cup), egg 50 g, apple 200 g (one medium).
+    # It leaks into the labels as a literal "90000", which is also why that string
+    # was showing up in the UI.
+    #
+    # Only the ~5,500 FNDDS foods carry it, so SR Legacy foods fall back to a
+    # household measure that reads like one item, and then to 100 g.
+    ITEM_PATTERNS = [
+        r"^1 (whole|medium|large|item|serving|package)\b",
+        r"^1 cup\b",
+        r"^1 oz\b",
+        r"^1 fl oz\b",
+    ]
+
+    by_food = {}
+    for fid, label, grams in db.execute("SELECT fdc_id, label, grams FROM portion"):
+        by_food.setdefault(fid, []).append((label, grams))
+
+    defaults = []
+    for fid, (desc, _src) in foods.items():
+        opts = by_food.get(fid, [])
+        chosen = next((g for lbl, g in opts if lbl == "90000"), None)
+
+        if chosen is None:
+            head = re.split(r"[,(]", desc)[0].strip().lower()
+            head_word = head.split()[0] if head else ""
+            patterns = ITEM_PATTERNS + ([rf"^1 {re.escape(head_word)}\b"] if head_word else [])
+            for pat in patterns:
+                match = next((g for lbl, g in opts if re.match(pat, lbl.lower())), None)
+                if match:
+                    chosen = match
+                    break
+
+        # 100 g is the basis USDA measures on, so it is the honest last resort.
+        defaults.append((chosen if chosen and chosen > 0 else 100.0, fid))
+
+    db.executemany("UPDATE food SET default_grams = ? WHERE fdc_id = ?", defaults)
+    # The raw FNDDS code is not a label anyone should ever see.
+    db.execute("UPDATE portion SET label = '1 serving' WHERE label = '90000'")
 
     # A HAND-BUILT INVERTED INDEX, NOT FTS5.
     #

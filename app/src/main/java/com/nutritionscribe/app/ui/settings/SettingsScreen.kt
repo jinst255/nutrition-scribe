@@ -51,16 +51,12 @@ fun SettingsScreen(
 ) {
     val settings = viewModel.settings
     val scope = rememberCoroutineScope()
-    val goal by settings.dailyGoalGrams.collectAsState(initial = 160.0)
-    val baseline by settings.dailyBaselineGrams.collectAsState(initial = 112.0)
     val backend by settings.backend.collectAsState(initial = AiBackendKind.OPENAI)
     val theme by settings.theme.collectAsState(initial = ThemeMode.SYSTEM)
     val lookupSource by settings.lookupSource.collectAsState(initial = LookupSource.AI)
     val totalsWindow by settings.retainProteinTotals.collectAsState(initial = RetentionWindow.DEFAULT_PROTEIN_TOTALS)
     val detailsWindow by settings.retainFoodDetails.collectAsState(initial = RetentionWindow.DEFAULT_FOOD_DETAILS)
 
-    var goalText by remember(goal) { mutableStateOf(goal.toInt().toString()) }
-    var baselineText by remember(baseline) { mutableStateOf(baseline.toInt().toString()) }
     var apiKeyText by remember { mutableStateOf(settings.getApiKey(backend).orEmpty()) }
     var apiKeyVisible by remember { mutableStateOf(false) }
     val manualMode by settings.manualMode.collectAsState(initial = false)

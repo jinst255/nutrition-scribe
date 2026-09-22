@@ -20,6 +20,13 @@ data class FoodMatch(
     val description: String,
     val source: String,
     val nutrients: Map<String, Double>,
+    /**
+     * How much of this food "one of it" means when no quantity was given.
+     * Computed at build time — see the note in tools/build_food_db.py. Falling
+     * back to the smallest listed portion gives 6 g of banana; falling back to a
+     * flat 100 g gives two eggs as 200 g. Neither is defensible.
+     */
+    val defaultGrams: Double = 100.0,
     val portions: List<Portion> = emptyList(),
 ) {
     data class Portion(val label: String, val grams: Double)
@@ -53,7 +60,7 @@ class FoodDatabase(private val context: Context) {
      * Bump when the bundled asset changes so installed copies refresh. Without
      * this, an app update ships new food data that no existing install ever reads.
      */
-    private val assetVersion = 1
+    private val assetVersion = 2
 
     private val dbFile: File get() = File(context.filesDir, "food-v$assetVersion.db")
 
@@ -130,17 +137,24 @@ class FoodDatabase(private val context: Context) {
         // twelve columns for the whole shortlist cost about half a second per
         // lookup on a device, because every cursor read crosses a Binder window.
         try {
-            val where = StringBuilder("word IN (${words.joinToString(",") { "?" }})")
+            val where = StringBuilder("w.word IN (${words.joinToString(",") { "?" }})")
             val args = words.toMutableList()
             if (prefixLast && words.isNotEmpty()) {
-                where.append(" OR word LIKE ?")
+                where.append(" OR w.word LIKE ?")
                 args.add(words.last() + "%")
             }
 
+            // The LENGTH tie-break is load-bearing. For a single-word query every
+            // candidate scores exactly one hit, so ordering by hits alone lets the
+            // LIMIT truncate arbitrarily — "Egg, whole, raw" was being cut before
+            // ranking ever saw it, and "egg" resolved to "Egg burrito". USDA's
+            // generic forms have the shortest descriptions.
             val ids = mutableListOf<String>()
             database.rawQuery(
-                "SELECT fdc_id FROM word_index WHERE $where" +
-                    " GROUP BY fdc_id ORDER BY COUNT(DISTINCT word) DESC LIMIT $CANDIDATES",
+                "SELECT w.fdc_id FROM word_index w JOIN food f ON f.fdc_id = w.fdc_id" +
+                    " WHERE $where GROUP BY w.fdc_id" +
+                    " ORDER BY COUNT(DISTINCT w.word) DESC, LENGTH(f.description) ASC" +
+                    " LIMIT $CANDIDATES",
                 args.toTypedArray(),
             ).use { c -> while (c.moveToNext()) ids.add(c.getLong(0).toString()) }
             if (ids.isEmpty()) return emptyList()
@@ -191,11 +205,13 @@ class FoodDatabase(private val context: Context) {
                 if (!c.isNull(col)) put(metric.key, c.getDouble(col))
             }
         }
+        val defaultCol = 3 + NUTRIENT_COLUMNS.size
         return FoodMatch(
             fdcId = id,
             description = c.getString(1),
             source = c.getString(2),
             nutrients = nutrients,
+            defaultGrams = if (c.isNull(defaultCol)) 100.0 else c.getDouble(defaultCol),
             portions = if (withPortions) portionsFor(database, id) else emptyList(),
         )
     }
@@ -240,6 +256,6 @@ class FoodDatabase(private val context: Context) {
         )
 
         val COLUMNS = "f.fdc_id, f.description, f.source, " +
-            NUTRIENT_COLUMNS.joinToString(", ") { "f.${it.first}" }
+            NUTRIENT_COLUMNS.joinToString(", ") { "f.${it.first}" } + ", f.default_grams"
     }
 }

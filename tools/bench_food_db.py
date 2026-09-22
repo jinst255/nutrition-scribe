@@ -87,6 +87,21 @@ SENSE_CASES = [
     ("whole milk", "Milk, whole"),
     ("avocado", "Avocado, raw"),
     ("hummus", "Hummus"),
+    # Single-word queries are the dangerous case for candidate selection: every
+    # row scores one word hit, so the shortlist truncates on a tie and the plain
+    # food can be cut before ranking ever sees it. "egg" returning "Egg burrito"
+    # is what that looks like, and the match test above waves it through because
+    # "Egg burrito" does begin with "egg".
+    ("egg", "Egg, whole"),
+    ("eggs", "Egg, whole"),
+    ("2 eggs", "Egg, whole"),
+    ("milk", "Milk, NFS"),
+    ("bread", "Bread, white"),
+    ("cheese", "Cheese"),
+    ("apple", "Apple, raw"),
+    ("rice", "Rice, white, cooked"),
+    ("chicken", "Chicken"),
+    ("beef", "Beef"),
 ]
 
 
@@ -150,7 +165,7 @@ def run(db_path):
 
         sgood, sbad = 0, []
         for text, expect in SENSE_CASES:
-            res = search(db, text, limit=1, use_alias=use_alias)
+            res = search(db, parse_quantity(text)[2], limit=1, use_alias=use_alias)
             top = res[0][1] if res else "(no match)"
             if top.lower().startswith(expect.lower()):
                 sgood += 1

@@ -131,22 +131,22 @@ class EntryRepository(
 
     private fun gramsFor(match: FoodMatch, parsed: FoodQuery.Parsed): Double {
         val count = parsed.amount ?: 1.0
-        // A unit the person named ("2 cups") beats a guess, so look for a portion
-        // whose label mentions it before falling back.
         val unit = parsed.unit
-        val portion = if (unit != null) {
-            match.portions.firstOrNull { it.label.contains(unit.trimEnd('s'), ignoreCase = true) }
-        } else {
-            null
-        } ?: match.portions.firstOrNull()
+
+        // A unit the person actually named beats any default, so look for a
+        // portion whose label mentions it first.
+        val named = unit?.let { u ->
+            match.portions.firstOrNull { it.label.contains(u.trimEnd('s'), ignoreCase = true) }
+        }
 
         return when {
             unit in GRAM_UNITS -> count
             unit in OUNCE_UNITS -> count * 28.3495
-            portion != null -> count * portion.grams
-            // USDA figures are per 100 g, so 100 g is the honest "one serving"
-            // when the data offers no household measure at all.
-            else -> count * 100.0
+            named != null -> count * named.grams
+            // No unit given, so "2 eggs" means two of whatever one egg is. This
+            // is the build-time default serving, NOT the smallest listed portion:
+            // that would read "banana" as one 6 g slice.
+            else -> count * match.defaultGrams
         }
     }
 

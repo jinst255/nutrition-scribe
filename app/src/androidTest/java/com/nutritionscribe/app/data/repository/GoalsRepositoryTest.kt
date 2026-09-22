@@ -127,6 +127,33 @@ class GoalsRepositoryTest {
     }
 
     @Test
+    fun editingTheProteinTargetReachesTheScreensThatStillReadDataStore() = runBlocking {
+        // The home ring, History chart, widget and watch read dailyGoalGrams, not
+        // metric_goal. Without this mirror, changing the protein target would update
+        // the Goals tab and nothing else, and Settings no longer offers the old field
+        // — so there would be no way left to change the number those screens use.
+        val settings = SettingsRepository(InstrumentationRegistry.getInstrumentation().targetContext)
+        repo.ensureSeeded(null, null)
+
+        repo.setTarget(Metric.PROTEIN, 190.0)
+        assertEquals(190.0, settings.dailyGoalGrams.first(), 0.0001)
+
+        repo.setFloor(Metric.PROTEIN, 130.0)
+        assertEquals(130.0, settings.dailyBaselineGrams.first(), 0.0001)
+    }
+
+    @Test
+    fun editingAnotherMetricDoesNotTouchTheProteinGoal() = runBlocking {
+        val settings = SettingsRepository(InstrumentationRegistry.getInstrumentation().targetContext)
+        repo.ensureSeeded(null, null)
+        repo.setTarget(Metric.PROTEIN, 175.0)
+
+        repo.setTarget(Metric.SODIUM, 1500.0)
+
+        assertEquals("sodium leaked into the protein goal", 175.0, settings.dailyGoalGrams.first(), 0.0001)
+    }
+
+    @Test
     fun goalsComeBackInAStableOrder() = runBlocking {
         repo.ensureSeeded(null, null)
         val order = repo.goals.first().map { it.sortOrder }

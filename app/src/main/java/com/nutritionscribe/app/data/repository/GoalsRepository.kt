@@ -97,11 +97,35 @@ class GoalsRepository(
                 },
             ).toRow(),
         )
+        mirrorProteinToLegacySettings(metric, target = target)
     }
 
     suspend fun setFloor(metric: Metric, floor: Double?) {
         val existing = find(metric) ?: MetricGoal.default(metric)
         dao.upsert(existing.copy(floorValue = floor).toRow())
+        mirrorProteinToLegacySettings(metric, floor = floor)
+    }
+
+    /**
+     * Keeps the protein goal in step with the DataStore copy.
+     *
+     * The home ring, the History chart, the widget and the watch all still read
+     * `dailyGoalGrams` / `dailyBaselineGrams` rather than this table. Until those
+     * screens are reworked to read goals directly, writing only here would mean
+     * editing your protein target changed the Goals tab and nothing else — and
+     * since the old fields have been removed from Settings, there would be no way
+     * left to change the number those screens actually use.
+     *
+     * Delete this once every consumer reads [goals]; it is a bridge, not a design.
+     */
+    private suspend fun mirrorProteinToLegacySettings(
+        metric: Metric,
+        target: Double? = null,
+        floor: Double? = null,
+    ) {
+        if (metric != Metric.PROTEIN) return
+        target?.let { settings.setDailyGoalGrams(it) }
+        floor?.let { settings.setDailyBaselineGrams(it) }
     }
 
     /**

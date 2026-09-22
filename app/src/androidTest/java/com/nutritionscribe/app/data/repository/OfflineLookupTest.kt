@@ -113,6 +113,41 @@ class OfflineLookupTest {
     }
 
     @Test
+    fun aBareFoodNameLogsARealisticServing() {
+        // The bug this guards shipped once: with no quantity given the app took the
+        // SMALLEST listed portion, so "banana" logged one 6 g slice and "almonds"
+        // logged a single 1.2 g nut. A food log quietly off by 20x is worthless.
+        val banana = entryFor("banana")
+        assertTrue("a banana should be roughly 100 kcal, got ${banana.calories}",
+            banana.calories!! in 80.0..160.0)
+
+        val egg = entryFor("egg")
+        assertTrue("one egg should be roughly 70 kcal, got ${egg.calories}",
+            egg.calories!! in 50.0..110.0)
+
+        val milk = entryFor("milk")
+        assertTrue("a glass of milk should be over 60 kcal, got ${milk.calories}",
+            milk.calories!! > 60.0)
+    }
+
+    @Test
+    fun aCountMultipliesTheServingNotTheHundredGramBasis() {
+        // "2 eggs" must be two eggs (about 12 g protein), not 200 g of egg.
+        val one = entryFor("egg")
+        val two = entryFor("2 eggs")
+        assertEquals(one.proteinGrams * 2, two.proteinGrams, 0.5)
+        assertTrue("two eggs came to ${two.proteinGrams} g protein",
+            two.proteinGrams in 9.0..16.0)
+    }
+
+    @Test
+    fun aBareFoodNameFindsThePlainFoodNotACompoundDish() {
+        // "egg" resolved to "Egg burrito" when the candidate shortlist truncated
+        // on a tie, which also tripled the protein.
+        assertTrue(entryFor("egg").name.startsWith("Egg,", ignoreCase = true))
+    }
+
+    @Test
     fun anUnknownFoodFailsHonestlyRatherThanGuessing() {
         val result = runBlocking { repo.processRawEntry("qqzzxwv nonsense") }
         assertTrue(result is LogEntryResult.Failed)
