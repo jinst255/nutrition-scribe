@@ -117,6 +117,7 @@ class HomeViewModel : androidx.lifecycle.ViewModel() {
 fun HomeScreen(
     onAddEntry: () -> Unit,
     onOpenUnprocessed: () -> Unit,
+    onOpenEntry: (String) -> Unit = {},
     viewModel: HomeViewModel = viewModel(),
 ) {
     val entries by viewModel.todayEntries.collectAsState(initial = emptyList())
@@ -267,7 +268,7 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 ) {
-                    items(entries, key = { it.id }) { entry -> CompactEntryRow(entry) }
+                    items(entries, key = { it.id }) { entry -> CompactEntryRow(entry) { onOpenEntry(entry.id) } }
                 }
             }
         }
@@ -275,8 +276,9 @@ fun HomeScreen(
 }
 
 @Composable
-private fun CompactEntryRow(entry: Entry) {
+private fun CompactEntryRow(entry: Entry, onClick: () -> Unit) {
     Card(
+        onClick = onClick,
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
     ) {

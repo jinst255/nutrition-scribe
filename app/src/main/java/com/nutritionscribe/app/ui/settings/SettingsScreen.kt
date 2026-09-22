@@ -76,8 +76,9 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp)
-            .padding(top = 12.dp),
+            // No top padding: the first SectionHeader's own 26dp sits under
+            // the title bar, and adding more left a gap that looked like a bug.
+            .padding(horizontal = 16.dp),
     ) {
         // ---- How entries get their numbers -------------------------------
         SectionHeader("Logging")

@@ -63,7 +63,6 @@ fun ExportImportScreen() {
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Back up your log", style = MaterialTheme.typography.titleLarge)
         Text(
             "Everything lives on this phone and nowhere else. An export is the only " +
                 "copy you will have.",

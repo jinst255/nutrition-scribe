@@ -65,8 +65,7 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
-            Column(modifier = Modifier.padding(top = 16.dp, bottom = 4.dp)) {
-                Text("Goals", style = MaterialTheme.typography.headlineSmall)
+            Column(modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)) {
                 Text(
                     "Pick what you want to pay attention to. Everything you log is " +
                         "recorded either way, so you can turn something on later and " +

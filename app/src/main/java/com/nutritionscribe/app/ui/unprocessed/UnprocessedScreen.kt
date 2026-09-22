@@ -62,7 +62,7 @@ fun UnprocessedScreen(viewModel: UnprocessedViewModel = viewModel()) {
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Needs attention", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
             if (entries.isNotEmpty()) {
                 TextButton(onClick = { confirmingClear = true }) { Text("Clear all") }
             }

@@ -69,7 +69,6 @@ class EntryDetailViewModel : ViewModel() {
 @Composable
 fun EntryDetailScreen(
     entryId: String,
-    onBack: () -> Unit,
     viewModel: EntryDetailViewModel = viewModel(),
 ) {
     val entry by remember(entryId) { viewModel.entry(entryId) }.collectAsState(initial = null)
@@ -84,6 +83,9 @@ fun EntryDetailScreen(
     }
 
     var editing by remember { mutableStateOf(false) }
+    // Back while editing means "stop editing", not "leave and lose my changes
+    // without being asked".
+    androidx.activity.compose.BackHandler(enabled = editing) { editing = false }
     if (editing) {
         EntryEditor(
             entry = current,
@@ -95,13 +97,12 @@ fun EntryDetailScreen(
         EntryReader(
             entry = current,
             onEdit = { editing = true },
-            onBack = onBack,
         )
     }
 }
 
 @Composable
-private fun EntryReader(entry: Entry, onEdit: () -> Unit, onBack: () -> Unit) {
+private fun EntryReader(entry: Entry, onEdit: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -188,12 +189,10 @@ private fun EntryReader(entry: Entry, onEdit: () -> Unit, onBack: () -> Unit) {
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(onClick = onEdit, modifier = Modifier.weight(1f)) { Text("Edit") }
-            OutlinedButton(onClick = onBack, modifier = Modifier.weight(1f)) { Text("Back") }
+        // Back lives in the title bar now; a second Back button here was the
+        // same control twice.
+        Button(onClick = onEdit, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            Text("Edit")
         }
     }
 }

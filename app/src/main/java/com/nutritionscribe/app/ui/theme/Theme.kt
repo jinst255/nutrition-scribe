@@ -1,11 +1,16 @@
 package com.nutritionscribe.app.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 
 // Palette confirmed in Section 13.
 object NutritionScribeColors {
@@ -18,9 +23,11 @@ object NutritionScribeColors {
     val LightUnderGoal = Color(0xFF3E6FA8)
     val LightDanger = Color(0xFFB5433A)
 
-    val DarkBackground = Color(0xFF17171A)
-    val DarkSurface = Color(0xFF232326)
-    val DarkBorder = Color(0xFF2C2C30)
+    // Dark neutrals lean very slightly green, like the light ones lean warm. They
+    // used to lean blue-violet (0x17171A), which fought every green on the screen.
+    val DarkBackground = Color(0xFF141615)
+    val DarkSurface = Color(0xFF1D201E)
+    val DarkBorder = Color(0xFF2C302D)
     val DarkTextPrimary = Color(0xFFF2F1EC)
     val DarkTextSecondary = Color(0xFFA8A79F)
     val DarkGoalMet = Color(0xFF4E9873)
@@ -45,8 +52,26 @@ object NutritionScribeColors {
     val DarkGoalMetSoft = Color(0xFF244635)
     val DarkUnderGoalSoft = Color(0xFF28384B)
     val DarkDangerSoft = Color(0xFF5A2F2A)
-    val DarkRingTrack = Color(0xFF2C2C30)
+    val DarkRingTrack = Color(0xFF2C302D)
     val DarkOutline = Color(0xFF727C76)
+
+    // Surface-container tiers. Material 3 draws Cards from surfaceContainerHighest,
+    // the navigation bar from surfaceContainer, dialogs and menus from
+    // surfaceContainerHigh — and when these are unset it fills them from its
+    // baseline scheme, which is lilac-grey (0xE6E0E9). Every card and the tab bar
+    // were quietly a different colour family from everything around them, which
+    // is a large part of why the app looked assembled rather than designed.
+    val LightContainerLowest = Color(0xFFFFFFFF)
+    val LightContainerLow = Color(0xFFF4F4EF)
+    val LightContainer = Color(0xFFEFEFE9)
+    val LightContainerHigh = Color(0xFFEAEAE3)
+    val LightContainerHighest = Color(0xFFE4E5DD)
+
+    val DarkContainerLowest = Color(0xFF0F1110)
+    val DarkContainerLow = Color(0xFF1A1C1B)
+    val DarkContainer = Color(0xFF1E211F)
+    val DarkContainerHigh = Color(0xFF272A28)
+    val DarkContainerHighest = Color(0xFF313532)
 }
 
 // Setting `primary` alone is not enough, and the gap is very visible: Material 3
@@ -80,6 +105,17 @@ private val LightColors = lightColorScheme(
     onError = NutritionScribeColors.LightSurface,
     errorContainer = NutritionScribeColors.LightDangerSoft,
     onErrorContainer = NutritionScribeColors.LightDangerDeep,
+    surfaceContainerLowest = NutritionScribeColors.LightContainerLowest,
+    surfaceContainerLow = NutritionScribeColors.LightContainerLow,
+    surfaceContainer = NutritionScribeColors.LightContainer,
+    surfaceContainerHigh = NutritionScribeColors.LightContainerHigh,
+    surfaceContainerHighest = NutritionScribeColors.LightContainerHighest,
+    surfaceBright = NutritionScribeColors.LightSurface,
+    surfaceDim = NutritionScribeColors.LightContainerHighest,
+    inverseSurface = NutritionScribeColors.DarkSurface,
+    inverseOnSurface = NutritionScribeColors.DarkTextPrimary,
+    inversePrimary = NutritionScribeColors.DarkGoalMet,
+    scrim = Color.Black,
 )
 
 private val DarkColors = darkColorScheme(
@@ -108,6 +144,36 @@ private val DarkColors = darkColorScheme(
     onError = NutritionScribeColors.DarkBackground,
     errorContainer = NutritionScribeColors.DarkDangerSoft,
     onErrorContainer = NutritionScribeColors.DarkTextPrimary,
+    surfaceContainerLowest = NutritionScribeColors.DarkContainerLowest,
+    surfaceContainerLow = NutritionScribeColors.DarkContainerLow,
+    surfaceContainer = NutritionScribeColors.DarkContainer,
+    surfaceContainerHigh = NutritionScribeColors.DarkContainerHigh,
+    surfaceContainerHighest = NutritionScribeColors.DarkContainerHighest,
+    surfaceBright = NutritionScribeColors.DarkContainerHighest,
+    surfaceDim = NutritionScribeColors.DarkBackground,
+    inverseSurface = NutritionScribeColors.LightSurface,
+    inverseOnSurface = NutritionScribeColors.LightTextPrimary,
+    inversePrimary = NutritionScribeColors.LightGoalMet,
+    scrim = Color.Black,
+)
+
+// Material's default type scale, with the title and headline styles given more
+// weight. At the default Normal weight a screen's heading and its body text were
+// the same colour and nearly the same heft, so nothing led the eye.
+private val Base = Typography()
+private val AppTypography = Base.copy(
+    headlineMedium = Base.headlineMedium.copy(fontWeight = FontWeight.SemiBold),
+    headlineSmall = Base.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
+    titleLarge = Base.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+    titleMedium = Base.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+    labelSmall = Base.labelSmall.copy(letterSpacing = Base.labelSmall.letterSpacing * 1.4),
+)
+
+// Slightly softer than Material's defaults (12dp cards), matching the rings.
+private val AppShapes = Shapes(
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(22.dp),
 )
 
 enum class AppThemeMode { SYSTEM, LIGHT, DARK }
@@ -121,6 +187,8 @@ fun NutritionScribeTheme(mode: AppThemeMode = AppThemeMode.SYSTEM, content: @Com
     }
     MaterialTheme(
         colorScheme = if (useDark) DarkColors else LightColors,
+        typography = AppTypography,
+        shapes = AppShapes,
         content = content,
     )
 }
