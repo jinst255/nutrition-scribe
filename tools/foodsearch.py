@@ -609,7 +609,10 @@ def offline_lookup(db, raw_text):
         return {"name": raw_text, "needs_detail": True, "vague": True,
                 "matches": [], **{k: None for k in COLUMNS}}
 
-    stated, text = strip_protein_claim(preprocess(raw_text))
+    # The claim comes out of the RAW text: preprocess moves a stray "6 g" to the
+    # front, which would split "6 g of protein" apart before it could be read.
+    stated, text = strip_protein_claim(raw_text)
+    text = preprocess(text)
 
     plain = [text] if is_alias(db, text) else split_items(text)
     readings = [_resolve(db, plain)]

@@ -11,3 +11,7 @@ local.properties
 # Personal food log exports — real data, never commit.
 protein-scribe-export*.json
 nutrition-scribe-export*.json
+
+# Python bytecode
+__pycache__/
+*.pyc

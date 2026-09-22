@@ -60,7 +60,7 @@ class FoodDatabase(private val context: Context) {
      * Bump when the bundled asset changes so installed copies refresh. Without
      * this, an app update ships new food data that no existing install ever reads.
      */
-    private val assetVersion = 4
+    private val assetVersion = 5
 
     private val dbFile: File get() = File(context.filesDir, "food-v$assetVersion.db")
 
@@ -116,6 +116,26 @@ class FoodDatabase(private val context: Context) {
     /** The single best match, or null when nothing in the database fits. */
     suspend fun lookup(text: String): FoodMatch? = search(text, limit = 1).firstOrNull()
 
+    /**
+     * Is there a curated or learned default for this exact phrase?
+     *
+     * Callers need this because a curated alias is authoritative and must not be
+     * second-guessed by the credibility check — "protein shake" deliberately
+     * points at "Nutritional powder mix, protein, NFS", which shares no word with
+     * the query, and rejecting it lost every protein shake in the log.
+     */
+    suspend fun hasAlias(text: String): Boolean = withContext(Dispatchers.IO) {
+        val database = open() ?: return@withContext false
+        try {
+            database.rawQuery(
+                "SELECT 1 FROM alias WHERE term = ?",
+                arrayOf(FoodQuery.normalise(text)),
+            ).use { it.moveToFirst() }
+        } catch (e: SQLiteException) {
+            false
+        }
+    }
+
     private fun aliasMatch(database: SQLiteDatabase, text: String): FoodMatch? =
         try {
             database.rawQuery(
@@ -162,11 +182,11 @@ class FoodDatabase(private val context: Context) {
             val placeholders = ids.joinToString(",") { "?" }
             val scored = mutableListOf<Pair<Long, Double>>()
             database.rawQuery(
-                "SELECT fdc_id, description FROM food WHERE fdc_id IN ($placeholders)",
+                "SELECT fdc_id, description, source FROM food WHERE fdc_id IN ($placeholders)",
                 ids.toTypedArray(),
             ).use { c ->
                 while (c.moveToNext()) {
-                    scored.add(c.getLong(0) to FoodQuery.score(words, c.getString(1)))
+                    scored.add(c.getLong(0) to FoodQuery.score(words, c.getString(1), c.getString(2)))
                 }
             }
 

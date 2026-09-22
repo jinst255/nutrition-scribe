@@ -241,4 +241,157 @@ class OfflineLookupTest {
         val water = entryFor("water")
         assertEquals(0.0, water.calories!!, 0.001)
     }
+
+    // ------------------------------------------------------------------
+    // Regressions found by scoring the lookup against a REAL exported log
+    // (tools/bench_real_log.py) rather than against phrases I invented. Agreement
+    // with the AI went from 29.2% to 56.9%; each of these was a step.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun aStatedProteinFigureIsNotChargedAsAServingWeight() {
+        // "20g protein shake" used to log twenty grams OF protein powder: the
+        // protein came out right and the calories came out at 70 instead of 160.
+        val entry = entryFor("20g protein shake")
+        assertEquals(20.0, entry.nutrients[Metric.PROTEIN.key]!!, 0.01)
+        assertTrue(
+            "a shake is more than a rounding error: ${entry.nutrients[Metric.CALORIES.key]}",
+            entry.nutrients[Metric.CALORIES.key]!! > 90,
+        )
+        assertEquals(Confidence.STATED, entry.confidence)
+    }
+
+    @Test
+    fun aWeightOfAnOrdinaryFoodIsStillAWeight() {
+        // The counterpart to the above: butter is not sold by protein content, so
+        // "15g butter" has to stay fifteen grams of butter.
+        val entry = entryFor("15g butter")
+        assertTrue(
+            "15 g of butter is about 110 kcal, not a serving: ${entry.nutrients[Metric.CALORIES.key]}",
+            entry.nutrients[Metric.CALORIES.key]!! < 200,
+        )
+    }
+
+    @Test
+    fun aCountedFoodIsCountedNotServed() {
+        // "six pancakes" meant six 100 g SERVINGS: 1692 calories.
+        val six = entryFor("six pancakes")
+        val one = entryFor("1 pancake")
+        val perPancake = six.nutrients[Metric.CALORIES.key]!! / 6
+        assertEquals(
+            "six pancakes must be six of what one pancake is",
+            one.nutrients[Metric.CALORIES.key]!!, perPancake, 1.0,
+        )
+    }
+
+    @Test
+    fun aCrumbSizedPortionIsNeverTheAnswer() {
+        // USDA lists "1 chip" at 2 g, so "a bag of potato chips" was ELEVEN
+        // calories — an entry that looks logged but records nothing.
+        val entry = entryFor("a bag of potato chips")
+        assertTrue(
+            "a bag of chips is not 11 kcal: ${entry.nutrients[Metric.CALORIES.key]}",
+            entry.nutrients[Metric.CALORIES.key]!! > 100,
+        )
+    }
+
+    @Test
+    fun aFoodAfterWithIsNotDropped() {
+        // "two pancakes with a little bit of maple syrup" matched the SYRUP and
+        // logged 431 calories of syrup and no pancakes at all.
+        val entry = entryFor("two pancakes with a little bit of maple syrup")
+        assertTrue(
+            "the pancakes must be in there: ${entry.rawText}",
+            entry.nutrients[Metric.CARBS.key]!! > 0 && entry.nutrients[Metric.PROTEIN.key]!! > 3,
+        )
+    }
+
+    @Test
+    fun aCompoundDishIsNotTornApartByWith() {
+        // The other side of that trade: splitting is offered, not forced, so
+        // "spaghetti with meat sauce" must stay one dish with its meat.
+        val entry = entryFor("spaghetti with meat sauce")
+        assertTrue(
+            "meat sauce carries protein: ${entry.nutrients[Metric.PROTEIN.key]}",
+            entry.nutrients[Metric.PROTEIN.key]!! > 5,
+        )
+    }
+
+    @Test
+    fun aFragmentThatIsNotFoodAddsNothing() {
+        // Splitting a sentence produced fragments that are not food, and each
+        // still found a nearest row — "medium sized." matched raw rice and added
+        // 195 g of it to a plate of tortillas.
+        val entry = entryFor("2 tortillas. mission brand, medium sized.")
+        assertTrue(
+            "no phantom rice: ${entry.nutrients[Metric.CALORIES.key]}",
+            entry.nutrients[Metric.CALORIES.key]!! < 600,
+        )
+    }
+
+    @Test
+    fun aUnicodeFractionIsAQuantityNotAWord() {
+        // "\u2153bell peper" ran together and matched TACO BELL Nachos.
+        val third = entryFor("\u2153 bell pepper")
+        val whole = entryFor("1 bell pepper")
+        assertTrue(
+            "a third of a pepper is less than a pepper",
+            third.nutrients[Metric.CALORIES.key]!! < whole.nutrients[Metric.CALORIES.key]!!,
+        )
+    }
+
+    @Test
+    fun aQuantityIsFoundWhereverItWasSaid() {
+        // "milk 2 cups while milk" logged ONE cup: the parser only looked at the
+        // start of the sentence.
+        // Comparing against the SAME phrase with the count in front: the position
+        // of the quantity must not change the answer. (Comparing against "1 cup
+        // milk" instead would compare two different milks, which is why the first
+        // version of this test failed.)
+        val buried = entryFor("milk 2 cups whole milk")
+        val leading = entryFor("2 cups whole milk")
+        assertEquals(
+            "where the count sits in the sentence must not matter",
+            leading.nutrients[Metric.CALORIES.key]!!,
+            buried.nutrients[Metric.CALORIES.key]!!,
+            0.01,
+        )
+        assertTrue(
+            "and two cups is a real amount: ${buried.nutrients[Metric.CALORIES.key]}",
+            buried.nutrients[Metric.CALORIES.key]!! > 200,
+        )
+    }
+
+    @Test
+    fun anAbbreviationTheDatabaseHasNeverHeardOfStillResolves() {
+        // "PB&J" matched NOTHING: the "&" split it into two one-letter fragments.
+        val entry = entryFor("PB&J")
+        assertTrue(
+            "a PB&J is a real sandwich: ${entry.nutrients[Metric.CALORIES.key]}",
+            entry.nutrients[Metric.CALORIES.key]!! > 250,
+        )
+    }
+
+    @Test
+    fun aPluralFoodIsStillFindable() {
+        // The stemmer turned "pancakes" into "pancak" while "pancake" stayed
+        // whole, so "pancake" could not reach "Pancakes, NFS" and found "Pancake
+        // syrup" instead. Syrup has no protein; pancakes do.
+        val entry = entryFor("1 pancake")
+        assertTrue(
+            "this must be a pancake, not syrup: ${entry.name}",
+            entry.nutrients[Metric.PROTEIN.key]!! > 1,
+        )
+    }
+
+    @Test
+    fun anIngredientNobodyEatsIsNotAMeal() {
+        // "carrot cake 2 servings" found "Cake, pudding-type, carrot, DRY MIX"
+        // and logged 4233 calories.
+        val entry = entryFor("carrot cake 2 servings")
+        assertTrue(
+            "nobody eats 4000 calories of dry mix: ${entry.nutrients[Metric.CALORIES.key]}",
+            entry.nutrients[Metric.CALORIES.key]!! < 2000,
+        )
+    }
 }

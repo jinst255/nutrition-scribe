@@ -116,13 +116,28 @@ class EntryRepository(
         // was invented. Keep their words, ask for the detail later.
         if (FoodQuery.isVague(rawText)) return LogEntryResult.NeedsReview(vagueEntry(rawText))
 
+        // Dictation is messy in repeatable ways: unicode fractions run into the
+        // next word, and the quantity turns up wherever the sentence put it.
+        // The claim comes out of the RAW text: preprocess moves a stray "6 g" to
+        // the front, which would split "6 g of protein" apart before it is read.
+        val claim = FoodQuery.stripProteinClaim(rawText)
+        val text = FoodQuery.preprocess(claim.text)
+
         // "chicken, rice and broccoli" is three foods. Looking up the whole phrase
         // matched "Rice, fried, with chicken" and silently dropped the broccoli.
-        val items = FoodQuery.splitItems(rawText)
-        val found = items.mapNotNull { item ->
-            val parsed = FoodQuery.parseQuantity(item)
-            foods.lookup(parsed.food)?.let { it to gramsFor(it, parsed) }
-        }
+        // A curated phrase is exempt: "mac and cheese" split on "and" and matched
+        // "Big Mac (McDonalds)".
+        val plain = if (foods.hasAlias(text)) listOf(text) else FoodQuery.splitItems(text)
+        val readings = mutableListOf(resolve(foods, plain))
+        val widened = FoodQuery.splitOnWith(plain)
+        if (widened != plain) readings += resolve(foods, widened)
+
+        // Whichever reading accounts for more of what was actually said. Ties go
+        // to the first, which is the conservative one that did not split on "with".
+        val allWords = FoodQuery.contentWords(text)
+        val found = readings.maxByOrNull {
+            FoodQuery.explained(it.map { (match, _) -> match.description }, allWords)
+        }.orEmpty()
         if (found.isEmpty()) return null
 
         val nutrients = mutableMapOf<String, Double>()
@@ -134,14 +149,14 @@ class EntryRepository(
 
         // Their own stated figure beats an estimate for a food the database may not
         // even contain — "Built bar, 16g protein" matched a different bar at 30 g.
-        val stated = FoodQuery.statedProteinGrams(rawText)
+        val stated = claim.grams
         if (stated != null) nutrients[Metric.PROTEIN.key] = stated
 
         // Coverage is the honest confidence signal; a single match that accounts
         // for less than half of what was said is a guess worth flagging.
         val single = found.singleOrNull()
         val weak = single != null && FoodQuery.coverage(
-            FoodQuery.contentWords(FoodQuery.parseQuantity(rawText).food),
+            FoodQuery.contentWords(FoodQuery.parseQuantity(text).food),
             single.first.description,
         ) < 0.5
 
@@ -174,25 +189,98 @@ class EntryRepository(
         needsDetail = true,
     )
 
-    private fun gramsFor(match: FoodMatch, parsed: FoodQuery.Parsed): Double {
+    /**
+     * Look each item up, dropping the ones whose match is not credible.
+     *
+     * A curated alias is exempt from the credibility check — see
+     * [FoodQuery.isCredible] and [FoodDatabase.hasAlias].
+     */
+    private suspend fun resolve(
+        foods: FoodDatabase,
+        items: List<String>,
+    ): List<Pair<FoodMatch, Double>> = items.mapNotNull { item ->
+        val parsed = FoodQuery.parseQuantity(FoodQuery.preprocess(item))
+        val match = foods.lookup(parsed.food) ?: return@mapNotNull null
+        if (!foods.hasAlias(parsed.food) &&
+            !FoodQuery.isCredible(parsed.food, match.description)
+        ) {
+            return@mapNotNull null
+        }
+        match to gramsFor(match, parsed, item)
+    }
+
+    private fun gramsFor(match: FoodMatch, parsed: FoodQuery.Parsed, text: String = ""): Double {
         val count = parsed.amount ?: 1.0
         val unit = parsed.unit
 
-        // A unit the person actually named beats any default, so look for a
-        // portion whose label mentions it first.
-        val named = unit?.let { u ->
-            match.portions.firstOrNull { it.label.contains(u.trimEnd('s'), ignoreCase = true) }
+        if (unit in GRAM_UNITS) return count
+        if (unit in OUNCE_UNITS) return count * 28.3495
+
+        // A unit the person actually named beats any default.
+        if (unit != null) {
+            val singular = unit.trimEnd('s')
+            val named = match.portions.filter { it.label.contains(singular, ignoreCase = true) }
+            // Portions arrive smallest first, so taking the first match meant "4
+            // slices of white bread" used a 10 g "1 slice, snack-size".
+            if (named.isNotEmpty()) return count * plainest(named)
         }
 
-        return when {
-            unit in GRAM_UNITS -> count
-            unit in OUNCE_UNITS -> count * 28.3495
-            named != null -> count * named.grams
-            // No unit given, so "2 eggs" means two of whatever one egg is. This
-            // is the build-time default serving, NOT the smallest listed portion:
-            // that would read "banana" as one 6 g slice.
-            else -> count * match.defaultGrams
+        // "a small cookie", "1 large pancake" — a size the person named beats any
+        // default, exactly as a unit would. Without this, "small" was discarded as
+        // a stop word and a small cookie was logged at 295 calories.
+        FoodQuery.sizeOf(text.ifEmpty { parsed.food })?.let { size ->
+            val sized = match.portions.filter { it.label.contains(size, ignoreCase = true) }
+            if (sized.isNotEmpty()) return count * plainest(sized)
         }
+
+        // A bare count of a countable food means that many OF IT, not that many
+        // servings: "six pancakes" was logged as six 100 g servings, 1692 calories.
+        if (parsed.amount != null && unit == null) {
+            val item = itemPortion(match)
+            // A quarter of the serving is the floor. USDA lists "1 chip" (2 g) for
+            // potato chips, so "a bag of potato chips" came out at ELEVEN calories.
+            if (item != null && item >= match.defaultGrams * 0.25) return count * item
+        }
+
+        // No unit given, so "2 eggs" means two of whatever one egg is. This is the
+        // build-time default serving, NOT the smallest listed portion: that would
+        // read "banana" as one 6 g slice.
+        return count * match.defaultGrams
+    }
+
+    /** A portion that is one of the food itself, preferring the medium one. */
+    private fun itemPortion(match: FoodMatch): Double? {
+        val nouns = Regex("[a-z]+").findAll(FoodQuery.headOf(match.description))
+            .map { FoodQuery.stem(it.value) }.filter { it.length > 2 }.toSet()
+        if (nouns.isEmpty()) return null
+
+        val named = match.portions.filter { portion ->
+            val low = portion.label.lowercase()
+            val words = Regex("[a-z]+").findAll(low).map { it.value }.toList()
+            if (words.none { FoodQuery.stem(it) in nouns }) return@filter false
+            // "1 medium pancake" describes one pancake. "1 Bagel Thin" describes a
+            // different product that happens to say bagel, and taking it made "a
+            // bagel with cream cheese" a 46 g bagel. Accept only a size-qualified
+            // portion or the bare "1 <food>".
+            val sized = FoodQuery.SIZE_WORDS.any { low.contains(it) }
+            sized || words.none { FoodQuery.stem(it) !in nouns }
+        }
+        return if (named.isEmpty()) null else plainest(named)
+    }
+
+    /**
+     * The default-sized portion out of several labelled ones.
+     *
+     * USDA offers "1 slice, snack-size" (10 g) through "1 large or thick slice"
+     * (43 g) for the same bread. "Medium"/"regular" is USDA's own word for the
+     * normal one; failing that the shortest label is the least qualified.
+     */
+    private fun plainest(portions: List<FoodMatch.Portion>): Double {
+        for (want in listOf("medium", "regular")) {
+            portions.firstOrNull { it.label.contains(want, ignoreCase = true) }
+                ?.let { return it.grams }
+        }
+        return portions.minBy { it.label.length }.grams
     }
 
     private fun toPendingEntry(rawText: String, result: com.nutritionscribe.shared.model.NutritionLookupResult) = Entry(
