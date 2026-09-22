@@ -14,6 +14,16 @@ data class MetricGoal(
     val metric: Metric,
     val enabled: Boolean,
     val target: Double? = null,
+    /**
+     * Overrides [Metric.direction] when the user wants the opposite.
+     *
+     * Every metric ships with a sensible default — protein is something to reach,
+     * sodium something to stay under — but the defaults are not right for
+     * everybody. Someone cutting eats to a calorie LIMIT while someone bulking
+     * eats to a calorie target, and the app was quietly scoring both as "more is
+     * better". null means "whatever the metric says".
+     */
+    val direction: GoalDirection? = null,
     /** Below this reads red. For a REACH metric this is "not enough". */
     val floorValue: Double? = null,
     /** Above this reads red. For a LIMIT metric this is "too much". */
@@ -28,9 +38,12 @@ data class MetricGoal(
      * while 170 g of protein against a 160 g target is a win. Treating every metric
      * as "more is better" is how a tracker congratulates someone for a bad day.
      */
+    /** What this goal actually scores by — the override, or the metric's default. */
+    val effectiveDirection: GoalDirection get() = direction ?: metric.direction
+
     fun isMet(amount: Double): Boolean {
         val goal = target ?: return true
-        return when (metric.direction) {
+        return when (effectiveDirection) {
             GoalDirection.REACH -> amount >= goal
             GoalDirection.LIMIT -> amount <= goal
         }

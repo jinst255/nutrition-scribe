@@ -86,6 +86,11 @@ data class MetricGoalRow(
     val ceilingValue: Double?,
     val sortOrder: Int,
     val pinned: Boolean = false,
+    /**
+     * "REACH"/"LIMIT" when the user has overridden the metric's own default,
+     * null when they have not. See MetricGoal.direction.
+     */
+    val direction: String? = null,
 )
 
 data class EntryWithNutrients(
@@ -303,7 +308,7 @@ interface FixedFoodCacheDao {
         UnprocessedRow::class,
         FixedFoodCacheRow::class,
     ],
-    version = 3,
+    version = 4,
 )
 abstract class NutritionScribeDatabase : RoomDatabase() {
     abstract fun entryDao(): EntryDao
@@ -319,6 +324,17 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
          * fall back to destructive migration — this database is the only copy of the
          * user's food log, so wiping it on a schema bump is never acceptable.
          */
+        /**
+         * Lets a goal override its metric's direction. Nullable, because null
+         * means "whatever the metric says" — which is what every existing goal
+         * has been doing, so there is nothing to backfill.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE metric_goal ADD COLUMN direction TEXT DEFAULT NULL")
+            }
+        }
+
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE entries ADD COLUMN timeUnspecified INTEGER NOT NULL DEFAULT 0")
@@ -398,7 +414,8 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
                     // the user, but renaming it would leave every existing log stranded
                     // in a file nothing opens any more — a rebrand must not cost data.
                     "protein-scribe.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .build().also { instance = it }
             }
     }
 }

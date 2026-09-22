@@ -35,11 +35,18 @@ object NutritionScribeColors {
     val LightDangerSoft = Color(0xFFF6DEDC)
     val LightDangerDeep = Color(0xFF5C221D)
     val LightRingTrack = Color(0xFFE7E5DE)
+    // `outline` has to be VISIBLE against surfaceVariant: Material draws an
+    // unchecked Switch as a surfaceVariant track with an `outline` thumb and an
+    // `outline` border. Setting all three to the same near-invisible hairline
+    // made the thumb disappear completely — the switch read as a blank lozenge
+    // in both themes. `outlineVariant` is the subtle one, for dividers.
+    val LightOutline = Color(0xFF9AA098)
 
     val DarkGoalMetSoft = Color(0xFF244635)
     val DarkUnderGoalSoft = Color(0xFF28384B)
     val DarkDangerSoft = Color(0xFF5A2F2A)
     val DarkRingTrack = Color(0xFF2C2C30)
+    val DarkOutline = Color(0xFF727C76)
 }
 
 // Setting `primary` alone is not enough, and the gap is very visible: Material 3
@@ -53,7 +60,7 @@ private val LightColors = lightColorScheme(
     surfaceVariant = NutritionScribeColors.LightRingTrack,
     onSurfaceVariant = NutritionScribeColors.LightTextSecondary,
     surfaceTint = NutritionScribeColors.LightGoalMet,
-    outline = NutritionScribeColors.LightBorder,
+    outline = NutritionScribeColors.LightOutline,
     outlineVariant = NutritionScribeColors.LightBorder,
     onBackground = NutritionScribeColors.LightTextPrimary,
     onSurface = NutritionScribeColors.LightTextPrimary,
@@ -81,7 +88,7 @@ private val DarkColors = darkColorScheme(
     surfaceVariant = NutritionScribeColors.DarkRingTrack,
     onSurfaceVariant = NutritionScribeColors.DarkTextSecondary,
     surfaceTint = NutritionScribeColors.DarkGoalMet,
-    outline = NutritionScribeColors.DarkBorder,
+    outline = NutritionScribeColors.DarkOutline,
     outlineVariant = NutritionScribeColors.DarkBorder,
     onBackground = NutritionScribeColors.DarkTextPrimary,
     onSurface = NutritionScribeColors.DarkTextPrimary,

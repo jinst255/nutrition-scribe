@@ -34,7 +34,12 @@ import kotlin.math.min
 @Composable
 fun MacroRing(
     value: Double,
-    goal: Double,
+    /**
+     * null when the user tracks this metric but set no number. That is a real
+     * state, not a zero: the ring used to render it as "of 0kcal", which reads
+     * as a goal of nothing rather than as no goal.
+     */
+    goal: Double?,
     label: String,
     unit: String,
     color: Color,
@@ -42,7 +47,7 @@ fun MacroRing(
     size: Dp = 160.dp,
     strokeWidth: Dp = 14.dp,
 ) {
-    val fraction = if (goal > 0) (value / goal).toFloat() else 0f
+    val fraction = if (goal != null && goal > 0) (value / goal).toFloat() else 0f
     val animated by animateFloatAsState(
         targetValue = fraction.coerceIn(0f, 1f),
         animationSpec = tween(durationMillis = 550),
@@ -111,7 +116,7 @@ fun MacroRing(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "of ${goal.toInt()}$unit",
+                    if (goal != null) "of ${goal.toInt()}$unit" else unit,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )

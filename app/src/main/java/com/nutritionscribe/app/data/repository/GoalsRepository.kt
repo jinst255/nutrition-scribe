@@ -2,6 +2,7 @@ package com.nutritionscribe.app.data.repository
 
 import com.nutritionscribe.app.data.db.MetricGoalDao
 import com.nutritionscribe.app.data.db.MetricGoalRow
+import com.nutritionscribe.shared.model.GoalDirection
 import com.nutritionscribe.shared.model.Metric
 import com.nutritionscribe.shared.model.MetricGoal
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +18,7 @@ fun MetricGoalRow.toModel(): MetricGoal? {
         ceilingValue = ceilingValue,
         sortOrder = sortOrder,
         pinned = pinned,
+        direction = direction?.let { runCatching { GoalDirection.valueOf(it) }.getOrNull() },
     )
 }
 
@@ -28,6 +30,7 @@ fun MetricGoal.toRow(): MetricGoalRow = MetricGoalRow(
     ceilingValue = ceilingValue,
     sortOrder = sortOrder,
     pinned = pinned,
+    direction = direction?.name,
 )
 
 /**
@@ -90,7 +93,7 @@ class GoalsRepository(
                 target = target,
                 // A LIMIT metric's target IS its ceiling; keeping them in step
                 // stops the chart colouring against a stale number.
-                ceilingValue = if (metric.direction == com.nutritionscribe.shared.model.GoalDirection.LIMIT) {
+                ceilingValue = if (existing.effectiveDirection == GoalDirection.LIMIT) {
                     target
                 } else {
                     existing.ceilingValue
@@ -98,6 +101,24 @@ class GoalsRepository(
             ).toRow(),
         )
         mirrorProteinToLegacySettings(metric, target = target)
+    }
+
+    /**
+     * Flips a goal between "reach this" and "stay under this".
+     *
+     * The ceiling has to move with it: a LIMIT goal colours against its ceiling,
+     * so switching to LIMIT without setting one leaves the day scored against
+     * nothing, and switching away without clearing it leaves a stale red line.
+     */
+    suspend fun setDirection(metric: Metric, direction: GoalDirection) {
+        val existing = find(metric) ?: MetricGoal.default(metric)
+        val override = if (direction == metric.direction) null else direction
+        dao.upsert(
+            existing.copy(
+                direction = override,
+                ceilingValue = if (direction == GoalDirection.LIMIT) existing.target else null,
+            ).toRow(),
+        )
     }
 
     suspend fun setFloor(metric: Metric, floor: Double?) {

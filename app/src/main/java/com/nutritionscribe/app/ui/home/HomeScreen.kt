@@ -50,7 +50,7 @@ import java.util.Calendar
 data class MetricToday(val goal: MetricGoal, val amount: Double) {
     val isOver: Boolean
         get() = goal.target != null &&
-            goal.metric.direction == GoalDirection.LIMIT &&
+            goal.effectiveDirection == GoalDirection.LIMIT &&
             amount > goal.target!!
 }
 
@@ -60,9 +60,9 @@ private fun summaryLine(item: MetricToday): String {
     val unit = item.goal.metric.unit
     val diff = target - item.amount
     return when {
-        item.goal.metric.direction == GoalDirection.LIMIT && diff >= 0 ->
+        item.goal.effectiveDirection == GoalDirection.LIMIT && diff >= 0 ->
             "${diff.toInt()}$unit of ${item.goal.metric.label.lowercase()} to spare"
-        item.goal.metric.direction == GoalDirection.LIMIT ->
+        item.goal.effectiveDirection == GoalDirection.LIMIT ->
             "${(-diff).toInt()}$unit over your ${item.goal.metric.label.lowercase()} limit"
         diff > 0 -> "${diff.toInt()}$unit left today · ~${(target / 3).toInt()}$unit per meal"
         else -> "Goal met · ${(-diff).toInt()}$unit over"
@@ -174,7 +174,7 @@ fun HomeScreen(
                         { ringSize ->
                             MacroRing(
                                 value = item.amount,
-                                goal = item.goal.target ?: 0.0,
+                                goal = item.goal.target,
                                 label = item.goal.metric.label,
                                 unit = item.goal.metric.unit,
                                 // A LIMIT metric going over is a bad day, not a win,
@@ -210,7 +210,9 @@ fun HomeScreen(
                     ) {
                         Text(item.goal.metric.label, style = MaterialTheme.typography.bodySmall)
                         Text(
-                            "${item.amount.toInt()} / ${item.goal.target?.toInt() ?: 0} ${item.goal.metric.unit}",
+                            item.goal.target?.let { t ->
+                                "${item.amount.toInt()} / ${t.toInt()} ${item.goal.metric.unit}"
+                            } ?: "${item.amount.toInt()} ${item.goal.metric.unit}",
                             style = MaterialTheme.typography.bodySmall,
                             color = if (item.isOver) {
                                 MaterialTheme.colorScheme.error

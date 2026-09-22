@@ -15,6 +15,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -93,6 +96,7 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
                 onToggle = { on -> scope.launch { repo.setEnabled(goal.metric, on) } },
                 onTarget = { value -> scope.launch { repo.setTarget(goal.metric, value) } },
                 onFloor = { value -> scope.launch { repo.setFloor(goal.metric, value) } },
+                onDirection = { d -> scope.launch { repo.setDirection(goal.metric, d) } },
             )
         }
 
@@ -125,12 +129,14 @@ private fun GoalNotice(text: String, error: Boolean) {
     }
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun GoalRow(
     goal: MetricGoal,
     onToggle: (Boolean) -> Unit,
     onTarget: (Double?) -> Unit,
     onFloor: (Double?) -> Unit,
+    onDirection: (GoalDirection) -> Unit,
 ) {
     // Keyed on the stored value so an edit elsewhere is reflected, but not so
     // eagerly that it fights the user mid-keystroke.
@@ -151,14 +157,43 @@ private fun GoalRow(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = if (goal.enabled) FontWeight.SemiBold else FontWeight.Normal,
                     )
-                    Text(
-                        when (goal.metric.direction) {
-                            GoalDirection.REACH -> "Aim to reach this"
-                            GoalDirection.LIMIT -> "Aim to stay under this"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
+                    if (!goal.enabled) {
+                        Text(
+                            when (goal.effectiveDirection) {
+                                GoalDirection.REACH -> "Aim to reach this"
+                                GoalDirection.LIMIT -> "Aim to stay under this"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                }
+
+                // Only while the goal is on. The defaults are right for most
+                // people — protein to reach, sodium to stay under — but not for
+                // everyone: someone cutting eats to a calorie LIMIT while someone
+                // bulking eats to a calorie target, and the app used to score
+                // both as "more is better".
+                if (goal.enabled) {
+                    SingleChoiceSegmentedButtonRow {
+                        GoalDirection.entries.forEachIndexed { index, direction ->
+                            SegmentedButton(
+                                selected = goal.effectiveDirection == direction,
+                                onClick = { onDirection(direction) },
+                                shape = SegmentedButtonDefaults.itemShape(index, GoalDirection.entries.size),
+                                icon = {},
+                                label = {
+                                    Text(
+                                        when (direction) {
+                                            GoalDirection.REACH -> "Reach"
+                                            GoalDirection.LIMIT -> "Stay under"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -194,7 +229,7 @@ private fun GoalRow(
                 // Only a REACH metric has a meaningful floor. For a LIMIT metric the
                 // target already IS the line that must not be crossed, so a second
                 // threshold underneath it would mean nothing.
-                if (goal.metric.direction == GoalDirection.REACH) {
+                if (goal.effectiveDirection == GoalDirection.REACH) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(start = 12.dp, top = 8.dp),
