@@ -97,14 +97,45 @@ def search(db, text, limit=5, use_alias=True):
     return _rank(db, words, limit)
 
 
+CANDIDATES = 120
+
+
+def candidate_sql(words, prefix_last=False):
+    """
+    Candidate shortlist from the hand-built inverted index.
+
+    NOT FTS5: Android's system SQLite has no fts5 module, so the app cannot use
+    it and neither does this, or the benchmark would measure something that
+    never ships. Rows are shortlisted by how many query words they contain, and
+    the real ranking happens in score() / FoodQuery.score().
+
+    prefix_last exists for type-ahead, where the final word is half-typed
+    ("chick" -> chicken). It is off by default because measuring it showed
+    prefix matching buys NO accuracy on complete phrases (39/42 and 34/34 either
+    way) while costing about 3.5x the time -- p50 3.5 ms exact vs 12.2 ms. So the
+    app pays for it only on the screen that actually needs it.
+    """
+    terms = list(words)
+    ors = " OR ".join(["word = ?"] * len(terms))
+    params = list(terms)
+    if prefix_last and terms:
+        ors += " OR word LIKE ?"
+        params.append(terms[-1] + "%")
+    sql = (f"SELECT fdc_id, COUNT(DISTINCT word) AS hits FROM word_index"
+           f" WHERE {ors} GROUP BY fdc_id ORDER BY hits DESC LIMIT {CANDIDATES}")
+    return sql, params
+
+
 def _rank(db, words, limit):
-    q = " OR ".join(f"{w}*" for w in words)
+    sql, params = candidate_sql(words)
     try:
-        rows = db.execute(
-            f"{_SELECT}, bm25(food_fts) FROM food_fts JOIN food f ON f.fdc_id = food_fts.rowid"
-            f" WHERE food_fts MATCH ? ORDER BY bm25(food_fts) LIMIT 400", (q,)).fetchall()
+        ids = [r[0] for r in db.execute(sql, params).fetchall()]
     except sqlite3.OperationalError:
         return []
+    if not ids:
+        return []
+    rows = db.execute(
+        f"{_SELECT} FROM food f WHERE f.fdc_id IN ({','.join('?' * len(ids))})", ids).fetchall()
 
     scored = []
     for r in rows:
@@ -119,13 +150,13 @@ def _rank(db, words, limit):
         # evidence this is a different food ("Pie, apple" for "apple").
         head_extra = sum(1 for w in head_words if w not in words and len(w) > 2)
 
-        score = (matched * 12) + (in_head * 16) - (head_extra * 14) - (len(desc) / 60.0)
+        score = (matched * 12) + (in_head * 16) - (head_extra * 16) - (len(desc) / 60.0)
         # USDA's generic base forms are exactly what a bare food name means.
         if re.search(r"\bnfs\b", desc):
             score += 6
         if re.search(r"\braw\b", desc):
             score += 3
-        scored.append((score, r[:-1]))
+        scored.append((score, r))
 
     scored.sort(key=lambda x: -x[0])
     return [r for _, r in scored[:limit]]

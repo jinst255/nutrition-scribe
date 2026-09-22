@@ -19,6 +19,9 @@ That is the whole point of "Record full nutrition" in Settings.
 """
 import argparse, csv, glob, os, re, sqlite3, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from foodsearch import stem
+
 # The two downloads identify nutrients DIFFERENTLY and nothing warns you: SR
 # Legacy uses FDC nutrient.id (1003, 1008, ...) while FNDDS Survey uses the
 # legacy nutrient_nbr (203, 208, ...). Reading only one scheme silently yields
@@ -74,6 +77,7 @@ def build(base, out):
             {", ".join(c + " REAL" for c in COLUMNS)}
         );
         CREATE TABLE portion (fdc_id INTEGER, label TEXT, grams REAL);
+        CREATE TABLE word_index (word TEXT NOT NULL, fdc_id INTEGER NOT NULL);
         -- Curated default senses: a bare "chicken breast" should not land on
         -- "Chicken breast, fried, coated". Populated by curate_food_db.py.
         CREATE TABLE alias (term TEXT PRIMARY KEY, fdc_id INTEGER NOT NULL);
@@ -152,15 +156,34 @@ def build(base, out):
                 portions += 1
     print(f"portions: {portions}")
 
-    # porter + unicode61 gives cheap stemming, so "eggs" finds "Egg". That
-    # stemming measurably carries the match tests; don't drop it for plain
-    # unicode61 without re-running tools/bench_food_db.py.
+    # A HAND-BUILT INVERTED INDEX, NOT FTS5.
+    #
+    # The obvious choice here is `CREATE VIRTUAL TABLE ... USING fts5`, and it
+    # works fine on desktop Python. It does not work on Android: the system
+    # SQLite (3.39.2 on API 34) is compiled WITHOUT the fts5 module, so every
+    # query dies with "no such module: fts5". Nothing warns you at build time --
+    # it only fails on a device.
+    #
+    # The alternatives were bundling a custom SQLite (~4 MB per ABI, for one
+    # feature) or dropping to FTS4, which has no bm25(). This index costs a few
+    # hundred KB, works on every Android version, and has the side benefit that
+    # the Python reference and the Kotlin app now run the identical query.
+    #
+    # Stemming MUST stay in step with FoodQuery.stem() in Kotlin, or words
+    # indexed here will never be found by the app.
+    words = {}
+    for fid, (desc, _src) in foods.items():
+        for w in set(stem(x) for x in re.findall(r"[a-z]+", desc.lower()) if len(x) > 1):
+            words.setdefault(w, []).append(fid)
+    db.executemany("INSERT INTO word_index (word, fdc_id) VALUES (?,?)",
+                   ((w, fid) for w, ids in words.items() for fid in ids))
+    print(f"index: {len(words)} distinct words")
+
     db.executescript("""
-        CREATE VIRTUAL TABLE food_fts USING fts5(
-            description, content='food', content_rowid='fdc_id',
-            tokenize='porter unicode61'
-        );
-        INSERT INTO food_fts(rowid, description) SELECT fdc_id, description FROM food;
+        -- (word) only, not (word, fdc_id). The covering index was measured: it
+        -- left p50 unchanged at 51 ms and moved p95 from 75 ms to 67 ms, for
+        -- 370 KB more in every install. Not worth it.
+        CREATE INDEX idx_word ON word_index(word);
         CREATE INDEX idx_portion ON portion(fdc_id);
     """)
     db.commit()
