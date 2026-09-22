@@ -124,6 +124,27 @@ class FoodDatabase(private val context: Context) {
      * points at "Nutritional powder mix, protein, NFS", which shares no word with
      * the query, and rejecting it lost every protein shake in the log.
      */
+    /**
+     * Did they use a word this database has never seen?
+     *
+     * With filler properly stripped this is a good brand detector: USDA has no
+     * "baconator", no "kodiak", no "chipotle". It is also a typo detector, which
+     * is the same thing as far as confidence goes.
+     */
+    suspend fun hasUnknownWord(words: List<String>): Boolean = withContext(Dispatchers.IO) {
+        val database = open() ?: return@withContext false
+        try {
+            words.any { word ->
+                database.rawQuery(
+                    "SELECT 1 FROM word_index WHERE word = ? LIMIT 1",
+                    arrayOf(word),
+                ).use { !it.moveToFirst() }
+            }
+        } catch (e: SQLiteException) {
+            false
+        }
+    }
+
     suspend fun hasAlias(text: String): Boolean = withContext(Dispatchers.IO) {
         val database = open() ?: return@withContext false
         try {

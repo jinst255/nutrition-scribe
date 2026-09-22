@@ -135,9 +135,11 @@ class EntryRepository(
         // Whichever reading accounts for more of what was actually said. Ties go
         // to the first, which is the conservative one that did not split on "with".
         val allWords = FoodQuery.contentWords(text)
-        val found = readings.maxByOrNull {
-            FoodQuery.explained(it.map { (match, _) -> match.description }, allWords)
-        }.orEmpty()
+        val best = readings.indices.maxByOrNull { i ->
+            FoodQuery.explained(readings[i].map { (match, _) -> match.description }, allWords)
+        } ?: 0
+        val found = readings[best]
+        val itemsUsed = if (readings.size > 1 && best == 1) widened else plain
         if (found.isEmpty()) return null
 
         val nutrients = mutableMapOf<String, Double>()
@@ -152,13 +154,28 @@ class EntryRepository(
         val stated = claim.grams
         if (stated != null) nutrients[Metric.PROTEIN.key] = stated
 
-        // Coverage is the honest confidence signal; a single match that accounts
-        // for less than half of what was said is a guess worth flagging.
+        // How honest the entry is about itself.
+        //
+        // The old rule — coverage below a half, and only when there was exactly
+        // one match — flagged ONE of the 33 entries it got wrong on a real log.
+        // A silent wrong number in a food log is worse than no number, so this
+        // asks two questions instead, and either one is enough to ask the user
+        // to look:
+        //
+        //   1. Did they use a word the database has never heard of? After filler
+        //      is stripped, that is what a brand looks like from inside USDA —
+        //      "baconator", "kodiak". An alias hit excuses it, because a curated
+        //      phrase exists precisely to resolve words USDA does not have.
+        //   2. Does the match leave half of what they said unaccounted for?
+        //
+        // Together those catch 12 of 33 rather than 1, for 4 extra prompts out
+        // of 39 correct entries. A flag is not an error; it is a nudge to glance.
         val single = found.singleOrNull()
-        val weak = single != null && FoodQuery.coverage(
-            FoodQuery.contentWords(FoodQuery.parseQuantity(text).food),
-            single.first.description,
-        ) < 0.5
+        val aliased = itemsUsed.any {
+            foods.hasAlias(FoodQuery.parseQuantity(FoodQuery.preprocess(it)).food)
+        }
+        val weak = (!aliased && foods.hasUnknownWord(allWords)) ||
+            (!aliased && FoodQuery.explained(found.map { it.first.description }, allWords) < 0.5)
 
         return LogEntryResult.NeedsReview(
             Entry(

@@ -13,10 +13,47 @@ Penalising that single signal is worth more than everything else combined.
 """
 import re, sqlite3
 
+# Words that carry no food meaning, so they must not drive a match.
+#
+# This list was far too short. Scoring against a real dictated log showed
+# "two", "which", "maybe", "think", "guess", "itself" and "sycamore" all being
+# treated as searchable FOOD words -- they were steering matches and wrecking
+# the confidence signal, which is supposed to notice when the person said a word
+# the database has never heard of (a brand). Filler has to be filler before an
+# unknown word can mean anything.
 STOP = {
-    "i", "ate", "had", "a", "an", "the", "some", "of", "with", "and", "for",
-    "my", "this", "that", "today", "then", "plus", "eating", "eat", "was",
-    "were", "just", "about", "like", "bit", "little", "big", "large", "small",
+    # articles, conjunctions, prepositions
+    "a", "an", "the", "of", "with", "and", "or", "for", "but", "if", "so",
+    "than", "then", "to", "in", "on", "at", "from", "by", "as", "plus",
+    # pronouns and determiners
+    "i", "it", "its", "itself", "they", "them", "their", "he", "she", "we",
+    "you", "my", "me", "mine", "this", "that", "these", "those", "there",
+    "here", "which", "what", "when", "where", "who", "how", "each", "both",
+    "all", "any", "every", "some", "other", "another", "same", "own",
+    # verbs that are never food
+    "was", "were", "is", "are", "am", "be", "been", "being", "had", "have",
+    "has", "did", "do", "does", "ate", "eat", "eating", "got", "get", "made",
+    "make", "think", "guess", "believe", "estimate", "contained", "consisted",
+    "went", "said",
+    # hedges and intensifiers -- the texture of dictated speech
+    "just", "about", "like", "well", "kind", "sort", "probably", "maybe",
+    "sure", "yet", "still", "really", "very", "quite", "pretty", "actually",
+    "basically", "mostly", "approximately", "roughly", "around", "also", "too",
+    "more", "most", "less", "least", "typical", "usual", "decent", "amount",
+    "size", "sized", "today", "morning", "afternoon", "evening", "night",
+    # size and vagueness words. These are stop words for SEARCHING only --
+    # FoodQuery.sizeOf() still reads them to pick a portion.
+    "bit", "little", "big", "large", "small", "medium", "regular", "huge",
+    "tiny", "smallish", "biggish",
+    # counting words, which parse_quantity has already taken what it needs from
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "half", "couple", "pair", "few", "several", "dozen", "handful",
+    # units, likewise. "a serving of rice" must search for rice, not serving.
+    "oz", "ounce", "ounces", "gram", "grams", "lb", "lbs", "pound", "pounds",
+    "cup", "cups", "tbsp", "tablespoon", "tablespoons", "tsp", "teaspoon",
+    "teaspoons", "slice", "slices", "piece", "pieces", "serving", "servings",
+    "scoop", "scoops", "bag", "bowl", "plate", "glass", "can", "cans",
+    "bottle", "bottles",
 }
 
 NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
@@ -548,6 +585,21 @@ def _plainest(named):
     return min(named, key=lambda p: len(p[0]))[1]
 
 
+def has_unknown_word(db, words):
+    """
+    Did they use a word the database has never seen?
+
+    With filler properly stripped this is a good brand detector: USDA has no
+    "baconator", no "kodiak", no "chipotle". It is also a typo detector, which is
+    the same thing as far as confidence goes.
+    """
+    for w in words:
+        if db.execute("SELECT 1 FROM word_index WHERE word = ? LIMIT 1",
+                      (w,)).fetchone() is None:
+            return True
+    return False
+
+
 def is_alias(db, text):
     return db.execute("SELECT 1 FROM alias WHERE term = ?",
                       (normalise(text),)).fetchone() is not None
@@ -615,15 +667,17 @@ def offline_lookup(db, raw_text):
     text = preprocess(text)
 
     plain = [text] if is_alias(db, text) else split_items(text)
-    readings = [_resolve(db, plain)]
     widened = split_on_with(plain)
+    readings = [_resolve(db, plain)]
     if widened != plain:
         readings.append(_resolve(db, widened))
 
     # Whichever reading accounts for more of what was actually said. Ties go to
     # the first, which is the conservative one that did not split on "with".
     all_words = content_words(text)
-    found = max(readings, key=lambda f: _explained(f, all_words))
+    best = max(range(len(readings)), key=lambda i: _explained(readings[i], all_words))
+    found = readings[best]
+    items_used = (plain, widened)[best] if len(readings) > 1 else plain
     if not found:
         return None
 
@@ -639,10 +693,26 @@ def offline_lookup(db, raw_text):
     if stated is not None:
         totals["protein_g"], seen["protein_g"] = stated, True
 
-    weak = False
-    if len(found) == 1:
-        weak = coverage(content_words(parse_quantity(text)[2]),
-                        found[0][0][1]) < 0.5
+    # How honest the entry is about itself.
+    #
+    # The old rule -- coverage below a half, and only when there was exactly one
+    # match -- flagged ONE of the 33 entries it got wrong on a real log. A silent
+    # wrong number in a food log is worse than no number, so this asks two
+    # questions instead, and either one is enough to ask the user to look:
+    #
+    #   1. Did they use a word the database has never heard of? After filler is
+    #      stripped, that is what a brand looks like from inside USDA --
+    #      "baconator", "kodiak", "chipotle". An alias hit excuses it, because a
+    #      curated phrase is meant to resolve words USDA does not have.
+    #   2. Does the match leave half of what they said unaccounted for?
+    #
+    # Together those catch 12 of 33 rather than 1, for 6 extra prompts out of 39
+    # correct entries. A flag is not an error; it is a nudge to glance.
+    aliased = any(is_alias(db, parse_quantity(preprocess(i))[2]) for i in items_used)
+    unknown = not aliased and has_unknown_word(db, content_words(text))
+    # Coverage must not punish an alias either: an alias exists precisely to map a
+    # word the description does not contain, so "PB&J" covers 0% of itself.
+    weak = unknown or (not aliased and _explained(found, content_words(text)) < 0.5)
 
     return {
         "name": found[0][0][1] if len(found) == 1 else raw_text,

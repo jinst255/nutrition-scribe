@@ -394,4 +394,30 @@ class OfflineLookupTest {
             entry.nutrients[Metric.CALORIES.key]!! < 2000,
         )
     }
+
+    @Test
+    fun aBrandItHasNeverHeardOfIsFlaggedRatherThanGuessedAt() {
+        // The old confidence rule flagged ONE of the 33 entries it got wrong on a
+        // real log. USDA has no Baconator, so the honest answer is "check this",
+        // not a confident number for french fries.
+        val entry = entryFor("Wendy's baconator")
+        assertTrue("a brand USDA has never heard of must be flagged", entry.needsDetail)
+    }
+
+    @Test
+    fun anOrdinaryFoodIsNotFlagged() {
+        // The counterpart: flagging everything would make the flag meaningless.
+        for (text in listOf("a banana", "2 eggs", "cheddar cheese", "1 cup white rice")) {
+            assertFalse("$text should not need review", entryFor(text).needsDetail)
+        }
+    }
+
+    @Test
+    fun aCuratedPhraseIsNotFlaggedForWordsUsdaLacks() {
+        // "PB&J" covers 0% of "Peanut butter and jelly sandwich, NFS" and "pb" is
+        // a word USDA has never seen — both confidence signals fire. But an alias
+        // exists precisely to resolve words USDA does not have, so curation has to
+        // be exempt or every curated food would nag forever.
+        assertFalse(entryFor("PB&J").needsDetail)
+    }
 }
