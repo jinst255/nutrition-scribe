@@ -136,14 +136,14 @@ class EntryRepository(
         // to the first, which is the conservative one that did not split on "with".
         val allWords = FoodQuery.contentWords(text)
         val best = readings.indices.maxByOrNull { i ->
-            FoodQuery.explained(readings[i].map { (match, _) -> match.description }, allWords)
+            FoodQuery.explained(readings[i].map { it.match.description to it.accountsFor }, allWords)
         } ?: 0
         val found = readings[best]
         val itemsUsed = if (readings.size > 1 && best == 1) widened else plain
         if (found.isEmpty()) return null
 
         val nutrients = mutableMapOf<String, Double>()
-        for ((match, grams) in found) {
+        for ((match, grams, _) in found) {
             for ((key, amount) in match.nutrientsFor(grams)) {
                 nutrients[key] = (nutrients[key] ?: 0.0) + amount
             }
@@ -175,20 +175,22 @@ class EntryRepository(
             foods.hasAlias(FoodQuery.parseQuantity(FoodQuery.preprocess(it)).food)
         }
         val weak = (!aliased && foods.hasUnknownWord(allWords)) ||
-            (!aliased && FoodQuery.explained(found.map { it.first.description }, allWords) < 0.5)
+            (!aliased && FoodQuery.explained(
+                found.map { it.match.description to it.accountsFor }, allWords,
+            ) < 0.5)
 
         return LogEntryResult.NeedsReview(
             Entry(
                 id = UUID.randomUUID().toString(),
                 timestampEpochMillis = System.currentTimeMillis(),
                 rawText = rawText,
-                name = if (found.size == 1) found[0].first.description else rawText,
+                name = if (found.size == 1) found[0].match.description else rawText,
                 nutrients = nutrients,
                 isFixedFood = false,
                 source = "usda",
                 confidence = if (stated != null) Confidence.STATED else Confidence.ESTIMATED,
                 needsDetail = weak,
-                foodDbId = single?.first?.fdcId,
+                foodDbId = single?.match?.fdcId,
             ),
         )
     }
@@ -212,18 +214,33 @@ class EntryRepository(
      * A curated alias is exempt from the credibility check — see
      * [FoodQuery.isCredible] and [FoodDatabase.hasAlias].
      */
+    /**
+     * One item resolved: the food, how much of it, and — when a curated alias was
+     * what resolved it — the words that alias accounts for. See
+     * [FoodQuery.explained] for why that last part cannot be inferred from the
+     * description.
+     */
+    private data class Resolved(
+        val match: FoodMatch,
+        val grams: Double,
+        val accountsFor: Set<String>?,
+    )
+
     private suspend fun resolve(
         foods: FoodDatabase,
         items: List<String>,
-    ): List<Pair<FoodMatch, Double>> = items.mapNotNull { item ->
+    ): List<Resolved> = items.mapNotNull { item ->
         val parsed = FoodQuery.parseQuantity(FoodQuery.preprocess(item))
         val match = foods.lookup(parsed.food) ?: return@mapNotNull null
-        if (!foods.hasAlias(parsed.food) &&
-            !FoodQuery.isCredible(parsed.food, match.description)
-        ) {
+        val aliased = foods.hasAlias(parsed.food)
+        if (!aliased && !FoodQuery.isCredible(parsed.food, match.description)) {
             return@mapNotNull null
         }
-        match to gramsFor(match, parsed, item)
+        Resolved(
+            match = match,
+            grams = gramsFor(match, parsed, item),
+            accountsFor = if (aliased) FoodQuery.contentWords(parsed.food).toSet() else null,
+        )
     }
 
     private fun gramsFor(match: FoodMatch, parsed: FoodQuery.Parsed, text: String = ""): Double {

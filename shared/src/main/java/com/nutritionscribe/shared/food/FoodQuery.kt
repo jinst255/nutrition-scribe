@@ -12,11 +12,49 @@ package com.nutritionscribe.shared.food
  */
 object FoodQuery {
 
-    /** Words that carry no food meaning, so they must not drive a match. */
+    /**
+     * Words that carry no food meaning, so they must not drive a match.
+     *
+     * This list was far too short. Scoring against a real dictated log showed
+     * "two", "which", "maybe", "think", "guess", "itself" and "sycamore" all
+     * being treated as searchable FOOD words — steering matches, and drowning
+     * the confidence signal that is supposed to notice when someone used a word
+     * the database has never heard of. Filler has to be filler before an unknown
+     * word can mean anything.
+     */
     private val STOP = setOf(
-        "i", "ate", "had", "a", "an", "the", "some", "of", "with", "and", "for",
-        "my", "this", "that", "today", "then", "plus", "eating", "eat", "was",
-        "were", "just", "about", "like", "bit", "little", "big", "large", "small",
+        // articles, conjunctions, prepositions
+        "a", "an", "the", "of", "with", "and", "or", "for", "but", "if", "so",
+        "than", "then", "to", "in", "on", "at", "from", "by", "as", "plus",
+        // pronouns and determiners
+        "i", "it", "its", "itself", "they", "them", "their", "he", "she", "we",
+        "you", "my", "me", "mine", "this", "that", "these", "those", "there",
+        "here", "which", "what", "when", "where", "who", "how", "each", "both",
+        "all", "any", "every", "some", "other", "another", "same", "own",
+        // verbs that are never food
+        "was", "were", "is", "are", "am", "be", "been", "being", "had", "have",
+        "has", "did", "do", "does", "ate", "eat", "eating", "got", "get", "made",
+        "make", "think", "guess", "believe", "estimate", "contained", "consisted",
+        "went", "said",
+        // hedges and intensifiers — the texture of dictated speech
+        "just", "about", "like", "well", "kind", "sort", "probably", "maybe",
+        "sure", "yet", "still", "really", "very", "quite", "pretty", "actually",
+        "basically", "mostly", "approximately", "roughly", "around", "also", "too",
+        "more", "most", "less", "least", "typical", "usual", "decent", "amount",
+        "size", "sized", "today", "morning", "afternoon", "evening", "night",
+        // size and vagueness words. These are stop words for SEARCHING only —
+        // sizeOf() still reads them to pick a portion.
+        "bit", "little", "big", "large", "small", "medium", "regular", "huge",
+        "tiny", "smallish", "biggish",
+        // counting words, which parseQuantity has already taken what it needs from
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        "ten", "half", "couple", "pair", "few", "several", "dozen", "handful",
+        // units, likewise. "a serving of rice" must search for rice, not serving.
+        "oz", "ounce", "ounces", "gram", "grams", "lb", "lbs", "pound", "pounds",
+        "cup", "cups", "tbsp", "tablespoon", "tablespoons", "tsp", "teaspoon",
+        "teaspoons", "slice", "slices", "piece", "pieces", "serving", "servings",
+        "scoop", "scoops", "bag", "bowl", "plate", "glass", "can", "cans",
+        "bottle", "bottles",
     )
 
     private val NUMBER_WORDS = mapOf(
@@ -457,12 +495,25 @@ object FoodQuery {
         return words.any { it in headWords }
     }
 
-    /** How much of the original sentence a set of matches accounts for, 0..1. */
-    fun explained(descriptions: List<String>, allWords: List<String>): Double {
-        if (descriptions.isEmpty() || allWords.isEmpty()) return 0.0
+    /**
+     * How much of the original sentence a set of matches accounts for, 0..1.
+     *
+     * [accountsFor] is the set of words an ALIAS resolved, or null for a ranked
+     * match. It has to be separate from the description, because an alias exists
+     * precisely to map words the description does not contain: "toast" resolves
+     * to "Bread, white, toasted", which shares no stem with "toast". Scoring that
+     * by literal overlap gave the toast zero credit, and "two eggs with toast"
+     * then lost the toast to a tie.
+     */
+    fun explained(matches: List<Pair<String, Set<String>?>>, allWords: List<String>): Double {
+        if (matches.isEmpty() || allWords.isEmpty()) return 0.0
         val covered = mutableSetOf<String>()
-        for (d in descriptions) {
-            val descWords = LETTERS.findAll(d.lowercase()).map { stem(it.value) }.toSet()
+        for ((description, accountsFor) in matches) {
+            if (accountsFor != null) {
+                covered += allWords.filter { it in accountsFor }
+                continue
+            }
+            val descWords = LETTERS.findAll(description.lowercase()).map { stem(it.value) }.toSet()
             covered += allWords.filter { it in descWords }
         }
         return covered.size.toDouble() / allWords.size

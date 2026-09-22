@@ -606,20 +606,31 @@ def is_alias(db, text):
 
 
 def _resolve(db, items):
-    """Look each item up, dropping the ones whose match is not credible."""
+    """
+    Look each item up, dropping the ones whose match is not credible.
+
+    Returns (row, grams, words_this_accounts_for). The third element matters:
+    coverage cannot be measured by literal word overlap when an alias is
+    involved, because an alias exists precisely to map words the description
+    does not contain. "toast" resolves to "Bread, white, toasted", which shares
+    no stem with "toast", so the toast scored zero and "two eggs with toast"
+    lost the toast to a tie. An alias hit accounts for the words that reached it.
+    """
     found = []
     for item in items:
         parsed = parse_quantity(preprocess(item))
         hits = search(db, parsed[2], limit=1)
         if not hits:
             continue
+        aliased = is_alias(db, parsed[2])
         # A curated alias is authoritative by construction, and deliberately
         # points at rows whose head noun is nothing like the query --
         # "protein shake" -> "Nutritional powder mix, protein, NFS". Credibility
         # is a check on RANKING, so it must not second-guess curation.
-        if not is_alias(db, parsed[2]) and not _credible(parsed[2], hits[0][1]):
+        if not aliased and not _credible(parsed[2], hits[0][1]):
             continue
-        found.append((hits[0], grams_for(db, hits[0], parsed, item)))
+        accounts = set(content_words(parsed[2])) if aliased else None
+        found.append((hits[0], grams_for(db, hits[0], parsed, item), accounts))
     return found
 
 
@@ -646,7 +657,11 @@ def _explained(found, all_words):
     if not found:
         return 0.0
     covered = set()
-    for row, _ in found:
+    for entry in found:
+        row, accounts = entry[0], entry[2]
+        if accounts is not None:
+            covered |= {w for w in all_words if w in accounts}
+            continue
         desc_words = {stem(w) for w in re.findall(r"[a-z]+", row[1].lower())}
         covered |= {w for w in all_words if w in desc_words}
     return len(covered) / len(all_words) if all_words else 0.0
@@ -683,7 +698,7 @@ def offline_lookup(db, raw_text):
 
     totals = {k: 0.0 for k in COLUMNS}
     seen = {k: False for k in COLUMNS}
-    for row, grams in found:
+    for row, grams, _accounts in found:
         for i, k in enumerate(COLUMNS):
             v = row[3 + i]
             if v is not None:
@@ -719,6 +734,6 @@ def offline_lookup(db, raw_text):
         "needs_detail": weak,
         "vague": False,
         "stated": stated is not None,
-        "matches": [(r[1], round(g)) for r, g in found],
+        "matches": [(r[1], round(g)) for r, g, _a in found],
         **{k: (totals[k] if seen[k] else None) for k in COLUMNS},
     }

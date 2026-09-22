@@ -44,7 +44,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
     var goalText by remember { mutableStateOf("160") }
     // Which path the user ended up on, for the closing message only.
     var offlineOnly by remember { mutableStateOf(false) }
-    var showSkipNotice by remember { mutableStateOf(false) }
     var showKeyHelp by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val settings = ServiceLocator.settingsRepository
@@ -56,34 +55,61 @@ fun OnboardingScreen(onFinished: () -> Unit) {
     ) {
         when (step) {
             0 -> {
-                Text("Add your API key", style = MaterialTheme.typography.headlineSmall)
+                // This screen used to open with "Add your API key" and hide the
+                // offline database behind "Skip — I'll enter it myself", which
+                // read as "give us a credit card or type your own numbers". The
+                // app works with no key and no network, so that is the headline
+                // and the key is the extra. Nobody should have to sign up for a
+                // developer account to write down that they ate a banana.
+                Text("Ready to go", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "With a key, you just say what you ate and the app works out the protein. " +
-                        "A key is not the same thing as a Claude or ChatGPT subscription.",
+                    "Say or type what you ate and it gets logged — using 13,400 foods " +
+                        "built into the app. No account, no key, no connection needed, " +
+                        "and nothing you eat ever leaves your phone.",
                     modifier = Modifier.padding(vertical = 12.dp),
                     color = MaterialTheme.colorScheme.secondary,
+                )
+                Button(
+                    onClick = {
+                        scope.launch {
+                            settings.setManualMode(false)
+                            settings.setLookupSource(LookupSource.OFFLINE)
+                        }
+                        offlineOnly = true
+                        step = 1
+                    },
+                    modifier = Modifier.padding(top = 4.dp),
+                ) { Text("Start logging") }
+
+                Text(
+                    "Adding an API key is optional. It costs a fraction of a cent per " +
+                        "entry and lets the app understand brands, restaurant meals and " +
+                        "whole sentences.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.padding(top = 24.dp),
                 )
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },
-                    label = { Text("sk-...") },
+                    label = { Text("sk-… (optional)") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
                 Button(
                     onClick = {
                         settings.setApiKey(AiBackendKind.OPENAI, apiKey.trim())
-                        scope.launch { settings.setManualMode(false) }
+                        scope.launch {
+                            settings.setManualMode(false)
+                            settings.setLookupSource(LookupSource.AI)
+                        }
                         offlineOnly = false
                         step = 1
                     },
                     enabled = apiKey.isNotBlank(),
-                    modifier = Modifier.padding(top = 16.dp),
-                ) { Text("Continue") }
+                    modifier = Modifier.padding(top = 8.dp),
+                ) { Text("Use this key") }
 
-                TextButton(onClick = { showSkipNotice = true }) {
-                    Text("Skip — I'll enter it myself")
-                }
                 TextButton(onClick = { showKeyHelp = !showKeyHelp }) {
                     Text(if (showKeyHelp) "Hide" else "How do I get an API key?")
                 }
@@ -223,39 +249,4 @@ fun OnboardingScreen(onFinished: () -> Unit) {
         }
     }
 
-    if (showSkipNotice) {
-        AlertDialog(
-            onDismissRequest = { showSkipNotice = false },
-            title = { Text("You'll use the built-in food list") },
-            text = {
-                Text(
-                    "No key needed. The app looks food up in its own list of about 13,000 " +
-                        "foods, built in. It's instant, it works with no signal, and nothing " +
-                        "you eat ever leaves your phone.\n\n" +
-                        "It won't know brand names or restaurant dishes. For those you type " +
-                        "the numbers in yourself — off the packet, usually.\n\n" +
-                        "Everything else works exactly the same: history, charts, export. " +
-                        "Foods you log often become one-tap buttons.\n\n" +
-                        "You can add a key any time in Settings.",
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        // Skipping the key no longer means typing every number by
-                        // hand — it means using the bundled food database. Setting
-                        // manualMode here would switch off the very thing that makes
-                        // the no-key path worth having.
-                        scope.launch { settings.setLookupSource(LookupSource.OFFLINE) }
-                        offlineOnly = true
-                        showSkipNotice = false
-                        step = 1
-                    },
-                ) { Text("That's fine, continue") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSkipNotice = false }) { Text("Go back") }
-            },
-        )
-    }
 }

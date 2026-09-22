@@ -205,7 +205,7 @@ private fun AiAddEntry(
                 modifier = Modifier.padding(top = 16.dp),
             ) { Text("Continue") }
             TextButton(onClick = onEnterManually, modifier = Modifier.padding(top = 8.dp)) {
-                Text("Enter protein myself")
+                Text("Enter the numbers myself")
             }
         }
     }

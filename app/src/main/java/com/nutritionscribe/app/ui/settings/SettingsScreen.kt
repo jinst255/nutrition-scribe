@@ -80,7 +80,7 @@ fun SettingsScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Enter protein myself", style = MaterialTheme.typography.titleMedium)
+                Text("Enter the numbers myself", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Skip AI lookup and type the grams by hand. Works with no API key, " +
                         "and works offline.",

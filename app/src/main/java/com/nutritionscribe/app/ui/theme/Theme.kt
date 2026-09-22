@@ -26,30 +26,81 @@ object NutritionScribeColors {
     val DarkGoalMet = Color(0xFF4E9873)
     val DarkUnderGoal = Color(0xFF6D9BD1)
     val DarkDanger = Color(0xFFD9776C)
+
+    // Container and track roles. Material fills these with its default purple
+    // when they are left unset, which is how a green app grew a lavender FAB.
+    val LightGoalMetSoft = Color(0xFFDDEAE1)
+    val LightGoalMetDeep = Color(0xFF17422E)
+    val LightUnderGoalSoft = Color(0xFFDDE7F2)
+    val LightDangerSoft = Color(0xFFF6DEDC)
+    val LightDangerDeep = Color(0xFF5C221D)
+    val LightRingTrack = Color(0xFFE7E5DE)
+
+    val DarkGoalMetSoft = Color(0xFF244635)
+    val DarkUnderGoalSoft = Color(0xFF28384B)
+    val DarkDangerSoft = Color(0xFF5A2F2A)
+    val DarkRingTrack = Color(0xFF2C2C30)
 }
 
+// Setting `primary` alone is not enough, and the gap is very visible: Material 3
+// draws a FloatingActionButton from `primaryContainer` and a progress track from
+// `surfaceVariant`, neither of which was set. So the app shipped a designed green
+// palette with lavender rings and a lavender + button — Material's own default
+// purple, showing through everywhere a container role was left unspecified.
 private val LightColors = lightColorScheme(
     background = NutritionScribeColors.LightBackground,
     surface = NutritionScribeColors.LightSurface,
+    surfaceVariant = NutritionScribeColors.LightRingTrack,
+    onSurfaceVariant = NutritionScribeColors.LightTextSecondary,
+    surfaceTint = NutritionScribeColors.LightGoalMet,
     outline = NutritionScribeColors.LightBorder,
+    outlineVariant = NutritionScribeColors.LightBorder,
     onBackground = NutritionScribeColors.LightTextPrimary,
     onSurface = NutritionScribeColors.LightTextPrimary,
     secondary = NutritionScribeColors.LightTextSecondary,
+    onSecondary = NutritionScribeColors.LightSurface,
+    secondaryContainer = NutritionScribeColors.LightGoalMetSoft,
+    onSecondaryContainer = NutritionScribeColors.LightGoalMetDeep,
     primary = NutritionScribeColors.LightGoalMet,
+    onPrimary = NutritionScribeColors.LightSurface,
+    primaryContainer = NutritionScribeColors.LightGoalMetSoft,
+    onPrimaryContainer = NutritionScribeColors.LightGoalMetDeep,
     tertiary = NutritionScribeColors.LightUnderGoal,
+    onTertiary = NutritionScribeColors.LightSurface,
+    tertiaryContainer = NutritionScribeColors.LightUnderGoalSoft,
+    onTertiaryContainer = NutritionScribeColors.LightTextPrimary,
     error = NutritionScribeColors.LightDanger,
+    onError = NutritionScribeColors.LightSurface,
+    errorContainer = NutritionScribeColors.LightDangerSoft,
+    onErrorContainer = NutritionScribeColors.LightDangerDeep,
 )
 
 private val DarkColors = darkColorScheme(
     background = NutritionScribeColors.DarkBackground,
     surface = NutritionScribeColors.DarkSurface,
+    surfaceVariant = NutritionScribeColors.DarkRingTrack,
+    onSurfaceVariant = NutritionScribeColors.DarkTextSecondary,
+    surfaceTint = NutritionScribeColors.DarkGoalMet,
     outline = NutritionScribeColors.DarkBorder,
+    outlineVariant = NutritionScribeColors.DarkBorder,
     onBackground = NutritionScribeColors.DarkTextPrimary,
     onSurface = NutritionScribeColors.DarkTextPrimary,
     secondary = NutritionScribeColors.DarkTextSecondary,
+    onSecondary = NutritionScribeColors.DarkBackground,
+    secondaryContainer = NutritionScribeColors.DarkGoalMetSoft,
+    onSecondaryContainer = NutritionScribeColors.DarkTextPrimary,
     primary = NutritionScribeColors.DarkGoalMet,
+    onPrimary = NutritionScribeColors.DarkBackground,
+    primaryContainer = NutritionScribeColors.DarkGoalMetSoft,
+    onPrimaryContainer = NutritionScribeColors.DarkTextPrimary,
     tertiary = NutritionScribeColors.DarkUnderGoal,
+    onTertiary = NutritionScribeColors.DarkBackground,
+    tertiaryContainer = NutritionScribeColors.DarkUnderGoalSoft,
+    onTertiaryContainer = NutritionScribeColors.DarkTextPrimary,
     error = NutritionScribeColors.DarkDanger,
+    onError = NutritionScribeColors.DarkBackground,
+    errorContainer = NutritionScribeColors.DarkDangerSoft,
+    onErrorContainer = NutritionScribeColors.DarkTextPrimary,
 )
 
 enum class AppThemeMode { SYSTEM, LIGHT, DARK }

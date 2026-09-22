@@ -130,8 +130,23 @@ class FoodQueryParityTest {
         // The caller picks whichever reading explains more of the sentence, so
         // tearing "spaghetti with meat sauce" apart has to LOSE on coverage.
         val words = FoodQuery.contentWords("spaghetti with meat sauce")
-        val whole = FoodQuery.explained(listOf("Spaghetti with meat sauce"), words)
-        val torn = FoodQuery.explained(listOf("Pasta, cooked", "Sauce, NFS"), words)
+        val whole = FoodQuery.explained(listOf("Spaghetti with meat sauce" to null), words)
+        val torn = FoodQuery.explained(listOf("Pasta, cooked" to null, "Sauce, NFS" to null), words)
         assertTrue("the whole dish explains more than its parts", whole > torn)
+
+        // An alias accounts for the words that reached it, not for the words its
+        // description happens to contain: "toast" resolves to "Bread, white,
+        // toasted", which shares no stem with "toast". Scoring that by literal
+        // overlap gave it zero and lost the toast in "two eggs with toast".
+        val breakfast = FoodQuery.contentWords("two eggs with toast")
+        val literal = FoodQuery.explained(
+            listOf("Egg, whole, raw" to null, "Bread, white, toasted" to null), breakfast,
+        )
+        val credited = FoodQuery.explained(
+            listOf("Egg, whole, raw" to null, "Bread, white, toasted" to setOf("toast")),
+            breakfast,
+        )
+        assertEquals(0.5, literal, 0.001)
+        assertEquals(1.0, credited, 0.001)
     }
 }

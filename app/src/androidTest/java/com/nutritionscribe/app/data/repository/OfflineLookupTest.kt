@@ -420,4 +420,18 @@ class OfflineLookupTest {
         // be exempt or every curated food would nag forever.
         assertFalse(entryFor("PB&J").needsDetail)
     }
+
+    @Test
+    fun anAliasedFoodStillCountsTowardsUnderstandingTheSentence() {
+        // "toast" resolves through an alias to "Bread, white, toasted", which
+        // shares no stem with the word "toast". Coverage was measured by literal
+        // word overlap, so the toast scored zero, the split reading tied with the
+        // unsplit one, and "two eggs with toast" logged the eggs and no toast.
+        val entry = entryFor("two eggs with toast")
+        assertTrue(
+            "the toast has to be in there: ${entry.nutrients[Metric.CALORIES.key]}",
+            entry.nutrients[Metric.CALORIES.key]!! > 190,
+        )
+        assertTrue(entry.nutrients[Metric.CARBS.key]!! > 5)
+    }
 }
