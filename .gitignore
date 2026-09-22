@@ -1,0 +1,9 @@
+# Signing secrets — never commit these.
+keystore.properties
+*.jks
+*.keystore
+
+# Build output
+build/
+.gradle/
+local.properties

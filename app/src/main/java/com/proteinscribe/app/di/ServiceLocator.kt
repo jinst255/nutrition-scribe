@@ -1,0 +1,75 @@
+package com.proteinscribe.app.di
+
+import android.content.Context
+import com.proteinscribe.app.data.cache.FixedFoodCache
+import com.proteinscribe.app.data.db.ProteinScribeDatabase
+import com.proteinscribe.app.data.repository.AiBackendKind
+import com.proteinscribe.app.data.repository.EntryRepository
+import com.proteinscribe.app.data.repository.SettingsRepository
+import com.proteinscribe.app.network.anthropic.AnthropicBackend
+import com.proteinscribe.app.network.backend.AiBackend
+import com.proteinscribe.app.network.openai.OpenAiBackend
+import com.proteinscribe.app.ui.debuglog.DebugLogger
+import com.proteinscribe.app.ui.exportimport.ExportImportManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+
+/**
+ * Small manual dependency container. No DI framework — the module count doesn't
+ * justify Hilt's build-time cost for a personal-scale app (Section 15 keeps the
+ * dependency list intentionally short).
+ */
+object ServiceLocator {
+    private lateinit var appContext: Context
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    lateinit var database: ProteinScribeDatabase
+        private set
+    lateinit var settingsRepository: SettingsRepository
+        private set
+    lateinit var debugLogger: DebugLogger
+        private set
+    lateinit var fixedFoodCache: FixedFoodCache
+        private set
+    lateinit var exportImportManager: ExportImportManager
+        private set
+
+    /**
+     * Warm cache of the current backend choice, kept in sync in the background so
+     * [currentEntryRepository] never has to block the calling (often main) thread on a
+     * DataStore read — that blocking was a real contributor to slow cold starts.
+     */
+    private val backendCache = MutableStateFlow(AiBackendKind.OPENAI)
+
+    fun init(context: Context) {
+        appContext = context.applicationContext
+        database = ProteinScribeDatabase.get(appContext)
+        settingsRepository = SettingsRepository(appContext)
+        debugLogger = DebugLogger(appContext)
+        fixedFoodCache = FixedFoodCache(database.fixedFoodCacheDao())
+        exportImportManager = ExportImportManager(appContext, database.entryDao())
+        backgroundScope.launch {
+            settingsRepository.backend.collect { backendCache.value = it }
+        }
+    }
+
+    /** Builds a fresh repository bound to whichever backend/key is currently configured. */
+    fun currentEntryRepository(): EntryRepository {
+        val backendKind = backendCache.value
+        val apiKey = settingsRepository.getApiKey(backendKind).orEmpty()
+        val backend: AiBackend = when (backendKind) {
+            AiBackendKind.OPENAI -> OpenAiBackend(apiKey)
+            AiBackendKind.ANTHROPIC -> AnthropicBackend(apiKey)
+        }
+        return EntryRepository(
+            entryDao = database.entryDao(),
+            unprocessedDao = database.unprocessedDao(),
+            fixedFoodCache = fixedFoodCache,
+            backend = backend,
+            debugLogger = debugLogger,
+        )
+    }
+}
