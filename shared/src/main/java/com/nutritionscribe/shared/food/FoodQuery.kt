@@ -81,6 +81,84 @@ object FoodQuery {
         return Parsed(null, null, t)
     }
 
+    /**
+     * Words that describe a meal rather than a food. "A solid breakfast" names no
+     * ingredient, so any match for it is invented — and the offline lookup used to
+     * answer it with "Breakfast bar, NFS", which is a number the user would then
+     * have to notice was fiction. Better to say it needs detail.
+     */
+    private val MEAL_WORDS = setOf(
+        "breakfast", "lunch", "dinner", "supper", "brunch", "meal", "snack",
+        "leftover", "usual", "food", "something", "stuff", "everything", "dessert",
+    )
+
+    /** Splits a multi-item entry. "chicken, rice and broccoli" is three foods. */
+    private val ITEM_SEPARATORS = Regex("\\s*(?:,|\\band\\b|\\bplus\\b|\\+|&)\\s*")
+
+    /** "16g protein", "protein: 16 g", "16 grams of protein". */
+    private val STATED_PROTEIN = listOf(
+        Regex("(\\d+(?:\\.\\d+)?)\\s*(?:g|gram|grams)\\s*(?:of\\s+)?protein"),
+        Regex("protein\\s*[:=]?\\s*(\\d+(?:\\.\\d+)?)\\s*(?:g|gram|grams)?"),
+    )
+
+    /**
+     * True when the text names a meal but no actual food.
+     *
+     * Deliberately conservative: "chicken dinner" contains a meal word but also a
+     * food, so it is NOT vague. Only text whose every content word is a meal word,
+     * a size word or a filler counts.
+     */
+    fun isVague(text: String): Boolean {
+        val words = contentWords(text)
+        if (words.isEmpty()) return true
+        return words.all { stem(it) in MEAL_WORDS || it in VAGUE_MODIFIERS }
+    }
+
+    private val VAGUE_MODIFIERS = setOf(
+        "solid", "good", "quick", "light", "heavy", "proper", "decent", "normal",
+        "regular", "usual", "healthy", "nice", "full", "whole", "lot", "loads",
+    )
+
+    /**
+     * Breaks "chicken, rice and broccoli" into its parts so each can be looked up
+     * and logged separately. Splitting only on commas and "and"/"plus" is
+     * deliberate — splitting on "with" would tear "spaghetti with meat sauce" and
+     * "tuna sandwich on wheat" into nonsense.
+     */
+    fun splitItems(text: String): List<String> {
+        val parts = ITEM_SEPARATORS.split(text.trim())
+            .map { it.trim() }
+            .filter { it.isNotBlank() && contentWords(it).isNotEmpty() }
+        return if (parts.size <= 1) listOf(text.trim()) else parts
+    }
+
+    /**
+     * A protein figure the person stated outright, e.g. "Built bar, 16g protein".
+     * Their own number beats any database estimate for a food the database may not
+     * even have.
+     */
+    fun statedProteinGrams(text: String): Double? {
+        val lower = text.lowercase()
+        for (pattern in STATED_PROTEIN) {
+            val value = pattern.find(lower)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+            if (value != null && value > 0 && value < 500) return value
+        }
+        return null
+    }
+
+    /**
+     * How much of what the person said the match actually accounts for, 0..1.
+     *
+     * This is the honest confidence signal, and it separates cases that the score
+     * alone cannot: "Big Mac" scores badly yet covers every word, while
+     * "a solid breakfast" scores well against "Breakfast bar" but covers only half.
+     */
+    fun coverage(queryWords: List<String>, description: String): Double {
+        if (queryWords.isEmpty()) return 0.0
+        val descWords = LETTERS.findAll(description.lowercase()).map { stem(it.value) }.toSet()
+        return queryWords.count { it in descWords }.toDouble() / queryWords.size
+    }
+
     /** Searchable, stemmed words — stop words and single letters removed. */
     fun contentWords(text: String): List<String> =
         LETTERS.findAll(text.lowercase())

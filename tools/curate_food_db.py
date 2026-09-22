@@ -86,6 +86,21 @@ CURATED = {
     "tea":              (2346063, "Tea, iced, instant, black, unsweetened"),
     "protein shake":    (2346323, "Nutritional powder mix, protein, NFS"),
     "protein powder":   (2346323, "Nutritional powder mix, protein, NFS"),
+
+    # --- drinks, measured against the AI path and found badly wrong ---
+    # "diet coke" resolved to "Roll, diet" and "black coffee" to "Coffee, Cuban"
+    # at 126 kcal and 23 g of sugar, for something that is 2 kcal.
+    "black coffee":     (2345935, "Coffee, brewed"),
+    "iced coffee":      (2345935, "Coffee, brewed"),
+    "diet coke":        (2346113, "Soft drink, cola, diet"),
+    "diet soda":        (2346107, "Soft drink, NFS, diet"),
+    "coke":             (2346106, "Soft drink, NFS"),
+    "cola":             (2346106, "Soft drink, NFS"),
+    "water":            (2346282, "Water, NFS"),
+    "iced tea":         (2346087, "Tea, iced, brewed, black, unsweetened"),
+    "green tea":        (2346093, "Tea, iced, brewed, green, unsweetened"),
+    "beer":             (2346192, "Beer"),
+    "orange juice":     (2344681, "Orange juice, 100%, NFS"),
 }
 
 

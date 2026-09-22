@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -169,5 +170,75 @@ class OfflineLookupTest {
         assertTrue("expected a full nutrient set, got ${saved[0].nutrients.keys}",
             saved[0].nutrients.size >= 5)
         assertEquals(entry.foodDbId, saved[0].foodDbId)
+    }
+
+    // --- quality gaps found by comparing against the AI path ----------------
+
+    @Test
+    fun vagueInputIsKeptWithoutInventingNumbers() {
+        // This used to answer "a solid breakfast" with "Breakfast bar, NFS" and a
+        // full set of numbers, which the user would have had to notice was fiction.
+        for (text in listOf("a solid breakfast", "leftovers", "the usual", "lunch")) {
+            val entry = entryFor(text)
+            assertTrue("$text was not flagged as needing detail", entry.needsDetail)
+            assertTrue("$text invented nutrients", entry.nutrients.isEmpty())
+            assertEquals(text, entry.rawText)
+        }
+    }
+
+    @Test
+    fun aMealWordNextToARealFoodStillLooksUp() {
+        val entry = entryFor("breakfast burrito")
+        assertFalse("a real food was mistaken for vague input", entry.needsDetail)
+        assertTrue(entry.calories!! > 0)
+    }
+
+    @Test
+    fun aMultiItemMealSumsItsParts() {
+        // "chicken, rice and broccoli" matched "Rice, fried, with chicken" and
+        // silently dropped the broccoli, under-reporting the meal.
+        val combined = entryFor("chicken, rice and broccoli")
+        val chicken = entryFor("chicken")
+        val rice = entryFor("rice")
+        val broccoli = entryFor("broccoli")
+
+        val expected = chicken.calories!! + rice.calories!! + broccoli.calories!!
+        assertEquals(expected, combined.calories!!, 1.0)
+        assertTrue(
+            "the combined protein should exceed any single item",
+            combined.proteinGrams > maxOf(chicken.proteinGrams, rice.proteinGrams),
+        )
+    }
+
+    @Test
+    fun aPhraseContainingWithIsNotTornApart() {
+        // Splitting on "with" would log only the sauce.
+        val entry = entryFor("spaghetti with meat sauce")
+        assertTrue(entry.calories!! > 0)
+        assertFalse(entry.needsDetail)
+    }
+
+    @Test
+    fun aStatedProteinFigureBeatsTheDatabaseEstimate() {
+        // "Built bar, 16g protein" matched a different bar at 30 g. The user's own
+        // number is better evidence than a lookup for a food we may not stock.
+        val entry = entryFor("Built bar, 16g protein")
+        assertEquals(16.0, entry.proteinGrams, 0.0001)
+        assertEquals(Confidence.STATED, entry.confidence)
+    }
+
+    @Test
+    fun drinksResolveToDrinksAndNotToBakedGoods() {
+        // "diet coke" resolved to "Roll, diet"; "black coffee" to "Coffee, Cuban"
+        // at 126 kcal and 23 g of sugar for something that is about 2 kcal.
+        val coke = entryFor("diet coke")
+        assertTrue("diet coke came to ${coke.calories} kcal", coke.calories!! < 20)
+
+        val coffee = entryFor("black coffee")
+        assertTrue("black coffee came to ${coffee.calories} kcal", coffee.calories!! < 30)
+        assertTrue(coffee.amountOf(Metric.SUGAR) == null || coffee.amountOf(Metric.SUGAR)!! < 2.0)
+
+        val water = entryFor("water")
+        assertEquals(0.0, water.calories!!, 0.001)
     }
 }

@@ -22,9 +22,15 @@ private const val STRUCTURED_OUTPUT_SCHEMA = """
   "calories": "number | null",
   "carbs_grams": "number | null",
   "fat_grams": "number | null",
+  "fiber_grams": "number | null",
+  "sugar_grams": "number | null",
+  "saturated_fat_grams": "number | null",
+  "sodium_mg": "number | null",
+  "caffeine_mg": "number | null",
   "is_fixed_food": "boolean",
   "source": "string",
-  "confidence": "estimated | stated"
+  "confidence": "estimated | stated",
+  "needs_detail": "boolean"
 }
 """
 
@@ -42,18 +48,31 @@ internal const val STATED_VS_ESTIMATED_INSTRUCTIONS =
         "of a larger, multi-part meal (e.g. only the cheese's protein was mentioned on a hamburger that also " +
         "has a bun, meat, and vegetables), do NOT use that number as the total — incorporate it into your own " +
         "estimate of the full meal's protein and set confidence to \"estimated\". When nothing is stated, " +
-        "estimate protein_grams and the other fields from your nutrition knowledge and set confidence to \"estimated\"."
+        "estimate protein_grams and the other fields from your nutrition knowledge and set confidence to \"estimated\". " +
+        "If the description is too vague to estimate at all (e.g. \"a solid breakfast\", \"leftovers\"), set " +
+        "needs_detail to true and leave the nutrient fields null rather than inventing numbers."
 
 @JsonClass(generateAdapter = true)
 data class OpenAiNutritionJson(
     val name: String,
-    val protein_grams: Double,
-    val calories: Double?,
-    val carbs_grams: Double?,
-    val fat_grams: Double?,
-    val is_fixed_food: Boolean,
-    val source: String,
-    val confidence: String,
+    // NULLABLE, not just defaulted. The prompt tells the model to return nulls
+    // when the description is too vague to estimate — and it does. A
+    // non-nullable field then rejected the model's own correct answer, so
+    // "a solid breakfast" came back to the user as "Couldn't understand the
+    // result. Err: PARSE_0001" instead of a prompt to add detail.
+    val protein_grams: Double? = null,
+    val calories: Double? = null,
+    val carbs_grams: Double? = null,
+    val fat_grams: Double? = null,
+    val fiber_grams: Double? = null,
+    val sugar_grams: Double? = null,
+    val saturated_fat_grams: Double? = null,
+    val sodium_mg: Double? = null,
+    val caffeine_mg: Double? = null,
+    val is_fixed_food: Boolean = false,
+    val source: String = "openai",
+    val confidence: String = "estimated",
+    val needs_detail: Boolean = false,
 )
 
 /**
@@ -129,10 +148,16 @@ class OpenAiBackend(
             LookupOutcome.Success(
                 NutritionLookupResult(
                     name = parsed.name,
-                    proteinGrams = parsed.protein_grams,
+                    proteinGrams = parsed.protein_grams ?: 0.0,
                     calories = parsed.calories,
                     carbsGrams = parsed.carbs_grams,
                     fatGrams = parsed.fat_grams,
+                    fiberGrams = parsed.fiber_grams,
+                    sugarGrams = parsed.sugar_grams,
+                    saturatedFatGrams = parsed.saturated_fat_grams,
+                    sodiumMg = parsed.sodium_mg,
+                    caffeineMg = parsed.caffeine_mg,
+                    needsDetail = parsed.needs_detail,
                     isFixedFood = parsed.is_fixed_food,
                     source = parsed.source,
                     confidence = if (parsed.confidence == "stated") Confidence.STATED else Confidence.ESTIMATED,

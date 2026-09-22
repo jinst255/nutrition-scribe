@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -34,9 +35,37 @@ import com.nutritionscribe.app.ui.common.MacroRing
 import com.nutritionscribe.app.ui.common.MacroRingRow
 import com.nutritionscribe.app.ui.common.timeLabel
 import com.nutritionscribe.shared.model.Entry
+import com.nutritionscribe.shared.model.GoalDirection
+import com.nutritionscribe.shared.model.MetricGoal
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import java.util.Calendar
 
+/** One tracked metric and where today stands against it. */
+data class MetricToday(val goal: MetricGoal, val amount: Double) {
+    val isOver: Boolean
+        get() = goal.target != null &&
+            goal.metric.direction == GoalDirection.LIMIT &&
+            amount > goal.target!!
+}
+
+/** "42g left today" for a target to reach, "180mg to spare" for one to stay under. */
+private fun summaryLine(item: MetricToday): String {
+    val target = item.goal.target ?: return "${item.amount.toInt()}${item.goal.metric.unit} so far"
+    val unit = item.goal.metric.unit
+    val diff = target - item.amount
+    return when {
+        item.goal.metric.direction == GoalDirection.LIMIT && diff >= 0 ->
+            "${diff.toInt()}$unit of ${item.goal.metric.label.lowercase()} to spare"
+        item.goal.metric.direction == GoalDirection.LIMIT ->
+            "${(-diff).toInt()}$unit over your ${item.goal.metric.label.lowercase()} limit"
+        diff > 0 -> "${diff.toInt()}$unit left today · ~${(target / 3).toInt()}$unit per meal"
+        else -> "Goal met · ${(-diff).toInt()}$unit over"
+    }
+}
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class HomeViewModel : androidx.lifecycle.ViewModel() {
     private val repository = ServiceLocator.currentEntryRepository()
     private val settings = ServiceLocator.settingsRepository
@@ -56,6 +85,28 @@ class HomeViewModel : androidx.lifecycle.ViewModel() {
     val todayTotal = repository.observeProteinTotal(startOfTodayMillis(), Long.MAX_VALUE)
     val dailyGoal = settings.dailyGoalGrams
     val unprocessedCount = repository.observeUnprocessed().map { it.size }
+
+    /**
+     * Today's number for each metric the user actually tracks.
+     *
+     * Home used to show a protein ring and nothing else, no matter what was ticked
+     * in Goals — so someone tracking only sugar saw a screen about a nutrient they
+     * had switched off.
+     */
+    val trackedToday: kotlinx.coroutines.flow.Flow<List<MetricToday>> =
+        ServiceLocator.goalsRepository.enabledGoals.flatMapLatest { goals ->
+            if (goals.isEmpty()) {
+                kotlinx.coroutines.flow.flowOf(emptyList())
+            } else {
+                val start = startOfTodayMillis()
+                combine(
+                    goals.map { goal ->
+                        repository.observeMetricTotal(goal.metric, start, Long.MAX_VALUE)
+                            .map { amount -> MetricToday(goal, amount) }
+                    },
+                ) { it.toList() }
+            }
+        }
 }
 
 @Composable
@@ -68,6 +119,7 @@ fun HomeScreen(
     val total by viewModel.todayTotal.collectAsState(initial = 0.0)
     val goal by viewModel.dailyGoal.collectAsState(initial = 160.0)
     val unprocessedCount by viewModel.unprocessedCount.collectAsState(initial = 0)
+    val tracked by viewModel.trackedToday.collectAsState(initial = emptyList())
 
     Scaffold(
         floatingActionButton = {
@@ -98,35 +150,74 @@ fun HomeScreen(
                 }
             }
 
-            // The rings own the top of the screen. Only protein is tracked today, but
-            // MacroRingRow already resizes for more, so adding a macro later is a data
-            // change rather than a layout rewrite.
-            MacroRingRow(
-                modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
-                rings = listOf { ringSize ->
-                    MacroRing(
-                        value = total,
-                        goal = goal,
-                        label = "Protein",
-                        unit = "g",
-                        color = MaterialTheme.colorScheme.primary,
-                        size = ringSize,
-                    )
-                },
-            )
+            // Rings for up to four tracked metrics; beyond that they would be too
+            // small to read, so the rest appear as rows underneath.
+            val ringed = tracked.take(4)
+            val listed = tracked.drop(4)
 
-            val remaining = (goal - total).coerceAtLeast(0.0)
-            Text(
-                if (remaining > 0) {
-                    "${remaining.toInt()}g left today · ~${(goal / 3).toInt()}g per meal"
-                } else {
-                    "Goal met · ${(total - goal).toInt()}g over"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-            )
+            if (ringed.isEmpty()) {
+                Text(
+                    "Nothing is being tracked yet. Pick what matters to you in Goals.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.secondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                )
+            } else {
+                MacroRingRow(
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
+                    rings = ringed.map { item ->
+                        { ringSize ->
+                            MacroRing(
+                                value = item.amount,
+                                goal = item.goal.target ?: 0.0,
+                                label = item.goal.metric.label,
+                                unit = item.goal.metric.unit,
+                                // A LIMIT metric going over is a bad day, not a win,
+                                // so it must not render in the same colour as hitting
+                                // a protein target.
+                                color = if (item.isOver) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                                size = ringSize,
+                            )
+                        }
+                    },
+                )
+
+                // A metric that has gone OVER its limit is the more urgent fact,
+                // so it wins the summary line. Showing "577kcal left today" while
+                // sodium sits at twice its limit buries the thing worth knowing.
+                Text(
+                    (tracked.firstOrNull { it.isOver } ?: tracked.firstOrNull())
+                        ?.let { summaryLine(it) }.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                )
+
+                listed.forEach { item ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(item.goal.metric.label, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "${item.amount.toInt()} / ${item.goal.target?.toInt() ?: 0} ${item.goal.metric.unit}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (item.isOver) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.secondary
+                            },
+                        )
+                    }
+                }
+                Spacer(Modifier.padding(bottom = 8.dp))
+            }
 
             HorizontalDivider()
 

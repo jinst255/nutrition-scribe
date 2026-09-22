@@ -99,6 +99,8 @@ data class NutritionLookupResult(
     val isFixedFood: Boolean,
     val source: String,
     val confidence: Confidence,
+    /** The model judged the description too vague to put numbers to. */
+    val needsDetail: Boolean = false,
 ) {
     fun toNutrients(): Map<String, Double> = nutrientsOf(
         protein = proteinGrams, calories = calories, carbs = carbsGrams, fat = fatGrams,

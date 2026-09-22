@@ -1,6 +1,7 @@
 package com.nutritionscribe.shared.food
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -137,5 +138,99 @@ class FoodQueryTest {
             FoodQuery.score(q, "Cheese, Cheddar") >
                 FoodQuery.score(q, "Cheddar cheese soup, home recipe, canned or ready-to-serve"),
         )
+    }
+
+    // --- vague input ------------------------------------------------------
+
+    @Test
+    fun `a meal word with no food is vague`() {
+        // Offline lookup used to answer "a solid breakfast" with "Breakfast bar,
+        // NFS" — a number the user would have to notice was invented.
+        assertTrue(FoodQuery.isVague("a solid breakfast"))
+        assertTrue(FoodQuery.isVague("leftovers"))
+        assertTrue(FoodQuery.isVague("the usual"))
+        assertTrue(FoodQuery.isVague("lunch"))
+        assertTrue(FoodQuery.isVague("a good dinner"))
+        assertTrue(FoodQuery.isVague(""))
+    }
+
+    @Test
+    fun `a meal word alongside a real food is not vague`() {
+        // Over-eager vagueness detection would refuse perfectly good entries.
+        assertFalse(FoodQuery.isVague("chicken dinner"))
+        assertFalse(FoodQuery.isVague("breakfast burrito"))
+        assertFalse(FoodQuery.isVague("banana"))
+        assertFalse(FoodQuery.isVague("2 eggs and toast"))
+    }
+
+    // --- multi-item entries -----------------------------------------------
+
+    @Test
+    fun `commas and the word and split an entry into items`() {
+        assertEquals(
+            listOf("chicken", "rice", "broccoli"),
+            FoodQuery.splitItems("chicken, rice and broccoli"),
+        )
+        assertEquals(listOf("eggs", "bacon"), FoodQuery.splitItems("eggs + bacon"))
+    }
+
+    @Test
+    fun `the word with does not split an item`() {
+        // Splitting on "with" would tear these into nonsense, and the offline
+        // lookup would then log only the sauce.
+        assertEquals(
+            listOf("spaghetti with meat sauce"),
+            FoodQuery.splitItems("spaghetti with meat sauce"),
+        )
+        assertEquals(
+            listOf("tuna sandwich on wheat"),
+            FoodQuery.splitItems("tuna sandwich on wheat"),
+        )
+    }
+
+    @Test
+    fun `a single food is returned unchanged`() {
+        assertEquals(listOf("greek yogurt"), FoodQuery.splitItems("greek yogurt"))
+        assertEquals(listOf("2 eggs"), FoodQuery.splitItems("2 eggs"))
+    }
+
+    // --- stated amounts ----------------------------------------------------
+
+    @Test
+    fun `a stated protein figure is read back out`() {
+        // The user's own number beats a database estimate for a food the database
+        // may not even contain.
+        assertEquals(16.0, FoodQuery.statedProteinGrams("Built bar, 16g protein")!!, 0.0001)
+        assertEquals(20.0, FoodQuery.statedProteinGrams("shake with 20 grams of protein")!!, 0.0001)
+        assertEquals(12.0, FoodQuery.statedProteinGrams("protein: 12g")!!, 0.0001)
+    }
+
+    @Test
+    fun `no stated figure returns null rather than zero`() {
+        assertNull(FoodQuery.statedProteinGrams("chicken breast"))
+        assertNull(FoodQuery.statedProteinGrams("2 eggs"))
+        // Absurd values are not amounts, they are noise.
+        assertNull(FoodQuery.statedProteinGrams("9000g protein"))
+    }
+
+    // --- coverage ----------------------------------------------------------
+
+    @Test
+    fun `coverage separates a real match from an invented one`() {
+        // Score alone cannot do this: "Big Mac" scores badly yet is right, while
+        // "a solid breakfast" scores well against "Breakfast bar" and is wrong.
+        val bigMac = FoodQuery.contentWords("big mac")
+        assertEquals(1.0, FoodQuery.coverage(bigMac, "McDONALD'S, BIG MAC"), 0.0001)
+
+        val breakfast = FoodQuery.contentWords("a solid breakfast")
+        assertTrue(FoodQuery.coverage(breakfast, "Breakfast bar, NFS") < 1.0)
+
+        val coke = FoodQuery.contentWords("diet coke")
+        assertTrue(FoodQuery.coverage(coke, "Roll, diet") < 1.0)
+    }
+
+    @Test
+    fun `coverage of nothing is zero not a crash`() {
+        assertEquals(0.0, FoodQuery.coverage(emptyList(), "Banana, raw"), 0.0001)
     }
 }

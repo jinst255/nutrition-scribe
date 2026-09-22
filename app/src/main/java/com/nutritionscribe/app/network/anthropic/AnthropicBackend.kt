@@ -19,13 +19,21 @@ import java.io.IOException
 @JsonClass(generateAdapter = true)
 data class AnthropicNutritionJson(
     val name: String,
-    val protein_grams: Double,
-    val calories: Double?,
-    val carbs_grams: Double?,
-    val fat_grams: Double?,
-    val is_fixed_food: Boolean,
-    val source: String,
-    val confidence: String,
+    // Nullable so that a model returning nulls for input it judged too vague is
+    // not treated as a parse failure — see the note in OpenAiBackend.
+    val protein_grams: Double? = null,
+    val calories: Double? = null,
+    val carbs_grams: Double? = null,
+    val fat_grams: Double? = null,
+    val fiber_grams: Double? = null,
+    val sugar_grams: Double? = null,
+    val saturated_fat_grams: Double? = null,
+    val sodium_mg: Double? = null,
+    val caffeine_mg: Double? = null,
+    val is_fixed_food: Boolean = false,
+    val source: String = "anthropic",
+    val confidence: String = "estimated",
+    val needs_detail: Boolean = false,
 )
 
 /**
@@ -51,8 +59,10 @@ class AnthropicBackend(
         val instructions = buildString {
             append(
                 "You are a nutrition lookup assistant. Reply with ONLY a JSON object with keys: " +
-                    "name, protein_grams, calories, carbs_grams, fat_grams, is_fixed_food, source, confidence " +
-                    "(confidence is \"estimated\" or \"stated\"). No prose, no markdown fences. ",
+                    "name, protein_grams, calories, carbs_grams, fat_grams, fiber_grams, sugar_grams, " +
+                    "saturated_fat_grams, sodium_mg, caffeine_mg, is_fixed_food, source, confidence, " +
+                    "needs_detail (confidence is \"estimated\" or \"stated\"). Use null for any nutrient " +
+                    "you cannot estimate. No prose, no markdown fences. ",
             )
             append(STATED_VS_ESTIMATED_INSTRUCTIONS)
         }
@@ -100,10 +110,16 @@ class AnthropicBackend(
             LookupOutcome.Success(
                 NutritionLookupResult(
                     name = parsed.name,
-                    proteinGrams = parsed.protein_grams,
+                    proteinGrams = parsed.protein_grams ?: 0.0,
                     calories = parsed.calories,
                     carbsGrams = parsed.carbs_grams,
                     fatGrams = parsed.fat_grams,
+                    fiberGrams = parsed.fiber_grams,
+                    sugarGrams = parsed.sugar_grams,
+                    saturatedFatGrams = parsed.saturated_fat_grams,
+                    sodiumMg = parsed.sodium_mg,
+                    caffeineMg = parsed.caffeine_mg,
+                    needsDetail = parsed.needs_detail,
                     isFixedFood = parsed.is_fixed_food,
                     source = parsed.source,
                     confidence = if (parsed.confidence == "stated") Confidence.STATED else Confidence.ESTIMATED,

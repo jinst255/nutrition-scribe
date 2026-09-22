@@ -110,24 +110,69 @@ class EntryRepository(
      */
     private suspend fun offlineLookup(rawText: String): LogEntryResult? {
         val foods = foodDatabase ?: return null
-        val parsed = FoodQuery.parseQuantity(rawText)
-        val match = foods.lookup(parsed.food) ?: return null
 
-        val grams = gramsFor(match, parsed)
+        // "A solid breakfast" names no food, so any match is fiction. This used to
+        // answer with "Breakfast bar, NFS" — a number the user would have to notice
+        // was invented. Keep their words, ask for the detail later.
+        if (FoodQuery.isVague(rawText)) return LogEntryResult.NeedsReview(vagueEntry(rawText))
+
+        // "chicken, rice and broccoli" is three foods. Looking up the whole phrase
+        // matched "Rice, fried, with chicken" and silently dropped the broccoli.
+        val items = FoodQuery.splitItems(rawText)
+        val found = items.mapNotNull { item ->
+            val parsed = FoodQuery.parseQuantity(item)
+            foods.lookup(parsed.food)?.let { it to gramsFor(it, parsed) }
+        }
+        if (found.isEmpty()) return null
+
+        val nutrients = mutableMapOf<String, Double>()
+        for ((match, grams) in found) {
+            for ((key, amount) in match.nutrientsFor(grams)) {
+                nutrients[key] = (nutrients[key] ?: 0.0) + amount
+            }
+        }
+
+        // Their own stated figure beats an estimate for a food the database may not
+        // even contain — "Built bar, 16g protein" matched a different bar at 30 g.
+        val stated = FoodQuery.statedProteinGrams(rawText)
+        if (stated != null) nutrients[Metric.PROTEIN.key] = stated
+
+        // Coverage is the honest confidence signal; a single match that accounts
+        // for less than half of what was said is a guess worth flagging.
+        val single = found.singleOrNull()
+        val weak = single != null && FoodQuery.coverage(
+            FoodQuery.contentWords(FoodQuery.parseQuantity(rawText).food),
+            single.first.description,
+        ) < 0.5
+
         return LogEntryResult.NeedsReview(
             Entry(
                 id = UUID.randomUUID().toString(),
                 timestampEpochMillis = System.currentTimeMillis(),
                 rawText = rawText,
-                name = match.description,
-                nutrients = match.nutrientsFor(grams),
+                name = if (found.size == 1) found[0].first.description else rawText,
+                nutrients = nutrients,
                 isFixedFood = false,
                 source = "usda",
-                confidence = Confidence.ESTIMATED,
-                foodDbId = match.fdcId,
+                confidence = if (stated != null) Confidence.STATED else Confidence.ESTIMATED,
+                needsDetail = weak,
+                foodDbId = single?.first?.fdcId,
             ),
         )
     }
+
+    /** Keeps what was said without inventing numbers for it. */
+    private fun vagueEntry(rawText: String) = Entry(
+        id = UUID.randomUUID().toString(),
+        timestampEpochMillis = System.currentTimeMillis(),
+        rawText = rawText,
+        name = rawText,
+        nutrients = emptyMap(),
+        isFixedFood = false,
+        source = "usda",
+        confidence = Confidence.ESTIMATED,
+        needsDetail = true,
+    )
 
     private fun gramsFor(match: FoodMatch, parsed: FoodQuery.Parsed): Double {
         val count = parsed.amount ?: 1.0
@@ -159,6 +204,7 @@ class EntryRepository(
         isFixedFood = result.isFixedFood,
         source = result.source,
         confidence = result.confidence,
+        needsDetail = result.needsDetail,
     )
 
     private suspend fun failureFor(failure: LookupOutcome.Failure, rawText: String): LogEntryResult.Failed {
