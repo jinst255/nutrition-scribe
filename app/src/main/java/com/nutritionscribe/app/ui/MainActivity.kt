@@ -39,6 +39,8 @@ import com.nutritionscribe.app.ui.debuglog.DebugLogScreen
 import com.nutritionscribe.app.ui.exportimport.ExportImportScreen
 import com.nutritionscribe.app.ui.goals.GoalsScreen
 import com.nutritionscribe.app.ui.history.HistoryScreen
+import com.nutritionscribe.app.ui.history.MetricChartScreen
+import com.nutritionscribe.shared.model.Metric
 import com.nutritionscribe.app.ui.home.HomeScreen
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
@@ -62,6 +64,8 @@ private object Routes {
     const val DEBUG_LOG = "debug_log"
     const val EXPORT_IMPORT = "export_import"
     const val ENTRY_DETAIL = "entry/{entryId}"
+    const val METRIC_CHART = "history/metric/{metric}"
+    fun metricChart(metric: Metric) = "history/metric/${metric.key}"
     fun entryDetail(id: String) = "entry/$id"
 }
 
@@ -103,7 +107,7 @@ private fun NutritionScribeApp() {
  * pages stuck together rather than one thing: nothing told you where you were, and
  * the only way back from a sub-screen was the system gesture.
  */
-private fun titleFor(route: String?): String = when (route) {
+private fun titleFor(route: String?, args: Bundle?): String = when (route) {
     // The list below already says "Today"; the bar says which day that is.
     Routes.HOME -> java.time.LocalDate.now().format(
         java.time.format.DateTimeFormatter.ofPattern("EEEE, MMM d"),
@@ -117,6 +121,7 @@ private fun titleFor(route: String?): String = when (route) {
     Routes.DEBUG_LOG -> "Error log"
     Routes.EXPORT_IMPORT -> "Back up & restore"
     Routes.ENTRY_DETAIL -> "Entry"
+    Routes.METRIC_CHART -> args?.getString("metric")?.let { Metric.fromKey(it)?.label } ?: "History"
     else -> "Nutrition Scribe"
 }
 
@@ -142,7 +147,7 @@ private fun MainNavScaffold() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(titleFor(currentDestination?.route)) },
+                title = { Text(titleFor(currentDestination?.route, backStackEntry?.arguments)) },
                 navigationIcon = {
                     if (!onTab && currentDestination != null) {
                         // Through the dispatcher rather than popBackStack(), so a
@@ -212,6 +217,17 @@ private fun MainNavScaffold() {
             composable(Routes.UNPROCESSED) { UnprocessedScreen() }
             composable(Routes.HISTORY) {
                 HistoryScreen(
+                    onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
+                    onOpenMetric = { metric -> navController.navigate(Routes.metricChart(metric)) },
+                )
+            }
+            composable(
+                Routes.METRIC_CHART,
+                arguments = listOf(navArgument("metric") { type = NavType.StringType }),
+            ) { entry ->
+                val metric = entry.arguments?.getString("metric")?.let { Metric.fromKey(it) } ?: Metric.PROTEIN
+                MetricChartScreen(
+                    metric = metric,
                     onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
                 )
             }

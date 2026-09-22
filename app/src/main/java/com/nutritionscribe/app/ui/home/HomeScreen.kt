@@ -268,7 +268,10 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 ) {
-                    items(entries, key = { it.id }) { entry -> CompactEntryRow(entry) { onOpenEntry(entry.id) } }
+                    // The first tracked metric, the same one History shows. It was
+                    // protein here regardless of what the user tracks.
+                    val lead = tracked.firstOrNull()?.goal?.metric ?: com.nutritionscribe.shared.model.Metric.PROTEIN
+                    items(entries, key = { it.id }) { entry -> CompactEntryRow(entry, lead) { onOpenEntry(entry.id) } }
                 }
             }
         }
@@ -276,7 +279,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun CompactEntryRow(entry: Entry, onClick: () -> Unit) {
+private fun CompactEntryRow(entry: Entry, lead: com.nutritionscribe.shared.model.Metric, onClick: () -> Unit) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
@@ -296,7 +299,7 @@ private fun CompactEntryRow(entry: Entry, onClick: () -> Unit) {
                 )
             }
             Text(
-                "${entry.proteinGrams.toInt()}g",
+                entry.amountOf(lead)?.let { com.nutritionscribe.app.ui.history.formatAmount(it, lead) } ?: "–",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary,
             )

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -45,7 +46,8 @@ fun MacroRing(
     color: Color,
     modifier: Modifier = Modifier,
     size: Dp = 160.dp,
-    strokeWidth: Dp = 14.dp,
+    // Scales with the ring: a 14dp stroke on an 80dp ring left no room inside it.
+    strokeWidth: Dp = size * 0.0875f,
 ) {
     val fraction = if (goal != null && goal > 0) (value / goal).toFloat() else 0f
     val animated by animateFloatAsState(
@@ -115,10 +117,20 @@ fun MacroRing(
                     fontSize = (size.value * 0.26f).sp,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
+                // Small rings drop the unit from this line: the label under the
+                // ring already says what it is, and "of 2200kcal" was wider than
+                // the hole it had to fit in.
+                val compact = size < 110.dp
                 Text(
-                    if (goal != null) "of ${goal.toInt()}$unit" else unit,
+                    when {
+                        goal == null -> unit
+                        compact -> "of ${goal.toInt()}"
+                        else -> "of ${goal.toInt()}$unit"
+                    },
                     style = MaterialTheme.typography.bodySmall,
+                    fontSize = if (compact) 10.sp else MaterialTheme.typography.bodySmall.fontSize,
                     color = MaterialTheme.colorScheme.secondary,
+                    maxLines = 1,
                 )
             }
         }
@@ -140,17 +152,26 @@ fun MacroRingRow(
     modifier: Modifier = Modifier,
     rings: List<@Composable (Dp) -> Unit>,
 ) {
-    val ringSize = when (rings.size) {
+    val preferred = when (rings.size) {
         0, 1 -> 168.dp
         2 -> 132.dp
         3 -> 104.dp
         else -> 84.dp
     }
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        rings.forEach { ring -> ring(ringSize) }
+    val gap = if (rings.size >= 4) 10.dp else 16.dp
+    // Fit to the screen rather than trusting a fixed size: four 84dp rings plus
+    // gaps are 384dp, which is the whole width of an A34, so the outer rings ran
+    // off both edges.
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier = modifier) {
+        val n = rings.size.coerceAtLeast(1)
+        val available = maxWidth - 24.dp - gap * (n - 1)
+        val ringSize = minOf(preferred, available / n)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(gap, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            rings.forEach { ring -> ring(ringSize) }
+        }
     }
 }

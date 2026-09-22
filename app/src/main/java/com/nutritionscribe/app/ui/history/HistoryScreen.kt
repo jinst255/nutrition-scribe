@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,13 +13,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -26,9 +29,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,8 +38,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -48,6 +49,8 @@ import com.nutritionscribe.app.ui.common.ManualEntrySheet
 import com.nutritionscribe.app.ui.common.resolveTimestamp
 import com.nutritionscribe.app.ui.common.timeLabel
 import com.nutritionscribe.shared.model.Entry
+import com.nutritionscribe.shared.model.Metric
+import com.nutritionscribe.shared.model.MetricGoal
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -56,37 +59,19 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
+/** Shared by the History tab and the full-size chart it opens. */
 class HistoryViewModel : ViewModel() {
     private val repository = ServiceLocator.currentEntryRepository()
-    private val settings = ServiceLocator.settingsRepository
 
     val searchQuery = MutableStateFlow("")
     val allEntries = repository.observeEntries()
-    val dailyGoal = settings.dailyGoalGrams
-    val dailyBaseline = settings.dailyBaselineGrams
+    val trackedGoals = ServiceLocator.goalsRepository.enabledGoals
+    val allGoals = ServiceLocator.goalsRepository.goals
     val frequentFoods = repository.observeFrequentFoods()
 
     val filteredEntries = combine(allEntries, searchQuery) { entries, query ->
         if (query.isBlank()) entries else entries.filter {
             it.name.contains(query, ignoreCase = true) || it.rawText.contains(query, ignoreCase = true)
-        }
-    }
-
-    /**
-     * Daily totals for the chart — always built from the FULL history, never the
-     * search-filtered list. The chart previously used the filtered entries, so typing
-     * into search silently zeroed out days whose entries didn't match the query,
-     * corrupting the visible history. Search should only ever narrow the list below,
-     * not the chart data.
-     */
-    fun dailySeries(entries: List<Entry>): List<DailyPoint> {
-        if (entries.isEmpty()) return emptyList()
-        val zone = ZoneId.systemDefault()
-        val byDay = entries.groupBy { Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zone).toLocalDate().toEpochDay() }
-        val minDay = byDay.keys.min()
-        val today = LocalDate.now(zone).toEpochDay()
-        return (minDay..today).map { day ->
-            DailyPoint(day, byDay[day]?.sumOf { it.proteinGrams } ?: 0.0)
         }
     }
 
@@ -111,151 +96,93 @@ class HistoryViewModel : ViewModel() {
     }
 }
 
-private fun dayLabel(date: LocalDate): String {
+internal fun dayLabel(date: LocalDate): String {
     val today = LocalDate.now()
     return when (date) {
         today -> "Today"
         today.minusDays(1) -> "Yesterday"
-        else -> date.format(DateTimeFormatter.ofPattern("MMMM d"))
+        else -> if (date.year == today.year) {
+            date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d"))
+        } else {
+            date.format(DateTimeFormatter.ofPattern("MMMM d, yyyy"))
+        }
     }
 }
 
-/**
- * The grouped list is flattened into one indexed list so a chart tap can resolve a
- * date to an exact LazyColumn index. Nested forEach/items blocks make that index
- * impossible to compute without re-deriving the layout by hand.
- */
 private sealed interface HistoryListItem {
-    data class Header(val date: LocalDate, val totalProtein: Double) : HistoryListItem
+    data class Header(val date: LocalDate, val count: Int) : HistoryListItem
     data class EntryItem(val entry: Entry) : HistoryListItem
 }
+
+/** How many days the cards summarise. A month: long enough to be a trend, short enough to be current. */
+private const val CARD_DAYS = 30
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HistoryScreen(
     onOpenEntry: (String) -> Unit = {},
+    onOpenMetric: (Metric) -> Unit = {},
     viewModel: HistoryViewModel = viewModel(),
 ) {
     val allEntries by viewModel.allEntries.collectAsState(initial = emptyList())
     val entries by viewModel.filteredEntries.collectAsState(initial = emptyList())
-    val goal by viewModel.dailyGoal.collectAsState(initial = 160.0)
-    val baseline by viewModel.dailyBaseline.collectAsState(initial = 112.0)
+    val goals by viewModel.trackedGoals.collectAsState(initial = emptyList())
     val frequentFoods by viewModel.frequentFoods.collectAsState(initial = emptyList())
     var query by remember { mutableStateOf("") }
-    var zoom by remember { mutableStateOf(0) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     val selecting = selectedIds.isNotEmpty()
-    var tappedPoint by remember { mutableStateOf<BucketPoint?>(null) }
-    var focusedDate by remember { mutableStateOf<LocalDate?>(null) }
     var addingToDate by remember { mutableStateOf<LocalDate?>(null) }
 
-    val daily = remember(allEntries) { viewModel.dailySeries(allEntries) }
-    val buckets = remember(daily, zoom) { ChartBucketing.visibleBuckets(daily, zoom) }
-    val average = if (buckets.isNotEmpty()) buckets.map { it.averageProtein }.average() else 0.0
     val zone = remember { ZoneId.systemDefault() }
-    val listState = rememberLazyListState()
+    val today = LocalDate.now(zone)
+    // The number shown beside each entry: whatever the user tracks first. It
+    // used to be protein regardless, even for someone who only tracks sugar.
+    val lead = goals.firstOrNull()?.metric ?: Metric.PROTEIN
 
     val listItems = remember(entries) {
         val grouped = entries.groupBy { Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zone).toLocalDate() }
         buildList {
             grouped.forEach { (date, dayEntries) ->
-                add(HistoryListItem.Header(date, dayEntries.sumOf { it.proteinGrams }))
+                add(HistoryListItem.Header(date, dayEntries.size))
                 dayEntries.forEach { add(HistoryListItem.EntryItem(it)) }
             }
         }
     }
 
-    // A chart tap moves the list, not just the caption. Without this the selected day
-    // was announced above a list still sitting wherever it happened to be scrolled.
-    LaunchedEffect(tappedPoint, listItems) {
-        val point = tappedPoint ?: return@LaunchedEffect
-        val range = point.startEpochDay..point.endEpochDay
-        val index = listItems.indexOfFirst {
-            it is HistoryListItem.Header && it.date.toEpochDay() in range
-        }.takeIf { it >= 0 }
-        // A multi-day bucket may contain no logged days at all; fall back to the nearest
-        // older day that does exist so the tap always lands somewhere sensible.
-            ?: listItems.indexOfFirst {
-                it is HistoryListItem.Header && it.date.toEpochDay() <= point.endEpochDay
-            }.takeIf { it >= 0 }
-
-        if (index != null) {
-            focusedDate = (listItems[index] as HistoryListItem.Header).date
-            listState.animateScrollToItem(index)
-        } else {
-            focusedDate = null
+    // Always from the FULL history, never the search-filtered list: search
+    // narrows the list, it must not rewrite the charts.
+    val cards = remember(allEntries, goals) {
+        goals.map { goal ->
+            val days = MetricHistory.daily(allEntries, goal.metric, zone, today)
+            goal to MetricHistory.lastDays(days, CARD_DAYS)
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         OutlinedTextField(
             value = query,
             onValueChange = { query = it; viewModel.searchQuery.value = it },
-            label = { Text("Search entries") },
+            placeholder = { Text("Search entries") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    IconButton(onClick = { query = ""; viewModel.searchQuery.value = "" }) {
+                        Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                    }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(28.dp),
             modifier = Modifier.fillMaxWidth(),
         )
 
-        Text("Avg ${average.toInt()}g", modifier = Modifier.padding(vertical = 8.dp))
-
-        AndroidView(
-            modifier = Modifier.fillMaxWidth().height(220.dp),
-            factory = { context ->
-                HistoryChartView(context).apply {
-                    goalGrams = goal
-                    baselineGrams = baseline
-                    onZoomChanged = { zoom = it }
-                    onPointTapped = { tappedPoint = it }
-                }
-            },
-            update = { view ->
-                view.goalGrams = goal
-                view.baselineGrams = baseline
-                view.setZoom(zoom)
-                view.setPoints(buckets)
-            },
-        )
-
-        tappedPoint?.let { point ->
-            val start = LocalDate.ofEpochDay(point.startEpochDay)
-            val end = LocalDate.ofEpochDay(point.endEpochDay)
-            val formatter = DateTimeFormatter.ofPattern("MMM d")
-            val label = if (start == end) {
-                start.format(DateTimeFormatter.ISO_DATE)
-            } else {
-                "${start.format(formatter)} – ${end.format(formatter)} (avg)"
-            }
-            val suffix = if (focusedDate == null && query.isNotBlank()) " · no matching entries" else ""
+        if (selecting) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    "$label: ${point.averageProtein.toInt()}g$suffix",
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                // A day with nothing logged has no list header, and therefore no per-day
-                // + button. Without this, a forgotten day is unreachable: you can see the
-                // gap on the chart but have no way to fill it in.
-                if (start == end) {
-                    TextButton(onClick = { addingToDate = start }) {
-                        Icon(
-                            Icons.Filled.AddCircleOutline,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(" Add", style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-            }
-        }
-
-        if (selecting) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("${selectedIds.size} selected", modifier = Modifier.padding(top = 12.dp))
+                Text("${selectedIds.size} selected", style = MaterialTheme.typography.titleSmall)
                 Row {
                     IconButton(onClick = { selectedIds = entries.map { it.id }.toSet() }) {
                         Icon(Icons.Filled.SelectAll, contentDescription = "Select all")
@@ -270,7 +197,44 @@ fun HistoryScreen(
             }
         }
 
-        LazyColumn(state = listState) {
+        LazyColumn(
+            contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            // The cards scroll away with the list rather than pinning to the top:
+            // with four metrics they are half a screen, and the list below is
+            // what most visits are for.
+            if (query.isBlank() && cards.isNotEmpty()) {
+                val rows = cards.chunked(2)
+                items(rows.size, key = { "cards_$it" }) { i ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        rows[i].forEach { (goal, days) ->
+                            MetricCard(
+                                goal = goal,
+                                days = days,
+                                onClick = { onOpenMetric(goal.metric) },
+                                // A lone card in the last row takes the full width
+                                // instead of sitting beside a hole.
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (listItems.isEmpty()) {
+                item(key = "empty") {
+                    Text(
+                        if (query.isBlank()) "Nothing logged yet." else "No entries match “$query”.",
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(top = 16.dp),
+                    )
+                }
+            }
+
             items(
                 count = listItems.size,
                 key = { index ->
@@ -283,58 +247,25 @@ fun HistoryScreen(
                 when (val item = listItems[index]) {
                     is HistoryListItem.Header -> DayHeader(
                         date = item.date,
-                        totalProtein = item.totalProtein,
-                        focused = item.date == focusedDate,
+                        count = item.count,
                         onAdd = { addingToDate = item.date },
                     )
-                    is HistoryListItem.EntryItem -> {
-                        val entry = item.entry
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .combinedClickable(
-                                    onClick = {
-                                        // While selecting, a tap toggles the
-                                        // selection; otherwise it opens the
-                                        // entry, which previously went nowhere.
-                                        if (selecting) {
-                                            selectedIds = if (selectedIds.contains(entry.id)) {
-                                                selectedIds - entry.id
-                                            } else {
-                                                selectedIds + entry.id
-                                            }
-                                        } else {
-                                            onOpenEntry(entry.id)
-                                        }
-                                    },
-                                    onLongClick = { selectedIds = selectedIds + entry.id },
-                                ),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
+                    is HistoryListItem.EntryItem -> EntryRow(
+                        entry = item.entry,
+                        lead = lead,
+                        zone = zone,
+                        selecting = selecting,
+                        selected = item.entry.id in selectedIds,
+                        onClick = {
+                            val id = item.entry.id
                             if (selecting) {
-                                Checkbox(
-                                    checked = selectedIds.contains(entry.id),
-                                    onCheckedChange = { checked ->
-                                        selectedIds = if (checked) selectedIds + entry.id else selectedIds - entry.id
-                                    },
-                                )
+                                selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+                            } else {
+                                onOpenEntry(id)
                             }
-                            Column(modifier = Modifier.padding(start = 8.dp).weight(1f)) {
-                                Text(entry.name)
-                                Text(
-                                    entry.timeLabel(zone),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.secondary,
-                                )
-                            }
-                            Text(
-                                "${entry.proteinGrams.toInt()}g",
-                                color = MaterialTheme.colorScheme.secondary,
-                            )
-                        }
-                    }
+                        },
+                        onLongClick = { selectedIds = selectedIds + item.entry.id },
+                    )
                 }
             }
         }
@@ -356,42 +287,94 @@ fun HistoryScreen(
     }
 }
 
+/**
+ * One tracked metric: its month average, how that average stands against the
+ * goal, and the month as a sparkline. Tapping opens the full chart.
+ */
 @Composable
-private fun DayHeader(
-    date: LocalDate,
-    totalProtein: Double,
-    focused: Boolean,
-    onAdd: () -> Unit,
+private fun MetricCard(
+    goal: MetricGoal,
+    days: List<DayValue>,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    val background = if (focused) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 12.dp, bottom = 4.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(background),
+    val average = MetricHistory.average(days)
+    val standing = average?.let { MetricHistory.standing(goal, it) } ?: Standing.NO_GOAL
+    val colors = standingColors()
+
+    Card(
+        onClick = onClick,
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
+        Column(modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 10.dp)) {
+            Text(
+                goal.metric.label,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    average?.let { formatAmount(it, goal.metric, withUnit = false) } ?: "–",
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                Text(
+                    " ${goal.metric.unit}/day",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+            Text(
+                standingPhrase(standing, goal),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.of(standing),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Sparkline(
+                days = days,
+                goal = goal,
+                color = colors.of(standing),
+                modifier = Modifier.fillMaxWidth().height(34.dp).padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+/** A short verdict for the month, in the goal's own direction. */
+internal fun standingPhrase(standing: Standing, goal: MetricGoal): String {
+    val target = goal.target?.let { formatAmount(it, goal.metric) }
+    return when (standing) {
+        Standing.MET -> "on target · $target"
+        Standing.SHORT -> if (goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT) {
+            "a little over · $target"
+        } else {
+            "under · $target"
+        }
+        Standing.MISSED -> if (goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT) {
+            "over · $target"
+        } else {
+            "well under · $target"
+        }
+        Standing.NO_GOAL -> "30-day average"
+    }
+}
+
+@Composable
+private fun DayHeader(date: LocalDate, count: Int, onAdd: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                dayLabel(date),
-                style = MaterialTheme.typography.labelLarge,
-                color = if (focused) {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                } else {
-                    MaterialTheme.colorScheme.secondary
-                },
-            )
+            Text(dayLabel(date), style = MaterialTheme.typography.titleSmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "${totalProtein.toInt()}g",
+                    if (count == 1) "1 entry" else "$count entries",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.secondary,
                 )
@@ -400,10 +383,54 @@ private fun DayHeader(
                         Icons.Filled.AddCircleOutline,
                         contentDescription = "Add an entry to ${dayLabel(date)}",
                         modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
         }
-        HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun EntryRow(
+    entry: Entry,
+    lead: Metric,
+    zone: ZoneId,
+    selecting: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background,
+            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (selecting) {
+            Checkbox(checked = selected, onCheckedChange = { onClick() })
+        }
+        Column(modifier = Modifier.padding(start = if (selecting) 0.dp else 4.dp).weight(1f)) {
+            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(
+                entry.timeLabel(zone),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+        Text(
+            entry.amountOf(lead)?.let { formatAmount(it, lead) } ?: "–",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp),
+        )
     }
 }
