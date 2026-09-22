@@ -1,17 +1,17 @@
-# Installing Protein Scribe
+# Installing Nutrition Scribe
 
-Send whoever is installing it the file **`protein-scribe.apk`** — by email, Google
+Send whoever is installing it the file **`nutrition-scribe.apk`** — by email, Google
 Drive, Signal, whatever. Then send them everything below the line.
 
 ---
 
-## Protein Scribe — how to install it
+## Nutrition Scribe — how to install it
 
 This app isn't on the Play Store, so your phone will ask you once whether you
 trust it. That's normal for an app installed directly rather than from a store.
 It takes about a minute.
 
-**1. Download the file.** Tap the `protein-scribe.apk` file that was sent to you.
+**1. Download the file.** Tap the `nutrition-scribe.apk` file that was sent to you.
 It'll land in your Downloads.
 
 **2. Tap it.** Your phone will say something like *"For your security, your phone

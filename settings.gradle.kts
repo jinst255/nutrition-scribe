@@ -13,7 +13,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "protein-scribe"
+rootProject.name = "nutrition-scribe"
 include(":app")
 include(":wear")
 include(":shared")

@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.proteinscribe.shared"
+    namespace = "com.nutritionscribe.shared"
     compileSdk = 36
 
     defaultConfig {

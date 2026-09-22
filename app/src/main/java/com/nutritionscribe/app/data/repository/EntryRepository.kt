@@ -1,0 +1,178 @@
+package com.nutritionscribe.app.data.repository
+
+import com.nutritionscribe.app.data.cache.FixedFoodCache
+import com.nutritionscribe.app.data.db.EntryDao
+import com.nutritionscribe.app.data.db.FrequentFood
+import com.nutritionscribe.app.data.db.UnprocessedDao
+import com.nutritionscribe.app.data.db.toEntry
+import com.nutritionscribe.app.data.db.toNutrientRows
+import com.nutritionscribe.app.data.db.toModel
+import com.nutritionscribe.app.data.db.toRow
+import com.nutritionscribe.app.network.backend.AiBackend
+import com.nutritionscribe.app.network.backend.LookupOutcome
+import com.nutritionscribe.app.ui.debuglog.DebugLogger
+import com.nutritionscribe.shared.model.Confidence
+import com.nutritionscribe.shared.model.Entry
+import com.nutritionscribe.shared.model.Metric
+import com.nutritionscribe.shared.model.nutrientsOf
+import com.nutritionscribe.shared.model.UnprocessedEntry
+import com.nutritionscribe.shared.model.UnprocessedErrorCode
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import java.util.UUID
+
+sealed class LogEntryResult {
+    data class NeedsReview(val entry: Entry) : LogEntryResult()
+    data class Failed(val errorCode: UnprocessedErrorCode, val code: String, val message: String) : LogEntryResult()
+}
+
+/**
+ * Single source of truth for entries (Section 14). Implements the logging pipeline
+ * from Section 4: stated-value shortcut, fixed-food cache shortcut, LLM lookup,
+ * and the unprocessed-queue fallback on any failure — nothing typed or said is ever
+ * discarded, only its processing is deferred.
+ */
+class EntryRepository(
+    private val entryDao: EntryDao,
+    private val unprocessedDao: UnprocessedDao,
+    private val fixedFoodCache: FixedFoodCache,
+    private val backend: AiBackend,
+    private val debugLogger: DebugLogger,
+) {
+
+    fun observeEntries(): Flow<List<Entry>> = entryDao.observeAll().map { rows -> rows.map { it.toEntry() } }
+
+    /** Running total of one metric over a window. */
+    fun observeMetricTotal(metric: Metric, startEpochMillis: Long, endEpochMillis: Long): Flow<Double> =
+        entryDao.observeMetricTotal(metric.key, startEpochMillis, endEpochMillis)
+
+    fun observeProteinTotal(startEpochMillis: Long, endEpochMillis: Long): Flow<Double> =
+        observeMetricTotal(Metric.PROTEIN, startEpochMillis, endEpochMillis)
+
+    fun search(query: String): Flow<List<Entry>> = entryDao.search(query).map { rows -> rows.map { it.toEntry() } }
+
+    fun observeUnprocessed(): Flow<List<UnprocessedEntry>> =
+        unprocessedDao.observeAll().map { rows -> rows.map { it.toModel() } }
+
+    suspend fun discardUnprocessed(entry: UnprocessedEntry) = unprocessedDao.delete(entry.toRow())
+
+    suspend fun clearUnprocessed() = unprocessedDao.deleteAll()
+
+    /**
+     * Runs the full pipeline for a fresh raw entry (typed or transcribed). Returns a
+     * NeedsReview entry (not yet saved) for the Review screen, or Failed if it must go
+     * to the Unprocessed Queue instead. Whether the user already stated a definitive
+     * protein amount (vs. only mentioning one ingredient's protein within a larger,
+     * multi-part meal) is judged by the model itself via the prompt, not a client-side
+     * shortcut — see [AiBackend.lookup].
+     */
+    suspend fun processRawEntry(rawText: String): LogEntryResult {
+        val cached = fixedFoodCache.lookup(rawText)
+        if (cached != null) {
+            return LogEntryResult.NeedsReview(toPendingEntry(rawText, cached))
+        }
+
+        return when (val outcome = backend.lookup(rawText)) {
+            is LookupOutcome.Success -> {
+                fixedFoodCache.store(outcome.result)
+                LogEntryResult.NeedsReview(toPendingEntry(rawText, outcome.result))
+            }
+            is LookupOutcome.Failure -> failureFor(outcome, rawText)
+        }
+    }
+
+    private fun toPendingEntry(rawText: String, result: com.nutritionscribe.shared.model.NutritionLookupResult) = Entry(
+        id = UUID.randomUUID().toString(),
+        timestampEpochMillis = System.currentTimeMillis(),
+        rawText = rawText,
+        name = result.name,
+        nutrients = result.toNutrients(),
+        isFixedFood = result.isFixedFood,
+        source = result.source,
+        confidence = result.confidence,
+    )
+
+    private suspend fun failureFor(failure: LookupOutcome.Failure, rawText: String): LogEntryResult.Failed {
+        val code = when (failure) {
+            is LookupOutcome.Failure.NoNetwork -> UnprocessedErrorCode.NO_NETWORK
+            is LookupOutcome.Failure.AuthError -> UnprocessedErrorCode.AUTH_ERROR
+            is LookupOutcome.Failure.MalformedResponse -> UnprocessedErrorCode.PARSE_ERROR
+            is LookupOutcome.Failure.ApiError -> UnprocessedErrorCode.API_ERROR
+        }
+        // API errors carry the real HTTP status in the code (Section 6: "API_0{status}"),
+        // so a 400 and a 429 don't both show up as the same generic code.
+        val codeString = if (failure is LookupOutcome.Failure.ApiError) "API_0${failure.statusCode}" else code.code
+        val message = if (failure is LookupOutcome.Failure.ApiError) "Couldn't process that. Err: $codeString" else code.message
+        debugLogger.log("EntryRepository", "Lookup failed: $failure for entry length=${rawText.length}")
+        val unprocessed = UnprocessedEntry(
+            id = UUID.randomUUID().toString(),
+            timestampEpochMillis = System.currentTimeMillis(),
+            rawText = rawText,
+            errorCode = codeString,
+        )
+        unprocessedDao.insert(unprocessed.toRow())
+        return LogEntryResult.Failed(code, codeString, message)
+    }
+
+    suspend fun retryUnprocessed(entry: UnprocessedEntry): LogEntryResult {
+        val result = processRawEntry(entry.rawText)
+        if (result is LogEntryResult.NeedsReview) {
+            unprocessedDao.delete(entry.toRow())
+        }
+        return result
+    }
+
+    /** Backing data for the manual-entry quick-pick (see [FrequentFood]). */
+    fun observeFrequentFoods(limit: Int = 12): Flow<List<FrequentFood>> = entryDao.observeFrequentFoods(limit)
+
+    /**
+     * Saves an entry the user filled in themselves, with no LLM call and no Review step.
+     * This is the whole no-API-key path, and it is also how entries get backdated onto a
+     * past day. Confidence is STATED because the number came from a human, not an estimate.
+     */
+    suspend fun logManual(
+        name: String,
+        proteinGrams: Double,
+        calories: Double? = null,
+        carbsGrams: Double? = null,
+        fatGrams: Double? = null,
+        timestampEpochMillis: Long = System.currentTimeMillis(),
+        timeUnspecified: Boolean = false,
+    ): Entry {
+        val entry = Entry(
+            id = UUID.randomUUID().toString(),
+            timestampEpochMillis = timestampEpochMillis,
+            rawText = name,
+            name = name,
+            nutrients = nutrientsOf(
+                protein = proteinGrams, calories = calories, carbs = carbsGrams, fat = fatGrams,
+            ),
+            isFixedFood = false,
+            source = "manual",
+            confidence = Confidence.STATED,
+            timeUnspecified = timeUnspecified,
+        )
+        entryDao.upsert(entry.toRow(), entry.toNutrientRows())
+        return entry
+    }
+
+    suspend fun confirm(entry: Entry) {
+        entryDao.upsert(entry.toRow(), entry.toNutrientRows())
+    }
+
+    suspend fun update(entry: Entry) {
+        entryDao.upsert(entry.toRow(), entry.toNutrientRows())
+    }
+
+    suspend fun delete(entry: Entry) {
+        entryDao.delete(entry.toRow())
+    }
+
+    suspend fun deleteMany(ids: List<String>) {
+        entryDao.deleteByIds(ids)
+    }
+
+    suspend fun dismissUnprocessed(entry: UnprocessedEntry) {
+        unprocessedDao.delete(entry.toRow())
+    }
+}

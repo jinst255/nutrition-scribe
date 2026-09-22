@@ -1,9 +1,9 @@
 <resources>
-    <string name="app_name">Protein Scribe</string>
+    <string name="app_name">Nutrition Scribe</string>
 
     <!-- Onboarding -->
     <string name="onboarding_api_key_title">Add your API key</string>
-    <string name="onboarding_api_key_body">Protein Scribe uses your own key to look up nutrition info. It\'s not the same as a Claude or ChatGPT subscription.</string>
+    <string name="onboarding_api_key_body">Nutrition Scribe uses your own key to look up nutrition info. It\'s not the same as a Claude or ChatGPT subscription.</string>
     <string name="onboarding_api_key_help">How do I get a key</string>
     <string name="onboarding_goal_title">Set your daily goal</string>
     <string name="onboarding_goal_body">Grams of protein per day.</string>

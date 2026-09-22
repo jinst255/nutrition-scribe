@@ -20,11 +20,11 @@ val keystoreProperties = Properties().apply {
 val hasSigningConfig = keystoreProperties.containsKey("storeFile")
 
 android {
-    namespace = "com.proteinscribe.app"
+    namespace = "com.nutritionscribe.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.proteinscribe"
+        applicationId = "com.nutritionscribe"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

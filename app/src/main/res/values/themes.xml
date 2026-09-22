@@ -1,3 +1,3 @@
 <resources>
-    <style name="Theme.ProteinScribe" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.NutritionScribe" parent="android:Theme.Material.Light.NoActionBar" />
 </resources>

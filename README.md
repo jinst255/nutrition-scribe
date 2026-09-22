@@ -1,10 +1,10 @@
-# Protein Scribe
+# Nutrition Scribe
 
 Zero-friction, voice-first protein tracking for Android with a Galaxy Watch 7 companion.
 Say or type what you ate in plain language; an LLM parses it, fills in whatever nutrition
 data you didn't state yourself, and logs it. All data stays local to your phone.
 
-Full design spec: [`protein-scribe-blueprint.md`](./protein-scribe-blueprint.md).
+Full design spec: [`nutrition-scribe-blueprint.md`](./nutrition-scribe-blueprint.md).
 
 ## Screenshot / clip
 
@@ -45,7 +45,7 @@ adb install wear/build/outputs/apk/debug/wear-debug.apk
 
 ## API key
 
-Protein Scribe calls the OpenAI or Anthropic API directly with your own key — this is
+Nutrition Scribe calls the OpenAI or Anthropic API directly with your own key — this is
 **not** the same as a ChatGPT Plus or Claude Pro/Max subscription, which do not include
 API access. Generate a key from the provider's developer console:
 
@@ -57,7 +57,8 @@ Jetpack Security's `EncryptedSharedPreferences` — never bundled, committed, or
 
 ## Data & backup
 
-All entries live in a local Room/SQLite database on the phone (`protein-scribe.db`);
+All entries live in a local Room/SQLite database on the phone (`protein-scribe.db` —
+kept under its pre-rename name so that existing logs are not stranded);
 the watch only keeps a small cache for fast cold-start rendering. There is no cloud
 backup or sync. Use Settings → Export and import to back up or move your data before
 uninstalling.

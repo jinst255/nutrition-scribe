@@ -6,10 +6,11 @@ about the build — the ✅ items were verified on 2026-09-19.
 ## Done
 
 - ✅ **Release signing.** Both modules sign with `~/keystores/protein-scribe.jks`
+  (pre-rename filename; the key itself is what matters and must never be replaced)
   via `keystore.properties` (gitignored). Verified with `apksigner verify`:
-  `CN=Protein Scribe, OU=Personal, L=Rexburg, ST=Idaho, C=US`.
-- ✅ **Phone and watch share an applicationId** (`com.proteinscribe`). They did
-  not before — the watch module was `com.proteinscribe.wear`, which would have
+  `CN=Nutrition Scribe, OU=Personal, L=Rexburg, ST=Idaho, C=US`.
+- ✅ **Phone and watch share an applicationId** (`com.nutritionscribe`). They did
+  not before — the watch module was `com.nutritionscribe.wear`, which would have
   made them two unrelated apps that Play could never pair. Changed 2026-09-19.
 - ✅ **Installs and runs from the signed release APK** on an Android 14 device
   (A34 emulator), full onboarding → log → history → export path exercised.
@@ -59,10 +60,10 @@ about the build — the ✅ items were verified on 2026-09-19.
 
 ## Privacy policy draft
 
-> **Protein Scribe — Privacy Policy**
+> **Nutrition Scribe — Privacy Policy**
 > Last updated: 19 September 2026
 >
-> Protein Scribe stores everything you log — the food, the amounts, and the times
+> Nutrition Scribe stores everything you log — the food, the amounts, and the times
 > — in a database on your own phone. There is no account, no server of ours, and
 > no cloud backup. We cannot see your data, and we do not collect, sell, or share
 > any of it.

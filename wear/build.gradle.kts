@@ -14,15 +14,15 @@ val keystoreProperties = Properties().apply {
 val hasSigningConfig = keystoreProperties.containsKey("storeFile")
 
 android {
-    namespace = "com.proteinscribe.wear"
+    namespace = "com.nutritionscribe.wear"
     compileSdk = 36
 
     defaultConfig {
         // MUST match the phone module's applicationId. Play distributes a Wear app
         // under the same listing as its phone app and pairs them by applicationId +
-        // signing key; with a different id ("com.proteinscribe.wear") they are two
+        // signing key; with a different id ("com.nutritionscribe.wear") they are two
         // unrelated apps and the watch app will never auto-install alongside the phone.
-        applicationId = "com.proteinscribe"
+        applicationId = "com.nutritionscribe"
         minSdk = 30
         targetSdk = 34
         versionCode = 1
