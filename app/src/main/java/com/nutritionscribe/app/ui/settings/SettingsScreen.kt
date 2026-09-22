@@ -1,5 +1,6 @@
 package com.nutritionscribe.app.ui.settings
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -33,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -41,6 +44,7 @@ import com.nutritionscribe.app.data.repository.LookupSource
 import com.nutritionscribe.app.data.repository.ResetManager
 import com.nutritionscribe.app.data.repository.ThemeMode
 import com.nutritionscribe.app.di.ServiceLocator
+import com.nutritionscribe.shared.retention.RetentionUnit
 import com.nutritionscribe.shared.retention.RetentionWindow
 import kotlinx.coroutines.launch
 
@@ -69,31 +73,20 @@ fun SettingsScreen(
 
     // The screen has outgrown one phone height; without this the lower rows are
     // unreachable rather than merely cramped.
-    Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
-        // The daily goal and baseline moved to the Goals tab, where they sit
-        // beside the other eight metrics instead of being a protein-shaped
-        // special case in Settings.
-        Text(
-            "Daily targets live in the Goals tab.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.secondary,
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
+    Column(
+        modifier = Modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp)
+            .padding(top = 12.dp),
+    ) {
+        // ---- How entries get their numbers -------------------------------
+        SectionHeader("Logging")
 
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+        SettingRow(
+            title = "Enter the numbers myself",
+            subtitle = "Skip lookup entirely and type the amounts by hand. " +
+                "Works with no key and no connection.",
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Enter the numbers myself", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Skip AI lookup and type the grams by hand. Works with no API key, " +
-                        "and works offline.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-            }
             Switch(
                 checked = manualMode,
                 onCheckedChange = { scope.launch { settings.setManualMode(it) } },
@@ -103,13 +96,10 @@ fun SettingsScreen(
         if (!manualMode) {
             Text(
                 "Look up nutrition with",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(top = 12.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 12.dp, bottom = 6.dp),
             )
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = lookupSource == LookupSource.AI,
                     onClick = { scope.launch { settings.setLookupSource(LookupSource.AI) } },
@@ -121,84 +111,235 @@ fun SettingsScreen(
                     label = { Text("Offline food list") },
                 )
             }
-            Text(
+            Hint(
                 when (lookupSource) {
                     LookupSource.AI ->
-                        "Understands anything you can say — brands, restaurant meals, whole " +
-                            "sentences. Needs an API key and a connection."
+                        "Understands anything you can say \u2014 brands, restaurant meals, " +
+                            "whole sentences. Needs an API key and a connection."
                     LookupSource.OFFLINE ->
                         "13,400 USDA foods built into the app. Instant, free, works on a " +
                             "plane, and nothing you eat leaves your phone. Doesn't know brands."
                 },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
             )
-        }
 
-        if (!manualMode && apiKeyText.isBlank() && lookupSource == LookupSource.AI) {
+            if (apiKeyText.isBlank() && lookupSource == LookupSource.AI) {
+                Text(
+                    "No API key set, so the offline list is being used instead.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+
             Text(
-                "No API key set, so the offline food list is being used instead. " +
-                    "Add a key below, or pick \"Offline food list\" to stop seeing this.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(bottom = 12.dp),
+                "API key",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 14.dp, bottom = 4.dp),
             )
-        }
+            OutlinedTextField(
+                value = apiKeyText,
+                onValueChange = {
+                    apiKeyText = it
+                    settings.setApiKey(backend, it)
+                },
+                // singleLine is the fix for a key that wrapped to four lines and
+                // took over the screen.
+                singleLine = true,
+                placeholder = { Text("sk-\u2026") },
+                visualTransformation = if (apiKeyVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                        Icon(
+                            if (apiKeyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                            contentDescription = if (apiKeyVisible) "Hide API key" else "Show API key",
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Hint("Stored encrypted on this phone. Never sent anywhere but the provider.")
 
-        Text("API key", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-        OutlinedTextField(
-            value = apiKeyText,
-            onValueChange = {
-                apiKeyText = it
-                settings.setApiKey(backend, it)
-            },
-            visualTransformation = if (apiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
-                    Icon(
-                        if (apiKeyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                        contentDescription = if (apiKeyVisible) "Hide API key" else "Show API key",
+            Text(
+                "Provider",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 14.dp, bottom = 6.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AiBackendKind.entries.forEach { kind ->
+                    FilterChip(
+                        selected = kind == backend,
+                        onClick = {
+                            scope.launch { settings.setBackend(kind) }
+                            apiKeyText = settings.getApiKey(kind).orEmpty()
+                        },
+                        label = { Text(if (kind == AiBackendKind.OPENAI) "OpenAI" else "Anthropic") },
                     )
                 }
-            },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-        )
+            }
+        }
 
-        Text(
-            "Keep protein totals: ${totalsWindow.amount} ${totalsWindow.unit.name.lowercase()}",
-            modifier = Modifier.padding(bottom = 4.dp),
-        )
-        Text(
-            "Keep food details: ${detailsWindow.amount} ${detailsWindow.unit.name.lowercase()}",
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
-
-        Text("Theme", style = MaterialTheme.typography.titleMedium)
-        Row(modifier = Modifier.padding(bottom = 24.dp)) {
+        // ---- Appearance ---------------------------------------------------
+        SectionHeader("Appearance")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeMode.entries.forEach { mode ->
                 FilterChip(
                     selected = mode == theme,
                     onClick = { scope.launch { settings.setTheme(mode) } },
-                    label = { Text(mode.name) },
-                    modifier = Modifier.padding(end = 8.dp),
+                    label = { Text(mode.name.lowercase().replaceFirstChar { it.uppercase() }) },
                 )
             }
         }
 
-        Text(
-            "Debug log",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).clickable(onClick = onOpenDebugLog),
+        // ---- How long things are kept -------------------------------------
+        // These were display-only, which made them look like settings and behave
+        // like decoration. They are the one place a user can stop the app
+        // throwing their own history away, so they have to be reachable.
+        SectionHeader("Keep my data for")
+        RetentionRow(
+            title = "Daily totals",
+            subtitle = "The numbers behind the charts.",
+            window = totalsWindow,
+            onChange = { scope.launch { settings.setRetainProteinTotals(it) } },
         )
-        Text(
-            "Export and import",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp).clickable(onClick = onOpenExportImport),
+        RetentionRow(
+            title = "Food details",
+            subtitle = "What you actually said, and which food it matched.",
+            window = detailsWindow,
+            onChange = { scope.launch { settings.setRetainFoodDetails(it) } },
+        )
+
+        // ---- Your data -----------------------------------------------------
+        SectionHeader("Your data")
+        NavRow(
+            title = "Export and import",
+            subtitle = "Back up your log, or bring one in. The only copy you will have.",
+            onClick = onOpenExportImport,
+        )
+        NavRow(
+            title = "Debug log",
+            subtitle = "What the app sent and what came back.",
+            onClick = onOpenDebugLog,
         )
 
         HorizontalDivider(modifier = Modifier.padding(top = 28.dp, bottom = 20.dp))
         ResetSection(reset = viewModel.reset, onOpenExportImport = onOpenExportImport)
+    }
+}
+
+/** A labelled break in a long screen. The settings list had none, so every row
+ *  carried the same weight and nothing grouped with anything. */
+@Composable
+private fun SectionHeader(text: String) {
+    Text(
+        text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.primary,
+        letterSpacing = 1.2.sp,
+        modifier = Modifier.padding(top = 26.dp, bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun Hint(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.secondary,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
+/** Title, explanation, and a control on the right. */
+@Composable
+private fun SettingRow(
+    title: String,
+    subtitle: String,
+    control: @Composable () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+        control()
+    }
+}
+
+/** A row that opens another screen. Previously these were bare headings, so
+ *  nothing about them said they could be tapped. */
+@Composable
+private fun NavRow(title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.secondary,
+        )
+    }
+}
+
+/**
+ * A retention window the user can actually change.
+ *
+ * The choices are deliberately a short list rather than a number field plus a
+ * unit picker: "how long do you want this kept" has about five sensible answers,
+ * and asking someone to compose one out of two controls is more work for a worse
+ * result.
+ */
+@Composable
+private fun RetentionRow(
+    title: String,
+    subtitle: String,
+    window: RetentionWindow,
+    onChange: (RetentionWindow) -> Unit,
+) {
+    val choices = listOf(
+        RetentionWindow(3, RetentionUnit.MONTHS) to "3 months",
+        RetentionWindow(1, RetentionUnit.YEARS) to "1 year",
+        RetentionWindow(5, RetentionUnit.YEARS) to "5 years",
+        RetentionWindow(0, RetentionUnit.INDEFINITE) to "Forever",
+    )
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text(title, style = MaterialTheme.typography.bodyLarge)
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            choices.forEach { (candidate, label) ->
+                FilterChip(
+                    selected = candidate.unit == window.unit && candidate.amount == window.amount,
+                    onClick = { onChange(candidate) },
+                    label = { Text(label) },
+                )
+            }
+        }
     }
 }
 

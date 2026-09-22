@@ -72,7 +72,7 @@ class LegacyImportTest {
 
     @Test
     fun aCsvFromTheOldAppImportsWithItsNutrients() = runBlocking {
-        manager.importFrom(fileUri("legacy.csv", legacyCsv), ExportFormat.CSV)
+        manager.importFrom(fileUri("legacy.csv", legacyCsv))
 
         val entries = db.entryDao().observeAll().first().map { it.toEntry() }.sortedBy { it.id }
         assertEquals(2, entries.size)
@@ -96,7 +96,7 @@ class LegacyImportTest {
         // Entry's shape changed in v2 (flat nutrient fields became a map), so a v1
         // JSON file no longer matches the serializer. The old app offers JSON as an
         // export format, so anyone who picks it would lose everything.
-        manager.importFrom(fileUri("legacy.json", legacyJson), ExportFormat.JSON)
+        manager.importFrom(fileUri("legacy.json", legacyJson))
 
         val entries = db.entryDao().observeAll().first().map { it.toEntry() }
         assertEquals(1, entries.size)
@@ -109,14 +109,14 @@ class LegacyImportTest {
     fun importingTheSameFileTwiceDoesNotDuplicateEntries() = runBlocking {
         // Entries carry their original id, so a nervous second import should be a
         // no-op rather than doubling someone's calorie history.
-        manager.importFrom(fileUri("legacy.csv", legacyCsv), ExportFormat.CSV)
-        manager.importFrom(fileUri("legacy2.csv", legacyCsv), ExportFormat.CSV)
+        manager.importFrom(fileUri("legacy.csv", legacyCsv))
+        manager.importFrom(fileUri("legacy2.csv", legacyCsv))
         assertEquals(2, db.entryDao().observeAll().first().size)
     }
 
     @Test
     fun aRoundTripThroughTheCurrentFormatKeepsEveryMetric() = runBlocking {
-        manager.importFrom(fileUri("legacy.csv", legacyCsv), ExportFormat.CSV)
+        manager.importFrom(fileUri("legacy.csv", legacyCsv))
         val out = File(
             InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "out.csv",
         ).also { written.add(it) }
@@ -124,7 +124,7 @@ class LegacyImportTest {
 
         assertTrue(out.readText().isNotBlank())
         db.clearAllTables()
-        manager.importFrom(Uri.fromFile(out), ExportFormat.CSV)
+        manager.importFrom(Uri.fromFile(out))
 
         val again = db.entryDao().observeAll().first().map { it.toEntry() }.sortedBy { it.id }
         assertEquals(2, again.size)
@@ -137,7 +137,54 @@ class LegacyImportTest {
         // Half-copied files happen. Losing the last row is acceptable; crashing
         // part-way through an import is not.
         val truncated = legacyCsv.substringBeforeLast("\n") + "\nv1-c,1789801347092,half"
-        manager.importFrom(fileUri("bad.csv", truncated), ExportFormat.CSV)
+        manager.importFrom(fileUri("bad.csv", truncated))
         assertTrue(db.entryDao().observeAll().first().isNotEmpty())
+    }
+
+    // ------------------------------------------------------------------
+    // Saying what happened. All of these used to be indistinguishable from
+    // success, because the screen discarded the result entirely.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun anImportReportsHowMuchItRead() = runBlocking {
+        val outcome = manager.importFrom(fileUri("ok.csv", legacyCsv))
+        assertTrue("expected success, got $outcome", outcome is TransferResult.Imported)
+        assertEquals(2, (outcome as TransferResult.Imported).count)
+    }
+
+    @Test
+    fun aFileThatIsNotAnExportSaysSoInsteadOfSayingNothing() = runBlocking {
+        val outcome = manager.importFrom(fileUri("notes.txt", "shopping list\nmilk\neggs"))
+        assertTrue("expected failure, got $outcome", outcome is TransferResult.Failed)
+        assertTrue(db.entryDao().observeAll().first().isEmpty())
+    }
+
+    @Test
+    fun anEmptyFileSaysSo() = runBlocking {
+        val outcome = manager.importFrom(fileUri("empty.json", "   "))
+        assertTrue(outcome is TransferResult.Failed)
+    }
+
+    @Test
+    fun theFormatComesFromTheFileNotFromAChip() = runBlocking {
+        // Picking the wrong format was an error the user had no way to see
+        // coming. Both of these import the same entries with no format argument.
+        val fromCsv = manager.importFrom(fileUri("a.csv", legacyCsv))
+        assertEquals(ExportFormat.CSV, (fromCsv as TransferResult.Imported).format)
+
+        val fromJson = manager.importFrom(fileUri("a.json", legacyJson))
+        assertEquals(ExportFormat.JSON, (fromJson as TransferResult.Imported).format)
+    }
+
+    @Test
+    fun anExportReportsHowMuchItWrote() = runBlocking {
+        manager.importFrom(fileUri("seed.csv", legacyCsv))
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val out = File(ctx.cacheDir, "out.json").also { written.add(it) }
+        val outcome = manager.exportTo(Uri.fromFile(out), ExportFormat.JSON)
+        assertTrue("expected success, got $outcome", outcome is TransferResult.Exported)
+        assertEquals(2, (outcome as TransferResult.Exported).count)
+        assertTrue(out.length() > 0)
     }
 }

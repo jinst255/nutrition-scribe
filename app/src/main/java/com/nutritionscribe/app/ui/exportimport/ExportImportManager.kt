@@ -12,25 +12,68 @@ import kotlinx.coroutines.flow.first
 
 enum class ExportFormat { CSV, JSON }
 
+/** What actually happened, so the screen can say so. */
+sealed class TransferResult {
+    data class Exported(val count: Int, val format: ExportFormat) : TransferResult()
+    data class Imported(val count: Int, val format: ExportFormat) : TransferResult()
+    data class Failed(val message: String) : TransferResult()
+}
+
 /** Export/import (Section 12/19): the only way to move or back up data, since there's no cloud sync. */
 class ExportImportManager(private val context: Context, private val entryDao: EntryDao) {
 
-    suspend fun exportTo(uri: Uri, format: ExportFormat) {
+    /**
+     * Both of these used to return Unit, and the screen threw the result away.
+     * So an export that wrote nothing, and an import that read a file the app
+     * could not parse, both looked exactly like success: the sheet closed and
+     * nothing else happened. For the ONLY route a user's data has in or out of
+     * this app, with no cloud copy behind it, silence is the worst possible
+     * answer.
+     */
+    suspend fun exportTo(uri: Uri, format: ExportFormat): TransferResult = try {
         val entries = entryDao.observeAll().first().map { it.toEntry() }
         val text = when (format) {
             ExportFormat.JSON -> toJson(entries)
             ExportFormat.CSV -> EntryCsv.encode(entries)
         }
-        context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+        val stream = context.contentResolver.openOutputStream(uri)
+            ?: return TransferResult.Failed("Couldn't write to that file.")
+        stream.use { it.write(text.toByteArray()) }
+        TransferResult.Exported(entries.size, format)
+    } catch (e: Exception) {
+        TransferResult.Failed(e.message ?: "Export failed.")
     }
 
-    suspend fun importFrom(uri: Uri, format: ExportFormat) {
-        val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: return
-        val entries = when (format) {
-            ExportFormat.JSON -> fromJson(text)
-            ExportFormat.CSV -> EntryCsv.decode(text)
+    /**
+     * The format is detected from the file, not taken from whatever chip happened
+     * to be selected. Picking the wrong one was an error the user had no way to
+     * see coming, and there is no reason to make them get it right.
+     */
+    suspend fun importFrom(uri: Uri): TransferResult = try {
+        val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
+        when {
+            text == null -> TransferResult.Failed("Couldn't read that file.")
+            text.isBlank() -> TransferResult.Failed("That file is empty.")
+            else -> {
+                val first = text.trimStart().firstOrNull()
+                val looksJson = first == '[' || first == '{'
+                val entries = if (looksJson) fromJson(text) else EntryCsv.decode(text)
+                if (entries.isEmpty()) {
+                    TransferResult.Failed("No entries found in that file.")
+                } else {
+                    entries.forEach { entryDao.upsert(it.toRow(), it.toNutrientRows()) }
+                    TransferResult.Imported(
+                        entries.size,
+                        if (looksJson) ExportFormat.JSON else ExportFormat.CSV,
+                    )
+                }
+            }
         }
-        entries.forEach { entryDao.upsert(it.toRow(), it.toNutrientRows()) }
+    } catch (e: Exception) {
+        TransferResult.Failed(
+            "That doesn't look like a Nutrition Scribe export." +
+                (e.message?.let { " ($it)" } ?: ""),
+        )
     }
 
     private fun toJson(entries: List<Entry>): String =
