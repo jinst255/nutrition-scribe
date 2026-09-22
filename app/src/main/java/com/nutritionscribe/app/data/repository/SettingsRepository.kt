@@ -20,6 +20,21 @@ enum class AiBackendKind { OPENAI, ANTHROPIC }
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
 /**
+ * Where a food's nutrition numbers come from.
+ *
+ * [AI] asks the configured model, which handles anything you can say in words —
+ * brands, restaurant meals, "a solid breakfast" — but needs an API key and a
+ * network round trip.
+ *
+ * [OFFLINE] uses the ~13,400-food USDA database bundled in the app: about 50 ms,
+ * no key, no network, no cost, and nothing leaves the phone. It does not know
+ * brands or compound dishes.
+ *
+ * Neither is strictly better, which is why this is a setting and not a guess.
+ */
+enum class LookupSource { AI, OFFLINE }
+
+/**
  * Non-secret settings live in DataStore; the API key lives in EncryptedSharedPreferences
  * (Jetpack Security) so it is never written in plaintext (Section 3, Section 11).
  */
@@ -31,6 +46,7 @@ class SettingsRepository(private val context: Context) {
         val DAILY_GOAL_GRAMS = doublePreferencesKey("daily_goal_grams")
         val DAILY_BASELINE_GRAMS = doublePreferencesKey("daily_baseline_grams")
         val BACKEND = stringPreferencesKey("ai_backend")
+        val LOOKUP_SOURCE = stringPreferencesKey("lookup_source")
         val THEME = stringPreferencesKey("theme_mode")
         val RETAIN_TOTALS_AMOUNT = intPreferencesKey("retain_totals_amount")
         val RETAIN_TOTALS_UNIT = stringPreferencesKey("retain_totals_unit")
@@ -92,6 +108,24 @@ class SettingsRepository(private val context: Context) {
     suspend fun setDailyBaselineGrams(grams: Double) {
         context.dataStore.edit { it[Keys.DAILY_BASELINE_GRAMS] = grams }
     }
+
+    /**
+     * Defaults to [LookupSource.AI] because it handles the widest range of input.
+     * Note that this is only a *preference*: [effectiveLookupSource] falls back to
+     * the offline database when no API key is configured, so someone who was handed
+     * the app still gets real numbers instead of an error.
+     */
+    val lookupSource: Flow<LookupSource> = context.dataStore.data.map {
+        LookupSource.valueOf(it[Keys.LOOKUP_SOURCE] ?: LookupSource.AI.name)
+    }
+
+    suspend fun setLookupSource(source: LookupSource) {
+        context.dataStore.edit { it[Keys.LOOKUP_SOURCE] = source.name }
+    }
+
+    /** What the app will actually do, once a missing API key is taken into account. */
+    fun effectiveLookupSource(preferred: LookupSource): LookupSource =
+        if (preferred == LookupSource.AI && !hasAnyApiKey()) LookupSource.OFFLINE else preferred
 
     val backend: Flow<AiBackendKind> = context.dataStore.data.map {
         AiBackendKind.valueOf(it[Keys.BACKEND] ?: AiBackendKind.OPENAI.name)

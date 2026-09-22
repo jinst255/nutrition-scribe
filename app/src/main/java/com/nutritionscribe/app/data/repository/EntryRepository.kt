@@ -1,6 +1,8 @@
 package com.nutritionscribe.app.data.repository
 
 import com.nutritionscribe.app.data.cache.FixedFoodCache
+import com.nutritionscribe.app.data.food.FoodDatabase
+import com.nutritionscribe.app.data.food.FoodMatch
 import com.nutritionscribe.app.data.db.EntryDao
 import com.nutritionscribe.app.data.db.FrequentFood
 import com.nutritionscribe.app.data.db.UnprocessedDao
@@ -11,6 +13,7 @@ import com.nutritionscribe.app.data.db.toRow
 import com.nutritionscribe.app.network.backend.AiBackend
 import com.nutritionscribe.app.network.backend.LookupOutcome
 import com.nutritionscribe.app.ui.debuglog.DebugLogger
+import com.nutritionscribe.shared.food.FoodQuery
 import com.nutritionscribe.shared.model.Confidence
 import com.nutritionscribe.shared.model.Entry
 import com.nutritionscribe.shared.model.Metric
@@ -38,7 +41,14 @@ class EntryRepository(
     private val fixedFoodCache: FixedFoodCache,
     private val backend: AiBackend,
     private val debugLogger: DebugLogger,
+    private val foodDatabase: FoodDatabase? = null,
+    private val lookupSource: LookupSource = LookupSource.AI,
 ) {
+
+    private companion object {
+        val GRAM_UNITS = setOf("g", "gram", "grams")
+        val OUNCE_UNITS = setOf("oz", "ounce", "ounces")
+    }
 
     fun observeEntries(): Flow<List<Entry>> = entryDao.observeAll().map { rows -> rows.map { it.toEntry() } }
 
@@ -72,12 +82,71 @@ class EntryRepository(
             return LogEntryResult.NeedsReview(toPendingEntry(rawText, cached))
         }
 
+        if (lookupSource == LookupSource.OFFLINE) {
+            return offlineLookup(rawText)
+                ?: LogEntryResult.Failed(
+                    UnprocessedErrorCode.PARSE_ERROR,
+                    "OFFLINE_NO_MATCH",
+                    "No match in the offline food list. Add it manually, or switch on AI lookup in Settings.",
+                )
+        }
+
         return when (val outcome = backend.lookup(rawText)) {
             is LookupOutcome.Success -> {
                 fixedFoodCache.store(outcome.result)
                 LogEntryResult.NeedsReview(toPendingEntry(rawText, outcome.result))
             }
             is LookupOutcome.Failure -> failureFor(outcome, rawText)
+        }
+    }
+
+    /**
+     * Nutrition from the bundled USDA database — no key, no network, no cost.
+     *
+     * A quantity in the text ("8oz chicken breast") is applied against the food's
+     * household portions; with no quantity the entry is one standard portion, or
+     * 100 g when USDA lists none. Confidence is ESTIMATED, never STATED: the
+     * numbers are a real measurement of *a* chicken breast, not of the one eaten.
+     */
+    private suspend fun offlineLookup(rawText: String): LogEntryResult? {
+        val foods = foodDatabase ?: return null
+        val parsed = FoodQuery.parseQuantity(rawText)
+        val match = foods.lookup(parsed.food) ?: return null
+
+        val grams = gramsFor(match, parsed)
+        return LogEntryResult.NeedsReview(
+            Entry(
+                id = UUID.randomUUID().toString(),
+                timestampEpochMillis = System.currentTimeMillis(),
+                rawText = rawText,
+                name = match.description,
+                nutrients = match.nutrientsFor(grams),
+                isFixedFood = false,
+                source = "usda",
+                confidence = Confidence.ESTIMATED,
+                foodDbId = match.fdcId,
+            ),
+        )
+    }
+
+    private fun gramsFor(match: FoodMatch, parsed: FoodQuery.Parsed): Double {
+        val count = parsed.amount ?: 1.0
+        // A unit the person named ("2 cups") beats a guess, so look for a portion
+        // whose label mentions it before falling back.
+        val unit = parsed.unit
+        val portion = if (unit != null) {
+            match.portions.firstOrNull { it.label.contains(unit.trimEnd('s'), ignoreCase = true) }
+        } else {
+            null
+        } ?: match.portions.firstOrNull()
+
+        return when {
+            unit in GRAM_UNITS -> count
+            unit in OUNCE_UNITS -> count * 28.3495
+            portion != null -> count * portion.grams
+            // USDA figures are per 100 g, so 100 g is the honest "one serving"
+            // when the data offers no household measure at all.
+            else -> count * 100.0
         }
     }
 

@@ -2,9 +2,11 @@ package com.nutritionscribe.app.di
 
 import android.content.Context
 import com.nutritionscribe.app.data.cache.FixedFoodCache
+import com.nutritionscribe.app.data.food.FoodDatabase
 import com.nutritionscribe.app.data.db.NutritionScribeDatabase
 import com.nutritionscribe.app.data.repository.AiBackendKind
 import com.nutritionscribe.app.data.repository.EntryRepository
+import com.nutritionscribe.app.data.repository.LookupSource
 import com.nutritionscribe.app.data.repository.SettingsRepository
 import com.nutritionscribe.app.network.anthropic.AnthropicBackend
 import com.nutritionscribe.app.network.backend.AiBackend
@@ -36,6 +38,8 @@ object ServiceLocator {
         private set
     lateinit var exportImportManager: ExportImportManager
         private set
+    lateinit var foodDatabase: FoodDatabase
+        private set
 
     /**
      * Warm cache of the current backend choice, kept in sync in the background so
@@ -43,6 +47,7 @@ object ServiceLocator {
      * DataStore read — that blocking was a real contributor to slow cold starts.
      */
     private val backendCache = MutableStateFlow(AiBackendKind.OPENAI)
+    private val lookupSourceCache = MutableStateFlow(LookupSource.AI)
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -51,8 +56,12 @@ object ServiceLocator {
         debugLogger = DebugLogger(appContext)
         fixedFoodCache = FixedFoodCache(database.fixedFoodCacheDao())
         exportImportManager = ExportImportManager(appContext, database.entryDao())
+        foodDatabase = FoodDatabase(appContext)
         backgroundScope.launch {
             settingsRepository.backend.collect { backendCache.value = it }
+        }
+        backgroundScope.launch {
+            settingsRepository.lookupSource.collect { lookupSourceCache.value = it }
         }
     }
 
@@ -70,6 +79,10 @@ object ServiceLocator {
             fixedFoodCache = fixedFoodCache,
             backend = backend,
             debugLogger = debugLogger,
+            foodDatabase = foodDatabase,
+            // Falls back to the offline database when AI is preferred but no key
+            // is set, so someone handed the app still gets numbers, not an error.
+            lookupSource = settingsRepository.effectiveLookupSource(lookupSourceCache.value),
         )
     }
 }

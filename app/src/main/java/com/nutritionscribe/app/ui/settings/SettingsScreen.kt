@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nutritionscribe.app.data.repository.AiBackendKind
+import com.nutritionscribe.app.data.repository.LookupSource
 import com.nutritionscribe.app.data.repository.ThemeMode
 import com.nutritionscribe.app.di.ServiceLocator
 import com.nutritionscribe.shared.retention.RetentionWindow
@@ -54,6 +55,7 @@ fun SettingsScreen(
     val baseline by settings.dailyBaselineGrams.collectAsState(initial = 112.0)
     val backend by settings.backend.collectAsState(initial = AiBackendKind.OPENAI)
     val theme by settings.theme.collectAsState(initial = ThemeMode.SYSTEM)
+    val lookupSource by settings.lookupSource.collectAsState(initial = LookupSource.AI)
     val totalsWindow by settings.retainProteinTotals.collectAsState(initial = RetentionWindow.DEFAULT_PROTEIN_TOTALS)
     val detailsWindow by settings.retainFoodDetails.collectAsState(initial = RetentionWindow.DEFAULT_FOOD_DETAILS)
 
@@ -111,9 +113,46 @@ fun SettingsScreen(
             )
         }
 
-        if (!manualMode && apiKeyText.isBlank()) {
+        if (!manualMode) {
             Text(
-                "No API key set, so entries are logged by hand until you add one below.",
+                "Look up nutrition with",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = lookupSource == LookupSource.AI,
+                    onClick = { scope.launch { settings.setLookupSource(LookupSource.AI) } },
+                    label = { Text("AI") },
+                )
+                FilterChip(
+                    selected = lookupSource == LookupSource.OFFLINE,
+                    onClick = { scope.launch { settings.setLookupSource(LookupSource.OFFLINE) } },
+                    label = { Text("Offline food list") },
+                )
+            }
+            Text(
+                when (lookupSource) {
+                    LookupSource.AI ->
+                        "Understands anything you can say — brands, restaurant meals, whole " +
+                            "sentences. Needs an API key and a connection."
+                    LookupSource.OFFLINE ->
+                        "13,400 USDA foods built into the app. Instant, free, works on a " +
+                            "plane, and nothing you eat leaves your phone. Doesn't know brands."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+            )
+        }
+
+        if (!manualMode && apiKeyText.isBlank() && lookupSource == LookupSource.AI) {
+            Text(
+                "No API key set, so the offline food list is being used instead. " +
+                    "Add a key below, or pick \"Offline food list\" to stop seeing this.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(bottom = 12.dp),
