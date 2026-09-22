@@ -111,6 +111,20 @@ CURATED = {
     "pb j":             (2343030, "Peanut butter and jelly sandwich, NFS"),
     "peanut butter jelly sandwich": (2343030, "Peanut butter and jelly sandwich, NFS"),
     "bell pepper":      (2345319, "Pepper, raw, NFS"),
+    # "mac and cheese" split on "and" and matched "Big Mac (McDonalds)".
+    "mac cheese":       (2344296, "Macaroni or noodles with cheese"),
+    "macaroni cheese":  (2344296, "Macaroni or noodles with cheese"),
+    "yoghurt":          (2340795, "Yogurt, NFS"),
+    # "toast" ranked to "French toast, NFS" at more than double the calories,
+    # because English puts the head noun last and USDA does not.
+    "toast":            (2343074, "Bread, white, toasted"),
+    # Instant ramen ranked to "Instant soup, noodle", which is 300 g of mostly
+    # water at 75 calories. A packet is a dry block.
+    "instant ramen":    (171177,  "Soup, ramen noodle, any flavor, dry"),
+    "ramen":            (171177,  "Soup, ramen noodle, any flavor, dry"),
+    # Not in USDA under any name a friend would use.
+    "chicken tikka masala": (2341861, "Chicken curry"),
+    "tikka masala":     (2341861, "Chicken curry"),
     "white bread":      (2343073, "Bread, white"),
     "wheat bread":      (2343189, "Bread, whole wheat"),
     "whole wheat bread": (2343189, "Bread, whole wheat"),

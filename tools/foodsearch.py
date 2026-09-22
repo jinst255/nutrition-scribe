@@ -21,7 +21,9 @@ STOP = {
 
 NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
              "seven": 7, "eight": 8, "nine": 9, "ten": 10, "half": 0.5,
-             "a": 1, "an": 1}
+             "a": 1, "an": 1,
+             # How people actually count when they are not counting.
+             "couple": 2, "pair": 2, "few": 3, "several": 3, "dozen": 12}
 
 UNITS = (r"(oz|ounce|ounces|g|gram|grams|lb|lbs|pound|pounds|cup|cups|tbsp|"
          r"tablespoon|tablespoons|tsp|teaspoon|teaspoons|slice|slices|piece|"
@@ -104,6 +106,7 @@ TRAILING_QUANTITY = re.compile(
     rf"^(.*?)[,\s]+(\d+(?:\.\d+)?)\s*{UNITS}s?\b\.?$", re.I)
 
 # "a cup and 1/4", "tablespoon and a half" -- a fraction bolted onto the unit.
+ARTICLE_THEN_COUNT = re.compile(r"\ban?\s+(couple|pair|few|several|dozen)\b", re.I)
 LEADING_NUMBER = re.compile(rf"^(?:\d|(?:{'|'.join(NUM_WORDS)})\b)", re.I)
 INLINE_QUANTITY = re.compile(rf"\b(\d+(?:\.\d+)?)\s*{UNITS}\b", re.I)
 
@@ -139,6 +142,9 @@ def preprocess(text):
     t = AND_A_HALF.sub(lambda m: f"{float(m.group(1)) + 0.5:.4g}", t)
     # "half a serving" -> "half serving", so the quantity parser sees the unit.
     t = NUM_A_UNIT.sub(lambda m: f"{m.group(1)} {m.group(2)}", t)
+    # "a couple of eggs" -> "couple of eggs". The article was being read as the
+    # count of one, and the word that carried the actual number was skipped.
+    t = ARTICLE_THEN_COUNT.sub(lambda m: m.group(1), t)
 
     t = re.sub(r"\s+", " ", t).strip()
     while True:
@@ -295,6 +301,13 @@ def _rank(db, words, limit):
         # something.
         if UNEATEN.search(desc):
             score -= 20
+        # FNDDS ("survey") rows describe food AS EATEN and carry realistic
+        # serving sizes; SR Legacy rows describe ingredients and often default to
+        # a cup. Where both exist under the same name -- 81 descriptions do --
+        # the tie was broken arbitrarily, and "greek yogurt with honey" drew the
+        # SR Legacy honey with its 339 g cup: 1104 calories.
+        if r[2] == "survey_fndds_food":
+            score += 2
         scored.append((score, r))
 
     scored.sort(key=lambda x: -x[0])
@@ -482,14 +495,17 @@ def grams_for(db, row, parsed, text=""):
     # servings: "six pancakes" was logged as six 100 g servings, 1692 calories.
     # USDA usually lists the item itself as a portion ("1 medium pancake", 50 g),
     # so prefer that over the serving default whenever a count was given.
+    default = db.execute("SELECT default_grams FROM food WHERE fdc_id=?",
+                         (row[0],)).fetchone()[0] or 100.0
     if parsed[0] is not None and not unit:
         item = _item_portion(portions, row[1])
-        if item is not None:
+        # A quarter of the serving is the floor. USDA lists "1 chip" (2 g) for
+        # potato chips, so "a bag of potato chips" came out at ELEVEN calories.
+        # A real item portion is a sizeable fraction of a serving; a crumb is
+        # USDA being thorough, not an answer to what someone ate.
+        if item is not None and item >= default * 0.25:
             return count * item
-
-    default = db.execute("SELECT default_grams FROM food WHERE fdc_id=?",
-                         (row[0],)).fetchone()[0]
-    return count * (default or 100.0)
+    return count * default
 
 
 def _item_portion(portions, description):
@@ -498,8 +514,20 @@ def _item_portion(portions, description):
     nouns = {stem(w) for w in re.findall(r"[a-z]+", head) if len(w) > 2}
     if not nouns:
         return None
-    named = [(label.lower(), grams) for label, grams in portions
-             if any(stem(w) in nouns for w in re.findall(r"[a-z]+", label.lower()))]
+    named = []
+    for label, grams in portions:
+        low = label.lower()
+        words = re.findall(r"[a-z]+", low)
+        if not any(stem(w) in nouns for w in words):
+            continue
+        # "1 medium pancake" describes one pancake. "1 Bagel Thin" describes a
+        # different product that happens to say bagel, and taking it made "a
+        # bagel with cream cheese" a 46 g bagel. Accept only a size-qualified
+        # portion or the bare "1 <food>".
+        sized = any(s in low for s in ("medium", "regular", "small", "large"))
+        bare = len([w for w in words if stem(w) not in nouns]) == 0
+        if sized or bare:
+            named.append((low, grams))
     if not named:
         return None
     return _plainest(named)
@@ -583,7 +611,7 @@ def offline_lookup(db, raw_text):
 
     stated, text = strip_protein_claim(preprocess(raw_text))
 
-    plain = split_items(text)
+    plain = [text] if is_alias(db, text) else split_items(text)
     readings = [_resolve(db, plain)]
     widened = split_on_with(plain)
     if widened != plain:
