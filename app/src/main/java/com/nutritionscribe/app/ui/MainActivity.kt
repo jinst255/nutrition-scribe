@@ -32,6 +32,9 @@ import com.nutritionscribe.app.ui.exportimport.ExportImportScreen
 import com.nutritionscribe.app.ui.goals.GoalsScreen
 import com.nutritionscribe.app.ui.history.HistoryScreen
 import com.nutritionscribe.app.ui.home.HomeScreen
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
+import com.nutritionscribe.app.ui.entry.EntryDetailScreen
 import com.nutritionscribe.app.ui.onboarding.OnboardingScreen
 import com.nutritionscribe.app.ui.review.ReviewScreen
 import com.nutritionscribe.app.ui.settings.SettingsScreen
@@ -50,6 +53,8 @@ private object Routes {
     const val SETTINGS = "settings"
     const val DEBUG_LOG = "debug_log"
     const val EXPORT_IMPORT = "export_import"
+    const val ENTRY_DETAIL = "entry/{entryId}"
+    fun entryDetail(id: String) = "entry/$id"
 }
 
 class MainActivity : ComponentActivity() {
@@ -145,7 +150,20 @@ private fun MainNavScaffold() {
                 ReviewScreen(onConfirmed = { navController.popBackStack(Routes.HOME, inclusive = false) })
             }
             composable(Routes.UNPROCESSED) { UnprocessedScreen() }
-            composable(Routes.HISTORY) { HistoryScreen() }
+            composable(Routes.HISTORY) {
+                HistoryScreen(
+                    onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
+                )
+            }
+            composable(
+                Routes.ENTRY_DETAIL,
+                arguments = listOf(navArgument("entryId") { type = NavType.StringType }),
+            ) { backStackEntry ->
+                EntryDetailScreen(
+                    entryId = backStackEntry.arguments?.getString("entryId").orEmpty(),
+                    onBack = { navController.popBackStack() },
+                )
+            }
             composable(Routes.GOALS) { GoalsScreen() }
             composable(Routes.SETTINGS) {
                 SettingsScreen(

@@ -132,7 +132,10 @@ private sealed interface HistoryListItem {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HistoryScreen(viewModel: HistoryViewModel = viewModel()) {
+fun HistoryScreen(
+    onOpenEntry: (String) -> Unit = {},
+    viewModel: HistoryViewModel = viewModel(),
+) {
     val allEntries by viewModel.allEntries.collectAsState(initial = emptyList())
     val entries by viewModel.filteredEntries.collectAsState(initial = emptyList())
     val goal by viewModel.dailyGoal.collectAsState(initial = 160.0)
@@ -292,12 +295,17 @@ fun HistoryScreen(viewModel: HistoryViewModel = viewModel()) {
                                 .padding(vertical = 4.dp)
                                 .combinedClickable(
                                     onClick = {
+                                        // While selecting, a tap toggles the
+                                        // selection; otherwise it opens the
+                                        // entry, which previously went nowhere.
                                         if (selecting) {
                                             selectedIds = if (selectedIds.contains(entry.id)) {
                                                 selectedIds - entry.id
                                             } else {
                                                 selectedIds + entry.id
                                             }
+                                        } else {
+                                            onOpenEntry(entry.id)
                                         }
                                     },
                                     onLongClick = { selectedIds = selectedIds + entry.id },
