@@ -102,6 +102,27 @@ CURATED = {
     "beer":             (2346192, "Beer"),
     "orange juice":     (2344681, "Orange juice, 100%, NFS"),
 
+    # --- abbreviations and everyday names USDA does not use ---
+    # These came out of a real exported log. "PB&J" matched NOTHING at all (the
+    # "&" split it into two one-letter fragments), and "pb&j black currant"
+    # matched "Currants, european black, raw" — 71 calories for a 400 calorie
+    # sandwich.
+    "pbj":              (2343030, "Peanut butter and jelly sandwich, NFS"),
+    "pb j":             (2343030, "Peanut butter and jelly sandwich, NFS"),
+    "peanut butter jelly sandwich": (2343030, "Peanut butter and jelly sandwich, NFS"),
+    "bell pepper":      (2345319, "Pepper, raw, NFS"),
+    "white bread":      (2343073, "Bread, white"),
+    "wheat bread":      (2343189, "Bread, whole wheat"),
+    "whole wheat bread": (2343189, "Bread, whole wheat"),
+    # A person who says "two hot dogs" ate two hot dogs in buns. USDA's "Hot dog,
+    # NFS" is the frankfurter alone, which logged 2 hot dogs at 177 calories.
+    "hot dog":          (2342501, "Hot dog sandwich, NFS, on white bun"),
+    "hotdog":           (2342501, "Hot dog sandwich, NFS, on white bun"),
+    # No Built Bar in USDA, and "built bar" ranked to "Breakfast bar, NFS" at
+    # 2 g of protein. The South Beach row is the closest real high-protein bar.
+    "protein bar":      (2343607, "Nutrition bar (South Beach Living High Protein Bar)"),
+    "built bar":        (2343607, "Nutrition bar (South Beach Living High Protein Bar)"),
+
     # --- compound dishes, where ranking matches one ingredient ---
     # "spaghetti with meat sauce" matched "Spaghetti sauce with meat" at 65 g,
     # logging the sauce and none of the pasta: 58 kcal for a 520 kcal plate.

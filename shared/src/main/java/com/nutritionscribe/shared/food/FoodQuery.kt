@@ -53,10 +53,23 @@ object FoodQuery {
      */
     fun stem(word: String): String = when {
         word.length > 3 && word.endsWith("ies") -> word.dropLast(3) + "y"
-        word.length > 3 && word.endsWith("es") && !word.endsWith("ses") -> word.dropLast(2)
+        word.length > 3 && PLURAL_ES.containsMatchIn(word) -> word.dropLast(2)
         word.length > 3 && word.endsWith("s") && !word.endsWith("ss") -> word.dropLast(1)
         else -> word
     }
+
+    /**
+     * "-es" is only a plural marker after a sibilant or an "o": box/boxes,
+     * dish/dishes, glass/glasses, potato/potatoes. Everywhere else the "e" belongs
+     * to the word and only the "s" is the plural: cake/cakes, apple/apples.
+     *
+     * Stripping "es" everywhere turned "pancakes" into "pancak" while "pancake"
+     * stayed whole, so a search for "pancake" could not reach a row described as
+     * "Pancakes, NFS" — it found "Pancake syrup" instead. 89 words in the USDA
+     * descriptions were affected, among them apples, cakes, grapes, noodles,
+     * juices, oranges, sausages and waffles.
+     */
+    private val PLURAL_ES = Regex("(x|z|ch|sh|ss|o)es$")
 
     /** "8oz chicken breast" -> (8.0, "oz", "chicken breast"). */
     fun parseQuantity(text: String): Parsed {
