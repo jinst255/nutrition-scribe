@@ -2,6 +2,7 @@ package com.nutritionscribe.app.ui.onboarding
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -10,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -26,15 +28,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nutritionscribe.app.data.repository.AiBackendKind
+import com.nutritionscribe.app.data.repository.LookupSource
 import com.nutritionscribe.app.di.ServiceLocator
+import com.nutritionscribe.shared.model.GoalDirection
+import com.nutritionscribe.shared.model.Metric
+import com.nutritionscribe.shared.model.MetricGoal
 import kotlinx.coroutines.launch
 
 @Composable
 fun OnboardingScreen(onFinished: () -> Unit) {
     var step by remember { mutableIntStateOf(0) }
+    val goals = ServiceLocator.goalsRepository
+    var selectedMetrics by remember { mutableStateOf(MetricGoal.STARTER_METRICS.toSet()) }
     var apiKey by remember { mutableStateOf("") }
     var goalText by remember { mutableStateOf("160") }
-    var manualMode by remember { mutableStateOf(false) }
+    // Which path the user ended up on, for the closing message only.
+    var offlineOnly by remember { mutableStateOf(false) }
     var showSkipNotice by remember { mutableStateOf(false) }
     var showKeyHelp by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -65,7 +74,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     onClick = {
                         settings.setApiKey(AiBackendKind.OPENAI, apiKey.trim())
                         scope.launch { settings.setManualMode(false) }
-                        manualMode = false
+                        offlineOnly = false
                         step = 1
                     },
                     enabled = apiKey.isNotBlank(),
@@ -101,21 +110,94 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 }
             }
             1 -> {
-                Text("Set your daily goal", style = MaterialTheme.typography.headlineSmall)
+                Text("What do you want to track?", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "Grams of protein per day.",
+                    "Pick at least one. Everything you log is recorded either way, so you " +
+                        "can switch one on months later and still see the days you already " +
+                        "logged. Change these any time in Goals.",
                     color = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.padding(vertical = 12.dp),
                 )
-                OutlinedTextField(
-                    value = goalText,
-                    onValueChange = { goalText = it },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+
+                Column(
+                    modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                ) {
+                    Metric.entries.forEach { metric ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Checkbox(
+                                checked = metric in selectedMetrics,
+                                onCheckedChange = { on ->
+                                    selectedMetrics = if (on) {
+                                        selectedMetrics + metric
+                                    } else {
+                                        selectedMetrics - metric
+                                    }
+                                },
+                            )
+                            Column {
+                                Text(metric.label, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    when (metric.direction) {
+                                        GoalDirection.REACH -> "reach \u2022 ${metric.unit}"
+                                        GoalDirection.LIMIT -> "stay under \u2022 ${metric.unit}"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                        }
+                    }
+
+                    if (Metric.PROTEIN in selectedMetrics) {
+                        Text(
+                            "Daily protein target",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                        OutlinedTextField(
+                            value = goalText,
+                            onValueChange = { goalText = it },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+
+                if (selectedMetrics.isEmpty()) {
+                    Text(
+                        "Pick at least one to carry on \u2014 with nothing selected there's " +
+                            "nothing for the app to show you.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                } else if (selectedMetrics == setOf(Metric.PROTEIN)) {
+                    // A nudge, not a block. Protein-only is allowed, just rarely
+                    // what someone actually wants once they see the alternative.
+                    Text(
+                        "Protein on its own says very little about a day. Calories or " +
+                            "sugar alongside it usually tells you a lot more.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+
                 Button(
+                    enabled = selectedMetrics.isNotEmpty(),
                     onClick = {
-                        scope.launch { settings.setDailyGoalGrams(goalText.toDoubleOrNull() ?: 160.0) }
+                        scope.launch {
+                            val protein = goalText.toDoubleOrNull() ?: 160.0
+                            goals.applySelection(selectedMetrics)
+                            if (Metric.PROTEIN in selectedMetrics) {
+                                goals.setTarget(Metric.PROTEIN, protein)
+                            }
+                            // Kept in step for the screens that still read it.
+                            settings.setDailyGoalGrams(protein)
+                        }
                         step = 2
                     },
                     modifier = Modifier.padding(top = 16.dp),
@@ -124,9 +206,9 @@ fun OnboardingScreen(onFinished: () -> Unit) {
             else -> {
                 Text("You're set", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    if (manualMode) {
-                        "Tap + to add what you ate and its protein. The app remembers what " +
-                            "you log often, so repeat meals are one tap."
+                    if (offlineOnly) {
+                        "Type what you ate and the app finds it in its built-in food list. " +
+                            "Foods you log often become one-tap buttons."
                     } else {
                         "Type or speak what you ate."
                     },
@@ -144,12 +226,14 @@ fun OnboardingScreen(onFinished: () -> Unit) {
     if (showSkipNotice) {
         AlertDialog(
             onDismissRequest = { showSkipNotice = false },
-            title = { Text("You'll be entering things by hand") },
+            title = { Text("You'll use the built-in food list") },
             text = {
                 Text(
-                    "Without a key, the app can't look up nutrition for you. Every time you " +
-                        "log something you'll type the food and its protein in grams yourself " +
-                        "— you can read the grams off the package or look it up.\n\n" +
+                    "No key needed. The app looks food up in its own list of about 13,000 " +
+                        "foods, built in. It's instant, it works with no signal, and nothing " +
+                        "you eat ever leaves your phone.\n\n" +
+                        "It won't know brand names or restaurant dishes. For those you type " +
+                        "the numbers in yourself — off the packet, usually.\n\n" +
                         "Everything else works exactly the same: history, charts, export. " +
                         "Foods you log often become one-tap buttons.\n\n" +
                         "You can add a key any time in Settings.",
@@ -158,8 +242,12 @@ fun OnboardingScreen(onFinished: () -> Unit) {
             confirmButton = {
                 TextButton(
                     onClick = {
-                        scope.launch { settings.setManualMode(true) }
-                        manualMode = true
+                        // Skipping the key no longer means typing every number by
+                        // hand — it means using the bundled food database. Setting
+                        // manualMode here would switch off the very thing that makes
+                        // the no-key path worth having.
+                        scope.launch { settings.setLookupSource(LookupSource.OFFLINE) }
+                        offlineOnly = true
                         showSkipNotice = false
                         step = 1
                     },

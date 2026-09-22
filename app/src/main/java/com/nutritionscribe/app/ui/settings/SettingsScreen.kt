@@ -68,29 +68,14 @@ fun SettingsScreen(
     // The screen has outgrown one phone height; without this the lower rows are
     // unreachable rather than merely cramped.
     Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Text("Daily goal", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(
-            value = goalText,
-            onValueChange = {
-                goalText = it
-                it.toDoubleOrNull()?.let { g -> scope.launch { settings.setDailyGoalGrams(g) } }
-            },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-        )
-
-        Text("Daily baseline", style = MaterialTheme.typography.titleMedium)
+        // The daily goal and baseline moved to the Goals tab, where they sit
+        // beside the other eight metrics instead of being a protein-shaped
+        // special case in Settings.
         Text(
-            "Second reference line on the History chart — days below this read red.",
+            "Daily targets live in the Goals tab.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.secondary,
-        )
-        OutlinedTextField(
-            value = baselineText,
-            onValueChange = {
-                baselineText = it
-                it.toDoubleOrNull()?.let { b -> scope.launch { settings.setDailyBaselineGrams(b) } }
-            },
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp),
+            modifier = Modifier.padding(bottom = 16.dp),
         )
 
         Row(

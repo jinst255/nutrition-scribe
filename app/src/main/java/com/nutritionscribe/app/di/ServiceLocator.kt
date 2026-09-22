@@ -6,6 +6,7 @@ import com.nutritionscribe.app.data.food.FoodDatabase
 import com.nutritionscribe.app.data.db.NutritionScribeDatabase
 import com.nutritionscribe.app.data.repository.AiBackendKind
 import com.nutritionscribe.app.data.repository.EntryRepository
+import com.nutritionscribe.app.data.repository.GoalsRepository
 import com.nutritionscribe.app.data.repository.LookupSource
 import com.nutritionscribe.app.data.repository.SettingsRepository
 import com.nutritionscribe.app.network.anthropic.AnthropicBackend
@@ -17,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -40,6 +42,8 @@ object ServiceLocator {
         private set
     lateinit var foodDatabase: FoodDatabase
         private set
+    lateinit var goalsRepository: GoalsRepository
+        private set
 
     /**
      * Warm cache of the current backend choice, kept in sync in the background so
@@ -57,6 +61,15 @@ object ServiceLocator {
         fixedFoodCache = FixedFoodCache(database.fixedFoodCacheDao())
         exportImportManager = ExportImportManager(appContext, database.entryDao())
         foodDatabase = FoodDatabase(appContext)
+        goalsRepository = GoalsRepository(database.metricGoalDao(), settingsRepository)
+        backgroundScope.launch {
+            // Carries a pre-Goals-tab protein goal and baseline across from
+            // DataStore, which the Room migration had no way to read.
+            goalsRepository.ensureSeeded(
+                legacyGoalGrams = settingsRepository.dailyGoalGrams.first(),
+                legacyBaselineGrams = settingsRepository.dailyBaselineGrams.first(),
+            )
+        }
         backgroundScope.launch {
             settingsRepository.backend.collect { backendCache.value = it }
         }

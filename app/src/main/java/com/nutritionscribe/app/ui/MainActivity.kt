@@ -10,6 +10,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
@@ -28,6 +29,7 @@ import com.nutritionscribe.app.di.ServiceLocator
 import com.nutritionscribe.app.ui.addentry.AddEntryScreen
 import com.nutritionscribe.app.ui.debuglog.DebugLogScreen
 import com.nutritionscribe.app.ui.exportimport.ExportImportScreen
+import com.nutritionscribe.app.ui.goals.GoalsScreen
 import com.nutritionscribe.app.ui.history.HistoryScreen
 import com.nutritionscribe.app.ui.home.HomeScreen
 import com.nutritionscribe.app.ui.onboarding.OnboardingScreen
@@ -44,6 +46,7 @@ private object Routes {
     const val REVIEW = "review"
     const val UNPROCESSED = "unprocessed"
     const val HISTORY = "history"
+    const val GOALS = "goals"
     const val SETTINGS = "settings"
     const val DEBUG_LOG = "debug_log"
     const val EXPORT_IMPORT = "export_import"
@@ -89,6 +92,7 @@ private fun MainNavScaffold() {
     val tabs = listOf(
         BottomTab(Routes.HOME, "Home", Icons.Filled.Home),
         BottomTab(Routes.HISTORY, "History", Icons.Filled.History),
+        BottomTab(Routes.GOALS, "Goals", Icons.Filled.Flag),
         BottomTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
     )
 
@@ -142,6 +146,7 @@ private fun MainNavScaffold() {
             }
             composable(Routes.UNPROCESSED) { UnprocessedScreen() }
             composable(Routes.HISTORY) { HistoryScreen() }
+            composable(Routes.GOALS) { GoalsScreen() }
             composable(Routes.SETTINGS) {
                 SettingsScreen(
                     onOpenDebugLog = { navController.navigate(Routes.DEBUG_LOG) },
