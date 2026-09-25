@@ -45,6 +45,27 @@ data class EntryRow(
     @ColumnInfo(defaultValue = "0") val needsDetail: Boolean = false,
     /** Row in the bundled food database this resolved to, when it came from there. */
     @ColumnInfo(defaultValue = "NULL") val foodDbId: Long? = null,
+    /** see [Entry.items] — JSON, because it is only ever read whole. */
+    @ColumnInfo(defaultValue = "NULL") val itemsJson: String? = null,
+    /** see [Entry.needsConfirm] — logged from the watch, waiting for a glance. */
+    @ColumnInfo(defaultValue = "0") val needsConfirm: Boolean = false,
+)
+
+/**
+ * One of the user's own foods (layer 1 of the lookup): what a phrase means to
+ * them, confirmed once and trusted after. The value is the shared
+ * [com.nutritionscribe.shared.resolve.PersonalFood] as JSON — it is always read and
+ * written whole, and keeping it opaque means the resolver can grow a field without
+ * a migration over the user's data.
+ */
+@Entity(tableName = "personal_food")
+data class PersonalFoodRow(
+    @PrimaryKey val key: String,
+    val name: String,
+    val json: String,
+    val timesUsed: Int,
+    val updatedAt: Long,
+    @ColumnInfo(defaultValue = "0") val isMeal: Boolean = false,
 )
 
 /**
@@ -111,7 +132,18 @@ fun EntryWithNutrients.toEntry() = Entry(
     timeUnspecified = entry.timeUnspecified,
     needsDetail = entry.needsDetail,
     foodDbId = entry.foodDbId,
+    items = entry.itemsJson?.let { decodeItems(it) }.orEmpty(),
+    needsConfirm = entry.needsConfirm,
 )
+
+private val itemsJsonFormat = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+private fun decodeItems(json: String): List<com.nutritionscribe.shared.model.LoggedItem> =
+    runCatching {
+        itemsJsonFormat.decodeFromString(
+            kotlinx.serialization.builtins.ListSerializer(com.nutritionscribe.shared.model.LoggedItem.serializer()), json,
+        )
+    }.getOrDefault(emptyList())
 
 fun Entry.toRow() = EntryRow(
     id = id,
@@ -124,6 +156,12 @@ fun Entry.toRow() = EntryRow(
     timeUnspecified = timeUnspecified,
     needsDetail = needsDetail,
     foodDbId = foodDbId,
+    itemsJson = items.takeIf { it.isNotEmpty() }?.let {
+        itemsJsonFormat.encodeToString(
+            kotlinx.serialization.builtins.ListSerializer(com.nutritionscribe.shared.model.LoggedItem.serializer()), it,
+        )
+    },
+    needsConfirm = needsConfirm,
 )
 
 fun Entry.toNutrientRows(): List<EntryNutrientRow> =
@@ -239,6 +277,15 @@ interface EntryDao {
     @Query("SELECT COUNT(*) FROM entries")
     suspend fun count(): Int
 
+    @Transaction
+    @Query("SELECT * FROM entries WHERE id = :id LIMIT 1")
+    suspend fun find(id: String): EntryWithNutrients?
+
+    /** Watch entries waiting for a glance on the phone. */
+    @Transaction
+    @Query("SELECT * FROM entries WHERE needsConfirm = 1 ORDER BY timestampEpochMillis DESC")
+    fun observeNeedsConfirm(): Flow<List<EntryWithNutrients>>
+
     /**
      * Every logged entry. entry_nutrient is declared ON DELETE CASCADE, so the
      * numbers go with the rows — but only while foreign keys are actually
@@ -288,6 +335,37 @@ interface UnprocessedDao {
     suspend fun deleteAll()
 }
 
+/**
+ * Blocking on purpose: the resolver that reads these runs on an IO thread and is
+ * plain Kotlin, shared with the JVM tests, so it cannot suspend.
+ */
+@Dao
+interface PersonalFoodDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun upsertBlocking(row: PersonalFoodRow)
+
+    @Query("SELECT * FROM personal_food WHERE `key` = :key LIMIT 1")
+    fun findBlocking(key: String): PersonalFoodRow?
+
+    @Query("SELECT * FROM personal_food")
+    fun allBlocking(): List<PersonalFoodRow>
+
+    @Query("DELETE FROM personal_food WHERE `key` = :key")
+    fun deleteBlocking(key: String)
+
+    @Query("SELECT * FROM personal_food ORDER BY timesUsed DESC, updatedAt DESC")
+    fun observeAll(): Flow<List<PersonalFoodRow>>
+
+    @Query("DELETE FROM personal_food")
+    suspend fun deleteAll()
+
+    @Query("SELECT * FROM personal_food")
+    suspend fun all(): List<PersonalFoodRow>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(rows: List<PersonalFoodRow>)
+}
+
 @Dao
 interface FixedFoodCacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -307,14 +385,16 @@ interface FixedFoodCacheDao {
         MetricGoalRow::class,
         UnprocessedRow::class,
         FixedFoodCacheRow::class,
+        PersonalFoodRow::class,
     ],
-    version = 4,
+    version = 5,
 )
 abstract class NutritionScribeDatabase : RoomDatabase() {
     abstract fun entryDao(): EntryDao
     abstract fun metricGoalDao(): MetricGoalDao
     abstract fun unprocessedDao(): UnprocessedDao
     abstract fun fixedFoodCacheDao(): FixedFoodCacheDao
+    abstract fun personalFoodDao(): PersonalFoodDao
 
     companion object {
         @Volatile private var instance: NutritionScribeDatabase? = null
@@ -332,6 +412,23 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE metric_goal ADD COLUMN direction TEXT DEFAULT NULL")
+            }
+        }
+
+        /**
+         * The cache-first lookup: the user's own foods, and each entry's items.
+         * Additive only — every existing entry keeps every value it had, and simply
+         * has no item breakdown (it was logged before there was one).
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE entries ADD COLUMN itemsJson TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE entries ADD COLUMN needsConfirm INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `personal_food` (`key` TEXT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`json` TEXT NOT NULL, `timesUsed` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, " +
+                        "`isMeal` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`key`))"
+                )
             }
         }
 
@@ -414,7 +511,7 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
                     // the user, but renaming it would leave every existing log stranded
                     // in a file nothing opens any more — a rebrand must not cost data.
                     "protein-scribe.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build().also { instance = it }
             }
     }

@@ -19,10 +19,28 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    testOptions {
+        unitTests.all {
+            // The resolver tests read the real bundled databases. Their paths are
+            // passed in rather than guessed, so a test never silently runs against
+            // nothing.
+            it.systemProperty("foodDb", rootProject.file("app/src/main/assets/food.db").path)
+            it.systemProperty("labelPack", System.getProperty("labelPack") ?: "")
+            it.systemProperty("exportJson", rootProject.file("protein-scribe-export.json").path)
+            it.systemProperty("weekTruth", rootProject.file("tools/.cache/week_truth.json").path)
+            it.systemProperty("reportDir", layout.buildDirectory.dir("reports/resolver").get().asFile.path)
+            it.systemProperty("aiCacheDir", rootProject.file("tools/.cache").path)
+            it.systemProperty("phrases", System.getProperty("phrases") ?: "")
+            // Only for the opt-in AI replay; absent, those tests skip. Never logged.
+            System.getenv("OPENAI_API_KEY")?.let { key -> it.environment("OPENAI_API_KEY", key) }
+        }
+    }
 }
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
 
     testImplementation("junit:junit:4.13.2")
+    // The resolver tests run the real ranking code over the real food.db.
+    testImplementation("org.xerial:sqlite-jdbc:3.41.2.2")
 }

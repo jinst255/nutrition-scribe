@@ -54,6 +54,7 @@ sealed class AddEntryUiState {
 class AddEntryViewModel : ViewModel() {
     private val repository = ServiceLocator.currentEntryRepository()
     private val settings = ServiceLocator.settingsRepository
+    private val pipeline = ServiceLocator.logPipeline
 
     var uiState by mutableStateOf<AddEntryUiState>(AddEntryUiState.Editing)
         private set
@@ -64,19 +65,32 @@ class AddEntryViewModel : ViewModel() {
     /** No key means no lookup is possible, whatever the manual-mode preference says. */
     fun hasApiKey(): Boolean = settings.hasAnyApiKey()
 
-    fun submit(rawText: String, onReadyForReview: () -> Unit) {
+    /**
+     * Resolve, then either log right away (every part is the user's own) or hand
+     * over to the confirm card. There is no failure path any more: an AI that
+     * cannot be reached falls back to the built-in list, and a food nothing knows
+     * still reaches the card with the user's words on it.
+     */
+    fun submit(rawText: String, onReadyForReview: () -> Unit, onLogged: () -> Unit = onReadyForReview) {
         if (rawText.isBlank()) return
         uiState = AddEntryUiState.Processing
         viewModelScope.launch {
-            when (val result = repository.processRawEntry(rawText)) {
-                is LogEntryResult.NeedsReview -> {
-                    PendingEntryHolder.entry = result.entry
+            try {
+                val r = pipeline.resolve(rawText)
+                if (r.silent) {
+                    val entry = pipeline.logNow(r)
+                    com.nutritionscribe.app.ui.home.LastLogged.entry.value = entry
+                    uiState = AddEntryUiState.Editing
+                    onLogged()
+                } else {
+                    com.nutritionscribe.app.ui.confirm.LogSession.resolution = r
+                    com.nutritionscribe.app.ui.confirm.LogSession.editing = null
                     uiState = AddEntryUiState.Editing
                     onReadyForReview()
                 }
-                is LogEntryResult.Failed -> {
-                    uiState = AddEntryUiState.Failed(result.message)
-                }
+            } catch (e: Exception) {
+                ServiceLocator.debugLogger.log("AddEntry", "resolve failed: ${e.message}")
+                uiState = AddEntryUiState.Failed("Something went wrong reading that. Your words are still here — try again, or enter it by hand.")
             }
         }
     }
@@ -102,6 +116,7 @@ class AddEntryViewModel : ViewModel() {
 fun AddEntryScreen(
     onReadyForReview: () -> Unit,
     onManualSaved: () -> Unit,
+    onLogged: () -> Unit = onManualSaved,
     viewModel: AddEntryViewModel = viewModel(),
 ) {
     val manualPreference by viewModel.manualMode.collectAsState(initial = false)
@@ -135,6 +150,7 @@ fun AddEntryScreen(
     AiAddEntry(
         viewModel = viewModel,
         onReadyForReview = onReadyForReview,
+        onLogged = onLogged,
         onEnterManually = { manualOverride = true },
     )
 }
@@ -143,6 +159,7 @@ fun AddEntryScreen(
 private fun AiAddEntry(
     viewModel: AddEntryViewModel,
     onReadyForReview: () -> Unit,
+    onLogged: () -> Unit,
     onEnterManually: () -> Unit,
 ) {
     var text by remember { mutableStateOf("") }
@@ -154,7 +171,7 @@ private fun AiAddEntry(
             ?.firstOrNull()
         if (!spoken.isNullOrBlank()) {
             text = spoken
-            viewModel.submit(spoken, onReadyForReview)
+            viewModel.submit(spoken, onReadyForReview, onLogged)
         }
     }
 
@@ -174,6 +191,9 @@ private fun AiAddEntry(
             verticalArrangement = Arrangement.Center,
         ) {
             Text(state.message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+            TextButton(onClick = { viewModel.submit(text, onReadyForReview, onLogged) }, modifier = Modifier.padding(top = 12.dp)) {
+                Text("Try again")
+            }
             // A failed lookup shouldn't strand the entry: offer the manual path right here
             // rather than making the user back out and find it in Settings.
             TextButton(onClick = onEnterManually, modifier = Modifier.padding(top = 12.dp)) {
@@ -200,7 +220,7 @@ private fun AiAddEntry(
                 modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
             )
             Button(
-                onClick = { viewModel.submit(text, onReadyForReview) },
+                onClick = { viewModel.submit(text, onReadyForReview, onLogged) },
                 enabled = text.isNotBlank(),
                 modifier = Modifier.padding(top = 16.dp),
             ) { Text("Continue") }
@@ -219,7 +239,7 @@ private fun ProcessingView() {
         verticalArrangement = Arrangement.Center,
     ) {
         CircularProgressIndicator()
-        Text("Looking up nutrition", modifier = Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleMedium)
-        Text("Usually under 2 seconds", color = MaterialTheme.colorScheme.secondary)
+        Text("Looking it up", modifier = Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleMedium)
+        Text("Your own foods first, then the food list", color = MaterialTheme.colorScheme.secondary)
     }
 }

@@ -47,6 +47,12 @@ object ServiceLocator {
         private set
     lateinit var resetManager: ResetManager
         private set
+    lateinit var personalStore: com.nutritionscribe.app.data.resolve.RoomPersonalStore
+        private set
+    lateinit var labelPack: com.nutritionscribe.app.data.resolve.LabelPack
+        private set
+    lateinit var logPipeline: com.nutritionscribe.app.data.resolve.LogPipeline
+        private set
 
     /**
      * Warm cache of the current backend choice, kept in sync in the background so
@@ -62,15 +68,31 @@ object ServiceLocator {
         settingsRepository = SettingsRepository(appContext)
         debugLogger = DebugLogger(appContext)
         fixedFoodCache = FixedFoodCache(database.fixedFoodCacheDao())
-        exportImportManager = ExportImportManager(appContext, database.entryDao())
+        exportImportManager = ExportImportManager(
+            appContext, database.entryDao(), database.personalFoodDao(),
+            onPersonalFoodsChanged = { personalStore.invalidate() },
+        )
         foodDatabase = FoodDatabase(appContext)
         goalsRepository = GoalsRepository(database.metricGoalDao(), settingsRepository)
+
+        personalStore = com.nutritionscribe.app.data.resolve.RoomPersonalStore(database.personalFoodDao())
+        labelPack = com.nutritionscribe.app.data.resolve.LabelPack(appContext)
+        logPipeline = com.nutritionscribe.app.data.resolve.LogPipeline(
+            entryDao = database.entryDao(),
+            personal = personalStore,
+            usda = { foodDatabase.reader()?.let { com.nutritionscribe.shared.resolve.UsdaFoodSource(it) } },
+            labels = labelPack,
+            ai = ::currentAiLookup,
+            debugLogger = debugLogger,
+        )
         resetManager = ResetManager(
             entryDao = database.entryDao(),
             unprocessedDao = database.unprocessedDao(),
             fixedFoodCacheDao = database.fixedFoodCacheDao(),
             metricGoalDao = database.metricGoalDao(),
             settingsRepository = settingsRepository,
+            personalFoodDao = database.personalFoodDao(),
+            onPersonalFoodsCleared = { personalStore.invalidate() },
         )
         backgroundScope.launch {
             // Carries a pre-Goals-tab protein goal and baseline across from
@@ -85,6 +107,20 @@ object ServiceLocator {
         }
         backgroundScope.launch {
             settingsRepository.lookupSource.collect { lookupSourceCache.value = it }
+        }
+    }
+
+    /**
+     * Layer 4, or null. Only ever with the user's own key, and only while they
+     * have AI help switched on: the app works fully without it.
+     */
+    fun currentAiLookup(): com.nutritionscribe.shared.resolve.AiItemLookup? {
+        if (lookupSourceCache.value != LookupSource.AI) return null
+        val kind = backendCache.value
+        val key = settingsRepository.getApiKey(kind)?.takeIf { it.isNotBlank() } ?: return null
+        return when (kind) {
+            AiBackendKind.OPENAI -> com.nutritionscribe.shared.resolve.OpenAiItemLookup(key)
+            AiBackendKind.ANTHROPIC -> com.nutritionscribe.shared.resolve.AnthropicItemLookup(key)
         }
     }
 

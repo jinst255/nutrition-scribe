@@ -141,30 +141,7 @@ object FoodQuery {
 
     /** Text in, cleaner text out. Safe to call more than once. */
     fun preprocess(text: String): String {
-        var t = text.trim()
-
-        // "⅓bell peper" -> "0.3333 bell peper". Spaces on both sides because the
-        // glyph is regularly typed flush against the next word.
-        for ((glyph, value) in UNICODE_FRACTIONS) {
-            if (t.indexOf(glyph) >= 0) t = t.replace(glyph.toString(), " ${trim(value)} ")
-        }
-
-        // Order matters: "1/4" has to become 0.25 before UNIT_AND_FRACTION looks
-        // for the number after "and", or "a cup and 1/4" collapses to "2 cup/4".
-        t = SLASH_FRACTION.replace(t) { m ->
-            val d = m.groupValues[2].toDouble()
-            if (d == 0.0) m.value else trim(m.groupValues[1].toDouble() / d)
-        }
-        t = UNIT_AND_A_HALF.replace(t) { m -> "1.5 ${m.groupValues[1]}" }
-        t = UNIT_AND_FRACTION.replace(t) { m ->
-            "${trim(1 + (m.groupValues[2].toDoubleOrNull() ?: 0.0))} ${m.groupValues[1]}"
-        }
-        t = AND_A_HALF.replace(t) { m -> trim(m.groupValues[1].toDouble() + 0.5) }
-        // "half a serving" -> "half serving", so the quantity parser sees the unit.
-        t = NUM_A_UNIT.replace(t) { m -> "${m.groupValues[1]} ${m.groupValues[2]}" }
-        // "a couple of eggs" -> "couple of eggs". The article was being read as a
-        // count of one, and the word carrying the actual number was skipped.
-        t = ARTICLE_THEN_COUNT.replace(t) { m -> m.groupValues[1] }
+        var t = normaliseNumbers(text.trim())
 
         t = WHITESPACE.replace(t, " ").trim()
         while (true) {
@@ -191,6 +168,39 @@ object FoodQuery {
                 }
             }
         }
+        return t
+    }
+
+    /**
+     * Just the number handling from [preprocess]: fractions, "a cup and a half",
+     * "half a serving". No filler stripping and no moving the amount — the item
+     * parser reads amounts per food, so it must not have them shuffled first.
+     */
+    fun normaliseNumbers(text: String): String {
+        var t = text
+
+        // "⅓bell peper" -> "0.3333 bell peper". Spaces on both sides because the
+        // glyph is regularly typed flush against the next word.
+        for ((glyph, value) in UNICODE_FRACTIONS) {
+            if (t.indexOf(glyph) >= 0) t = t.replace(glyph.toString(), " ${trim(value)} ")
+        }
+
+        // Order matters: "1/4" has to become 0.25 before UNIT_AND_FRACTION looks
+        // for the number after "and", or "a cup and 1/4" collapses to "2 cup/4".
+        t = SLASH_FRACTION.replace(t) { m ->
+            val d = m.groupValues[2].toDouble()
+            if (d == 0.0) m.value else trim(m.groupValues[1].toDouble() / d)
+        }
+        t = UNIT_AND_A_HALF.replace(t) { m -> "1.5 ${m.groupValues[1]}" }
+        t = UNIT_AND_FRACTION.replace(t) { m ->
+            "${trim(1 + (m.groupValues[2].toDoubleOrNull() ?: 0.0))} ${m.groupValues[1]}"
+        }
+        t = AND_A_HALF.replace(t) { m -> trim(m.groupValues[1].toDouble() + 0.5) }
+        // "half a serving" -> "half serving", so the quantity parser sees the unit.
+        t = NUM_A_UNIT.replace(t) { m -> "${m.groupValues[1]} ${m.groupValues[2]}" }
+        // "a couple of eggs" -> "couple of eggs". The article was being read as a
+        // count of one, and the word carrying the actual number was skipped.
+        t = ARTICLE_THEN_COUNT.replace(t) { m -> m.groupValues[1] }
         return t
     }
 

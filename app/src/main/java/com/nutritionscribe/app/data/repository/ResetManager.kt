@@ -16,10 +16,10 @@ import com.nutritionscribe.app.data.db.UnprocessedDao
  * The three categories are what a person would actually name, not how the
  * storage happens to be split:
  *
- *   food log  — entries and their nutrients, the unprocessed queue, and the
- *               fixed-food cache. The cache is derived from logging, so keeping
- *               it after wiping the log would resurrect foods from a log that no
- *               longer exists.
+ *   food log  — entries and their nutrients, the unprocessed queue, the old
+ *               fixed-food cache and the user's own foods. Those are learned
+ *               from logging, so keeping them after wiping the log would log
+ *               foods silently from a history that no longer exists.
  *   settings  — every preference AND the metric goals, because someone who says
  *               "reset my settings" means the goals too; they are only in a
  *               different table for query reasons.
@@ -31,6 +31,8 @@ class ResetManager(
     private val fixedFoodCacheDao: FixedFoodCacheDao,
     private val metricGoalDao: MetricGoalDao,
     private val settingsRepository: SettingsRepository,
+    private val personalFoodDao: com.nutritionscribe.app.data.db.PersonalFoodDao? = null,
+    private val onPersonalFoodsCleared: () -> Unit = {},
 ) {
 
     /** What a reset will destroy, so the confirmation can say so in numbers. */
@@ -62,6 +64,8 @@ class ResetManager(
             entryDao.deleteAll()
             unprocessedDao.deleteAll()
             fixedFoodCacheDao.deleteAll()
+            personalFoodDao?.deleteAll()
+            onPersonalFoodsCleared()
         }
         if (scope.settings) {
             metricGoalDao.deleteAll()

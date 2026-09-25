@@ -46,6 +46,11 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import java.util.Calendar
 
+/** The entry that just logged silently, for the "Logged — Fix" message on Home. */
+object LastLogged {
+    val entry = kotlinx.coroutines.flow.MutableStateFlow<Entry?>(null)
+}
+
 /** One tracked metric and where today stands against it. */
 data class MetricToday(val goal: MetricGoal, val amount: Double) {
     val isOver: Boolean
@@ -89,6 +94,9 @@ class HomeViewModel : androidx.lifecycle.ViewModel() {
     val todayTotal = repository.observeProteinTotal(startOfTodayMillis(), Long.MAX_VALUE)
     val dailyGoal = settings.dailyGoalGrams
     val unprocessedCount = repository.observeUnprocessed().map { it.size }
+    val needsGlance = ServiceLocator.database.entryDao().observeNeedsConfirm().map { rows ->
+        rows.map { it.entry.id }
+    }
 
     /**
      * Today's number for each metric the user actually tracks.
@@ -118,8 +126,26 @@ fun HomeScreen(
     onAddEntry: () -> Unit,
     onOpenUnprocessed: () -> Unit,
     onOpenEntry: (String) -> Unit = {},
+    onFixEntry: (String) -> Unit = {},
     viewModel: HomeViewModel = viewModel(),
 ) {
+    val glance by viewModel.needsGlance.collectAsState(initial = emptyList())
+    val snackbar = androidx.compose.runtime.remember { androidx.compose.material3.SnackbarHostState() }
+    // Collected rather than keyed: clearing the value would otherwise restart the
+    // effect and cancel the message before anyone saw it.
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        LastLogged.entry.collect { e ->
+            if (e == null) return@collect
+            LastLogged.entry.value = null
+            val kcal = e.calories?.let { " \u00B7 ${it.toInt()} kcal" }.orEmpty()
+            val result = snackbar.showSnackbar(
+                message = "Logged ${e.name.substringBefore(",")}$kcal \u2014 your usual",
+                actionLabel = "Fix",
+                duration = androidx.compose.material3.SnackbarDuration.Long,
+            )
+            if (result == androidx.compose.material3.SnackbarResult.ActionPerformed) onFixEntry(e.id)
+        }
+    }
     val entries by viewModel.todayEntries.collectAsState(initial = emptyList())
     val total by viewModel.todayTotal.collectAsState(initial = 0.0)
     val goal by viewModel.dailyGoal.collectAsState(initial = 160.0)
@@ -127,6 +153,7 @@ fun HomeScreen(
     val tracked by viewModel.trackedToday.collectAsState(initial = emptyList())
 
     Scaffold(
+        snackbarHost = { androidx.compose.material3.SnackbarHost(snackbar) },
         floatingActionButton = {
             FloatingActionButton(onClick = onAddEntry) {
                 Icon(Icons.Filled.Add, contentDescription = "Add entry")
@@ -151,6 +178,24 @@ fun HomeScreen(
                         modifier = Modifier.padding(12.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
+            if (glance.isNotEmpty()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .clickable { onFixEntry(glance.first()) },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                ) {
+                    Text(
+                        if (glance.size == 1) "1 entry from your watch needs a quick look"
+                        else "${glance.size} entries from your watch need a quick look",
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
                 }
             }
@@ -293,9 +338,9 @@ private fun CompactEntryRow(entry: Entry, lead: com.nutritionscribe.shared.model
             Column(modifier = Modifier.weight(1f)) {
                 Text(entry.name, style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    entry.timeLabel(),
+                    if (entry.needsConfirm) "${entry.timeLabel()} \u00B7 needs a look" else entry.timeLabel(),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
+                    color = if (entry.needsConfirm) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary,
                 )
             }
             Text(

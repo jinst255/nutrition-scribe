@@ -26,6 +26,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import com.nutritionscribe.app.data.db.toEntry
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -46,7 +50,6 @@ import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import com.nutritionscribe.app.ui.entry.EntryDetailScreen
 import com.nutritionscribe.app.ui.onboarding.OnboardingScreen
-import com.nutritionscribe.app.ui.review.ReviewScreen
 import com.nutritionscribe.app.ui.settings.SettingsScreen
 import com.nutritionscribe.app.ui.theme.AppThemeMode
 import com.nutritionscribe.app.ui.theme.NutritionScribeTheme
@@ -64,6 +67,11 @@ private object Routes {
     const val DEBUG_LOG = "debug_log"
     const val EXPORT_IMPORT = "export_import"
     const val ENTRY_DETAIL = "entry/{entryId}"
+    const val FIX = "fix/{entryId}"
+    const val SCAN = "scan/{index}"
+    const val MY_FOODS = "my_foods"
+    fun fix(id: String) = "fix/$id"
+    fun scan(index: Int) = "scan/$index"
     const val METRIC_CHART = "history/metric/{metric}"
     fun metricChart(metric: Metric) = "history/metric/${metric.key}"
     fun entryDetail(id: String) = "entry/$id"
@@ -113,7 +121,10 @@ private fun titleFor(route: String?, args: Bundle?): String = when (route) {
         java.time.format.DateTimeFormatter.ofPattern("EEEE, MMM d"),
     )
     Routes.ADD_ENTRY -> "Log food"
-    Routes.REVIEW -> "Check the numbers"
+    Routes.REVIEW -> "Check it once"
+    Routes.FIX -> "Fix entry"
+    Routes.SCAN -> "Scan the package"
+    Routes.MY_FOODS -> "My foods"
     Routes.UNPROCESSED -> "Needs attention"
     Routes.HISTORY -> "History"
     Routes.GOALS -> "Goals"
@@ -201,6 +212,7 @@ private fun MainNavScaffold() {
                     onAddEntry = { navController.navigate(Routes.ADD_ENTRY) },
                     onOpenUnprocessed = { navController.navigate(Routes.UNPROCESSED) },
                     onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
+                    onFixEntry = { id -> navController.navigate(Routes.fix(id)) },
                 )
             }
             composable(Routes.ADD_ENTRY) {
@@ -209,11 +221,50 @@ private fun MainNavScaffold() {
                     // A manual entry is already saved by the time this fires — there is
                     // nothing to review, so it goes straight back Home.
                     onManualSaved = { navController.popBackStack(Routes.HOME, inclusive = false) },
+                    onLogged = { navController.popBackStack(Routes.HOME, inclusive = false) },
                 )
             }
             composable(Routes.REVIEW) {
-                ReviewScreen(onConfirmed = { navController.popBackStack(Routes.HOME, inclusive = false) })
+                com.nutritionscribe.app.ui.confirm.ConfirmScreen(
+                    onLogged = { navController.popBackStack(Routes.HOME, inclusive = false) },
+                    onScan = { i -> navController.navigate(Routes.scan(i)) },
+                )
             }
+            composable(
+                Routes.FIX,
+                arguments = listOf(navArgument("entryId") { type = NavType.StringType }),
+            ) { backStackEntry ->
+                val id = backStackEntry.arguments?.getString("entryId").orEmpty()
+                var ready by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                androidx.compose.runtime.LaunchedEffect(id) {
+                    val row = ServiceLocator.database.entryDao().find(id)
+                    com.nutritionscribe.app.ui.confirm.LogSession.resolution = null
+                    com.nutritionscribe.app.ui.confirm.LogSession.editing = row?.toEntry()
+                    ready = true
+                }
+                if (ready && com.nutritionscribe.app.ui.confirm.LogSession.editing != null) {
+                    com.nutritionscribe.app.ui.confirm.ConfirmScreen(
+                        onLogged = { navController.popBackStack() },
+                        onScan = { i -> navController.navigate(Routes.scan(i)) },
+                    )
+                } else if (ready) {
+                    Text("That entry is gone.", modifier = Modifier.padding(24.dp))
+                }
+            }
+            composable(
+                Routes.SCAN,
+                arguments = listOf(navArgument("index") { type = NavType.IntType }),
+            ) { backStackEntry ->
+                val index = backStackEntry.arguments?.getInt("index") ?: 0
+                com.nutritionscribe.app.ui.scan.ScanScreen(
+                    onFound = { candidate ->
+                        com.nutritionscribe.app.ui.confirm.LogSession.scanned = index to candidate
+                        navController.popBackStack()
+                    },
+                    onCancel = { navController.popBackStack() },
+                )
+            }
+            composable(Routes.MY_FOODS) { com.nutritionscribe.app.ui.myfoods.MyFoodsScreen() }
             composable(Routes.UNPROCESSED) { UnprocessedScreen() }
             composable(Routes.HISTORY) {
                 HistoryScreen(
@@ -235,8 +286,10 @@ private fun MainNavScaffold() {
                 Routes.ENTRY_DETAIL,
                 arguments = listOf(navArgument("entryId") { type = NavType.StringType }),
             ) { backStackEntry ->
+                val id = backStackEntry.arguments?.getString("entryId").orEmpty()
                 EntryDetailScreen(
-                    entryId = backStackEntry.arguments?.getString("entryId").orEmpty(),
+                    entryId = id,
+                    onFix = { navController.navigate(Routes.fix(id)) },
                 )
             }
             composable(Routes.GOALS) { GoalsScreen() }
@@ -244,6 +297,7 @@ private fun MainNavScaffold() {
                 SettingsScreen(
                     onOpenDebugLog = { navController.navigate(Routes.DEBUG_LOG) },
                     onOpenExportImport = { navController.navigate(Routes.EXPORT_IMPORT) },
+                    onOpenMyFoods = { navController.navigate(Routes.MY_FOODS) },
                 )
             }
             composable(Routes.DEBUG_LOG) { DebugLogScreen() }

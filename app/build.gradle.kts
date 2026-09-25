@@ -45,6 +45,8 @@ android {
 
     buildTypes {
         release {
+            // Phones only: the emulator CPU types doubled the download for nobody.
+            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
             // Left off deliberately. R8 needs keep rules for Room, Retrofit/Moshi
             // reflection and kotlinx-serialization; turning it on untested trades a
             // smaller APK for runtime crashes that only appear in release builds.
@@ -112,6 +114,17 @@ dependencies {
     implementation("com.squareup.moshi:moshi-kotlin:1.15.1")
 
     implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // Barcode and label scanning. The barcode model is BUNDLED (5 MB, works offline
+    // from the first launch). Text recognition comes from Play Services instead:
+    // bundled it was 11 MB per CPU type, and reading a label is the rarer assist.
+    // It downloads once on first use; phones without Play Services can still scan
+    // barcodes and type a label in.
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     implementation("com.google.android.gms:play-services-wearable:18.1.0")
     implementation("androidx.glance:glance-appwidget:1.0.0")
 

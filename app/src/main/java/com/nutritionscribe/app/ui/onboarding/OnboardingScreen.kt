@@ -23,6 +23,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -72,9 +73,9 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 // developer account to write down that they ate a banana.
                 Text("Ready to go", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "Say or type what you ate and it gets logged — using 13,400 foods " +
-                        "built into the app. No account, no key, no connection needed, " +
-                        "and nothing you eat ever leaves your phone.",
+                    "Say or type what you ate. The first time you log a food you check it once; " +
+                        "after that it logs without asking. 13,400 foods are built in — no " +
+                        "account, no key, no connection needed, and nothing you eat leaves your phone.",
                     modifier = Modifier.padding(vertical = 12.dp),
                     color = MaterialTheme.colorScheme.secondary,
                 )
@@ -88,6 +89,38 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     },
                     modifier = Modifier.padding(top = 4.dp),
                 ) { Text("Start logging") }
+
+                // Recommended, never required: the single biggest accuracy gain for
+                // packaged food, but ~40 MB, so it is offered rather than forced.
+                val pack = ServiceLocator.labelPack
+                val packStatus by pack.status.collectAsState()
+                val packPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+                ) { uri -> if (uri != null) scope.launch { pack.installFrom(uri) } }
+                Card(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Recommended: the label pack", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            if (packStatus is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed)
+                                "Installed. Branded food and barcode scans will use the real package label."
+                            else "Real Nutrition Facts for about 137,000 packaged products, so branded food and " +
+                                "barcode scans are exact instead of estimated. About 40 MB. You can add it later in Settings.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                        if (packStatus !is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                                if (com.nutritionscribe.app.data.resolve.LabelPack.DOWNLOAD_URL != null) {
+                                    Button(onClick = { scope.launch { pack.download() } }) { Text("Download") }
+                                }
+                                androidx.compose.material3.OutlinedButton(onClick = { packPicker.launch(arrayOf("*/*")) }) {
+                                    Text("Install from file")
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Text(
                     "Adding an API key is optional. It costs a fraction of a cent per " +

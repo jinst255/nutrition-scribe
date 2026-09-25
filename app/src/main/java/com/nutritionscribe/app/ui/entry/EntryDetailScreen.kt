@@ -69,6 +69,7 @@ class EntryDetailViewModel : ViewModel() {
 @Composable
 fun EntryDetailScreen(
     entryId: String,
+    onFix: () -> Unit = {},
     viewModel: EntryDetailViewModel = viewModel(),
 ) {
     val entry by remember(entryId) { viewModel.entry(entryId) }.collectAsState(initial = null)
@@ -97,12 +98,13 @@ fun EntryDetailScreen(
         EntryReader(
             entry = current,
             onEdit = { editing = true },
+            onFix = onFix,
         )
     }
 }
 
 @Composable
-private fun EntryReader(entry: Entry, onEdit: () -> Unit) {
+private fun EntryReader(entry: Entry, onEdit: () -> Unit, onFix: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -156,6 +158,38 @@ private fun EntryReader(entry: Entry, onEdit: () -> Unit) {
             Badge(sourceLabel(entry), MaterialTheme.colorScheme.secondary)
         }
 
+        if (entry.needsConfirm) {
+            Text(
+                "Logged from your watch on a best guess. Check it once and it will be remembered.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
+        // What it was made of, and where each number came from.
+        if (entry.items.isNotEmpty()) {
+            HorizontalDivider()
+            Text("What's in it", style = MaterialTheme.typography.titleMedium)
+            entry.items.forEach { item ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text(item.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Text(item.nutrients[Metric.CALORIES.key]?.let { "${format(it)} kcal" } ?: "", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text(
+                        listOfNotNull(
+                            com.nutritionscribe.app.ui.confirm.ItemDraft.label(
+                                runCatching { com.nutritionscribe.shared.resolve.Origin.valueOf(item.origin) }.getOrNull(),
+                            ),
+                            item.portion,
+                        ).joinToString(" \u00B7 "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
+            }
+        }
+
         HorizontalDivider()
 
         // Every nutrient, including the ones the user does not track: they were
@@ -191,8 +225,13 @@ private fun EntryReader(entry: Entry, onEdit: () -> Unit) {
 
         // Back lives in the title bar now; a second Back button here was the
         // same control twice.
-        Button(onClick = onEdit, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-            Text("Edit")
+        // Fix goes through the same card as logging, so a correction is also
+        // remembered: this food will never be wrong the same way again.
+        Button(onClick = onFix, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            Text(if (entry.needsConfirm) "Check it" else "Fix it")
+        }
+        OutlinedButton(onClick = onEdit, modifier = Modifier.fillMaxWidth()) {
+            Text("Edit the numbers only")
         }
     }
 }
@@ -321,6 +360,9 @@ private fun Badge(text: String, color: androidx.compose.ui.graphics.Color) {
 
 /** Where the numbers came from, in words rather than in storage terms. */
 private fun sourceLabel(entry: Entry): String = when {
+    entry.items.isNotEmpty() -> entry.items.map {
+        com.nutritionscribe.app.ui.confirm.ItemDraft.label(runCatching { com.nutritionscribe.shared.resolve.Origin.valueOf(it.origin) }.getOrNull())
+    }.distinct().joinToString(" + ")
     entry.foodDbId != null -> "Offline food list"
     entry.isFixedFood -> "Saved food"
     entry.source.isBlank() -> "Typed in"

@@ -46,6 +46,18 @@ data class Entry(
     val needsDetail: Boolean = false,
     /** Row this resolved to in the bundled food database, when it came from there. */
     val foodDbId: Long? = null,
+    /**
+     * What the entry is made of, item by item, as it was confirmed: which food, how
+     * much, and where the numbers came from. This is what "Fix" opens, and what a
+     * correction is written back through to the user's own foods.
+     */
+    val items: List<LoggedItem> = emptyList(),
+    /**
+     * Logged without anyone looking — a first-time food said to the watch. It
+     * counts toward today (a best guess beats a gap) but waits on the phone for a
+     * glance, and nothing is remembered from it until then.
+     */
+    val needsConfirm: Boolean = false,
 ) {
     fun amountOf(metric: Metric): Double? = nutrients[metric.key]
 
@@ -54,6 +66,28 @@ data class Entry(
     val carbsGrams: Double? get() = nutrients[Metric.CARBS.key]
     val fatGrams: Double? get() = nutrients[Metric.FAT.key]
 }
+
+/** One food within an entry. */
+@Serializable
+data class LoggedItem(
+    /** Display name of the food it resolved to. */
+    val name: String,
+    /** The words it came from. */
+    val said: String,
+    /** Its key in the user's own foods. */
+    val key: String,
+    /** "1 cup (244 g)", "your usual" — the amount, in words. */
+    val portion: String? = null,
+    val grams: Double? = null,
+    /** Where the numbers came from: USDA, LABEL, PERSONAL, AI, CURATED, MANUAL. */
+    val origin: String,
+    /** The food row it resolved to ("usda:123", "label:456"), for opening it again. */
+    val candidateId: String? = null,
+    val nutrients: Map<String, Double> = emptyMap(),
+    /** The parsed amount, kept so a fix can re-scale against it. */
+    val amount: Double? = null,
+    val unit: String? = null,
+)
 
 /** Returns a copy with one metric set, or removed when [amount] is null. */
 fun Entry.withNutrient(metric: Metric, amount: Double?): Entry = copy(

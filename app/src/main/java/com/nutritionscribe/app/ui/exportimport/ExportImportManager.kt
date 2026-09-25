@@ -20,7 +20,13 @@ sealed class TransferResult {
 }
 
 /** Export/import (Section 12/19): the only way to move or back up data, since there's no cloud sync. */
-class ExportImportManager(private val context: Context, private val entryDao: EntryDao) {
+class ExportImportManager(
+    private val context: Context,
+    private val entryDao: EntryDao,
+    /** The user's own foods travel with the log in a JSON backup; see [toJson]. */
+    private val personalFoodDao: com.nutritionscribe.app.data.db.PersonalFoodDao? = null,
+    private val onPersonalFoodsChanged: () -> Unit = {},
+) {
 
     /**
      * Both of these used to return Unit, and the screen threw the result away.
@@ -33,7 +39,7 @@ class ExportImportManager(private val context: Context, private val entryDao: En
     suspend fun exportTo(uri: Uri, format: ExportFormat): TransferResult = try {
         val entries = entryDao.observeAll().first().map { it.toEntry() }
         val text = when (format) {
-            ExportFormat.JSON -> toJson(entries)
+            ExportFormat.JSON -> toJson(entries, personalFoodDao?.all().orEmpty())
             ExportFormat.CSV -> EntryCsv.encode(entries)
         }
         val stream = context.contentResolver.openOutputStream(uri)
@@ -58,6 +64,7 @@ class ExportImportManager(private val context: Context, private val entryDao: En
                 val first = text.trimStart().firstOrNull()
                 val looksJson = first == '[' || first == '{'
                 val entries = if (looksJson) fromJson(text) else EntryCsv.decode(text)
+                if (looksJson) importPersonalFoods(text)
                 if (entries.isEmpty()) {
                     TransferResult.Failed("No entries found in that file.")
                 } else {
@@ -76,11 +83,38 @@ class ExportImportManager(private val context: Context, private val entryDao: En
         )
     }
 
-    private fun toJson(entries: List<Entry>): String =
-        kotlinx.serialization.json.Json.encodeToString(
+    /**
+     * A JSON backup is the log AND what the app has learned from it. Without the
+     * second half, restoring onto a new phone would ask about every food again.
+     * An export with no foods keeps the plain-array shape older versions read.
+     */
+    private fun toJson(entries: List<Entry>, foods: List<com.nutritionscribe.app.data.db.PersonalFoodRow>): String {
+        val list = kotlinx.serialization.json.Json.encodeToJsonElement(
             kotlinx.serialization.builtins.ListSerializer(Entry.serializer()),
             entries,
         )
+        if (foods.isEmpty()) return list.toString()
+        return kotlinx.serialization.json.buildJsonObject {
+            put("format", kotlinx.serialization.json.JsonPrimitive("nutrition-scribe/2"))
+            put("entries", list)
+            put("myFoods", kotlinx.serialization.json.JsonArray(foods.map { kotlinx.serialization.json.Json.parseToJsonElement(it.json) }))
+        }.toString()
+    }
+
+    private suspend fun importPersonalFoods(text: String) {
+        val dao = personalFoodDao ?: return
+        val root = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text) }.getOrNull()
+            as? kotlinx.serialization.json.JsonObject ?: return
+        val foods = (root["myFoods"] as? kotlinx.serialization.json.JsonArray) ?: return
+        val store = com.nutritionscribe.app.data.resolve.RoomPersonalStore(dao)
+        val rows = foods.mapNotNull { el ->
+            runCatching {
+                lenientJson.decodeFromJsonElement(com.nutritionscribe.shared.resolve.PersonalFood.serializer(), el)
+            }.getOrNull()?.let { store.encode(it) }
+        }
+        dao.upsertAll(rows)
+        onPersonalFoodsChanged()
+    }
 
     /**
      * Reads the current format, falling back to the pre-rename one.
@@ -91,7 +125,12 @@ class ExportImportManager(private val context: Context, private val entryDao: En
      * into this app — and without this fallback, choosing JSON rather than CSV
      * would throw and take their whole history with it.
      */
-    private fun fromJson(text: String): List<Entry> {
+    private fun fromJson(raw: String): List<Entry> {
+        // The current backup wraps the entries with the user's foods.
+        val text = runCatching {
+            (kotlinx.serialization.json.Json.parseToJsonElement(raw) as? kotlinx.serialization.json.JsonObject)
+                ?.get("entries")?.toString()
+        }.getOrNull() ?: raw
         // The format is DETECTED, not guessed at with try/catch. Every field of
         // the current Entry has a default, so a v1 file decodes "successfully" as
         // v2 and silently yields entries with no nutrients at all — an import that

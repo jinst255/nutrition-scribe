@@ -3,7 +3,6 @@ package com.nutritionscribe.app.data
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
-import com.nutritionscribe.app.data.repository.LogEntryResult
 import com.nutritionscribe.app.di.ServiceLocator
 import com.nutritionscribe.shared.model.Confidence
 import com.nutritionscribe.shared.model.Entry
@@ -30,15 +29,14 @@ class WearMessageListenerService : com.google.android.gms.wearable.WearableListe
         if (event.path != WatchSyncPaths.MESSAGE_LOG_ENTRY) return
         val rawText = String(event.data)
         scope.launch {
-            val repository = ServiceLocator.currentEntryRepository()
-            when (val result = repository.processRawEntry(rawText)) {
-                is LogEntryResult.NeedsReview -> {
-                    repository.confirm(result.entry)
-                    notifyWatch(result.entry)
-                    pushTodaySummary()
-                }
-                is LogEntryResult.Failed -> Unit
-            }
+            // A remembered food logs straight from the watch. A first-time one logs
+            // on its best guess — today's total should not be missing it — and waits
+            // on the phone for a glance; nothing is learned from it until then.
+            val pipeline = ServiceLocator.logPipeline
+            val r = pipeline.resolve(rawText)
+            val entry = if (r.silent) pipeline.logNow(r) else pipeline.logProvisional(r)
+            notifyWatch(entry)
+            pushTodaySummary()
         }
     }
 

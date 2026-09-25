@@ -46,6 +46,7 @@ import com.nutritionscribe.app.data.repository.ThemeMode
 import com.nutritionscribe.app.di.ServiceLocator
 import com.nutritionscribe.shared.retention.RetentionUnit
 import com.nutritionscribe.shared.retention.RetentionWindow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class SettingsViewModel : ViewModel() {
@@ -57,6 +58,7 @@ class SettingsViewModel : ViewModel() {
 fun SettingsScreen(
     onOpenDebugLog: () -> Unit,
     onOpenExportImport: () -> Unit,
+    onOpenMyFoods: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val settings = viewModel.settings
@@ -95,40 +97,33 @@ fun SettingsScreen(
         }
 
         if (!manualMode) {
-            Text(
-                "Look up nutrition with",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 12.dp, bottom = 6.dp),
+            // ---- The default path: local, free, nothing to set up ------------
+            SectionHeader("Food data")
+            val myFoods by remember {
+                ServiceLocator.database.personalFoodDao().observeAll().map { it.size }
+            }.collectAsState(initial = 0)
+            NavRow(
+                title = "My foods",
+                subtitle = if (myFoods == 0) "Foods you confirm are remembered here and log without asking."
+                else "$myFoods remembered. They log without asking \u2014 view, change or forget them.",
+                onClick = onOpenMyFoods,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = lookupSource == LookupSource.AI,
-                    onClick = { scope.launch { settings.setLookupSource(LookupSource.AI) } },
-                    label = { Text("AI") },
-                )
-                FilterChip(
-                    selected = lookupSource == LookupSource.OFFLINE,
-                    onClick = { scope.launch { settings.setLookupSource(LookupSource.OFFLINE) } },
-                    label = { Text("Offline food list") },
-                )
-            }
-            Hint(
-                when (lookupSource) {
-                    LookupSource.AI ->
-                        "Understands anything you can say \u2014 brands, restaurant meals, " +
-                            "whole sentences. Needs an API key and a connection."
-                    LookupSource.OFFLINE ->
-                        "13,400 USDA foods built into the app. Instant, free, works on a " +
-                            "plane, and nothing you eat leaves your phone. Doesn't know brands."
-                },
-            )
+            LabelPackRow()
+            Hint("Built in: 13,400 USDA foods and a hand-checked list of everyday ones. Works offline, costs nothing.")
 
-            if (apiKeyText.isBlank() && lookupSource == LookupSource.AI) {
-                Text(
-                    "No API key set, so the offline list is being used instead.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 6.dp),
+            // ---- Optional, clearly separate: the user's own AI key ------------
+            SectionHeader("AI helper (optional)")
+            SettingRow(
+                title = "Ask AI about foods you haven't logged before",
+                subtitle = "When something is new to you, what you said is sent, as text, with your own key, and the " +
+                    "answer fills the check card. Foods you've confirmed never leave the phone. Everything works without it.",
+            ) {
+                Switch(
+                    checked = lookupSource == LookupSource.AI && apiKeyText.isNotBlank(),
+                    enabled = apiKeyText.isNotBlank(),
+                    onCheckedChange = {
+                        scope.launch { settings.setLookupSource(if (it) LookupSource.AI else LookupSource.OFFLINE) }
+                    },
                 )
             }
 
@@ -146,7 +141,7 @@ fun SettingsScreen(
                 // singleLine is the fix for a key that wrapped to four lines and
                 // took over the screen.
                 singleLine = true,
-                placeholder = { Text("sk-\u2026") },
+                placeholder = { Text("Optional \u2014 sk-\u2026") },
                 visualTransformation = if (apiKeyVisible) {
                     VisualTransformation.None
                 } else {
@@ -228,6 +223,51 @@ fun SettingsScreen(
 
         HorizontalDivider(modifier = Modifier.padding(top = 28.dp, bottom = 20.dp))
         ResetSection(reset = viewModel.reset, onOpenExportImport = onOpenExportImport)
+    }
+}
+
+/**
+ * The optional label pack: install from a file now, download once there is a place
+ * to download it from. Recommended, never required.
+ */
+@Composable
+private fun LabelPackRow() {
+    val pack = ServiceLocator.labelPack
+    val status by pack.status.collectAsState()
+    val scope = rememberCoroutineScope()
+    var lastError by remember { mutableStateOf<String?>(null) }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) scope.launch {
+            val r = pack.installFrom(uri)
+            lastError = (r as? com.nutritionscribe.app.data.resolve.LabelPack.Status.Failed)?.message
+        }
+    }
+    Column(Modifier.padding(vertical = 8.dp)) {
+        Text("Label pack", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            when (val s = status) {
+                is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed ->
+                    "Installed: ${"%,d".format(s.products)} real package labels (${s.bytes / 1_000_000} MB). Branded food and barcode scans use the actual label."
+                is com.nutritionscribe.app.data.resolve.LabelPack.Status.Working -> "${s.what}\u2026 ${if (s.bytes > 0) "${s.bytes / 1_000_000} MB" else ""}"
+                is com.nutritionscribe.app.data.resolve.LabelPack.Status.Failed -> s.message
+                else -> "Recommended. Real package labels for about 137,000 products, so branded food and barcode scans are exact instead of estimated. About 40 MB."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        lastError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+            if (status is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed) {
+                androidx.compose.material3.OutlinedButton(onClick = { pack.remove() }) { Text("Remove") }
+            } else {
+                if (com.nutritionscribe.app.data.resolve.LabelPack.DOWNLOAD_URL != null) {
+                    androidx.compose.material3.Button(onClick = { scope.launch { pack.download() } }) { Text("Download") }
+                }
+                androidx.compose.material3.OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Install from file") }
+            }
+        }
     }
 }
 

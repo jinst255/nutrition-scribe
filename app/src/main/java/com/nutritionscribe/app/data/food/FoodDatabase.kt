@@ -113,6 +113,10 @@ class FoodDatabase(private val context: Context) {
         results
     }
 
+    /** The same file, for the shared resolver. Null if it could not be opened. */
+    fun reader(): com.nutritionscribe.shared.resolve.SqlReader? =
+        open()?.let { com.nutritionscribe.app.data.resolve.AndroidSql(it) }
+
     /** The single best match, or null when nothing in the database fits. */
     suspend fun lookup(text: String): FoodMatch? = search(text, limit = 1).firstOrNull()
 

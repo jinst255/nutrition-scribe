@@ -152,4 +152,34 @@ class MigrationTest {
         }
         db.close()
     }
+
+    @Test
+    fun migrate4To5_keepsEveryEntryAndAddsTheUsersFoods() {
+        // The cache-first lookup: an install upgraded from v4 keeps its whole log,
+        // untouched, and starts with no remembered foods of its own.
+        helper.createDatabase(dbName, 4).use { db ->
+            db.execSQL(
+                "INSERT INTO entries (id, timestampEpochMillis, rawText, name, isFixedFood, source, confidence," +
+                    " detailCompacted, timeUnspecified, needsDetail, foodDbId)" +
+                    " VALUES ('e4', 1789797747092, 'PB&J', 'PB&J', 0, 'openai', 'ESTIMATED', 0, 0, 0, NULL)"
+            )
+            db.execSQL("INSERT INTO entry_nutrient (entryId, metric, amount) VALUES ('e4', 'calories', 400.0)")
+        }
+        val db = helper.runMigrationsAndValidate(dbName, 5, true, NutritionScribeDatabase.MIGRATION_4_5)
+        db.query("SELECT name, itemsJson, needsConfirm FROM entries WHERE id = 'e4'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("PB&J", it.getString(0))
+            assertTrue("no item breakdown for an old entry", it.isNull(1))
+            assertEquals(0, it.getInt(2))
+        }
+        db.query("SELECT amount FROM entry_nutrient WHERE entryId = 'e4'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(400.0, it.getDouble(0), 0.0001)
+        }
+        db.query("SELECT COUNT(*) FROM personal_food").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("old entries are NOT imported as remembered foods", 0, it.getInt(0))
+        }
+        db.close()
+    }
 }

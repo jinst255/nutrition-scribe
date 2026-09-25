@@ -157,9 +157,32 @@ NUM_A_UNIT = re.compile(
     rf"\b({'|'.join(NUM_WORDS)}|\d+(?:\.\d+)?)\s+an?\s+{UNITS}\b", re.I)
 
 
+DAIRY = re.compile(r"\b(milk|yogurt|yoghurt|cottage|greek)\b", re.I)
+FAT_LEVEL = [
+    # 0% / fat free / skim -> USDA's "nonfat"
+    (re.compile(r"\b0\s*%(?:\s*fat)?|\bfat[- ]free\b|\bskim\b", re.I), "nonfat"),
+    (re.compile(r"\b1\s*%(?:\s*fat)?", re.I), "lowfat"),
+    (re.compile(r"\b2\s*%(?:\s*fat)?", re.I), "reduced fat"),
+    # 4% is how cottage cheese is sold; USDA calls it "creamed". Whole-milk
+    # yogurt and whole milk are the same fat level for the others.
+    (re.compile(r"\b4\s*%(?:\s*fat)?", re.I), "FOUR_PCT"),
+]
+
+
+def _fat_level(t):
+    """ "4% cottage cheese" -> "creamed cottage cheese". Only next to a dairy word."""
+    if not DAIRY.search(t):
+        return t
+    for pat, word in FAT_LEVEL:
+        if word == "FOUR_PCT":
+            word = "creamed" if re.search(r"cottage", t, re.I) else "whole"
+        t = pat.sub(f" {word} ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def preprocess(text):
     """Text in, cleaner text out. Safe to call more than once."""
-    t = text.strip()
+    t = _fat_level(text.strip())
 
     # "\u2153bell peper" -> "0.333 bell peper". Spaces on both sides because the
     # glyph is regularly typed flush against the next word.
@@ -256,6 +279,21 @@ UNEATEN = re.compile(r"\b(dry mix|unprepared|dehydrated|condensed, undiluted|"
 
 CANDIDATES = 120
 
+ADDED_QUALIFIERS = [
+    (r"\bwith sauce\b", 8), (r"\bfat added\b", 6), (r"\bskin eaten\b", 5),
+    (r"\bcoated\b", 6), (r"\bbreaded\b", 6), (r"\bfrom restaurant\b", 5),
+    (r"\bglutinous\b", 6), (r"\bsprouted\b", 6), (r"\bstir-fried\b", 5),
+    (r"\bpuerto rican\b", 4), (r"\bnuggets\b", 5), (r"\bchinese\b", 4),
+    (r"\bsweetened\b", 3), (r"\bcanned\b", 2),
+]
+# How food is plainly prepared at home, and how a package label measures it.
+#
+# "without salt" is deliberately NOT here. It is almost only on SR Legacy rows,
+# whose default serving is often a CUP: preferring them made "peanut butter on
+# toast" a 258 g cup of peanut butter at 1520 calories. A sodium win is not
+# worth a 5x calorie loss.
+PLAIN_PREP = r"\b(no added fat|skin not eaten|meat only|plain)\b"
+
 
 def candidate_sql(words, prefix_last=False):
     """
@@ -345,6 +383,15 @@ def _rank(db, words, limit):
         # SR Legacy honey with its 339 g cup: 1104 calories.
         if r[2] == "survey_fndds_food":
             score += 2
+        # Preparations that add something the person did not say. Measured
+        # against package labels, these were the offline path's worst habit:
+        # "grilled chicken breast" -> "grilled with sauce, skin eaten", "baked
+        # sweet potato" -> "fat added", "black beans" -> a seasoned NFS row.
+        for q, pen in ADDED_QUALIFIERS:
+            if re.search(q, desc) and not any(w in desc_words and w in q for w in words):
+                score -= pen
+        if re.search(PLAIN_PREP, desc):
+            score += 3
         scored.append((score, r))
 
     scored.sort(key=lambda x: -x[0])
@@ -389,8 +436,19 @@ def is_vague(text):
     return all(stem(w) in MEAL_WORDS or w in VAGUE_MODIFIERS for w in words)
 
 
+# Foods whose NAME contains "and". Splitting "coffee with half and half" on
+# "and" turned the cream into two halves of nothing and logged black coffee.
+COMPOUNDS = ["half and half", "mac and cheese", "macaroni and cheese",
+             "peanut butter and jelly", "peanut butter and jam", "salt and vinegar",
+             "sweet and sour", "fish and chips", "cookies and cream", "oats and honey",
+             "oats n honey", "rice and beans", "biscuits and gravy", "franks and beans"]
+
+
 def split_items(text):
-    parts = [p.strip() for p in ITEM_SEPARATORS.split(text.strip())]
+    protected = text
+    for c in COMPOUNDS:
+        protected = re.sub(rf"\b{c}\b", c.replace(" and ", " AND_ "), protected, flags=re.I)
+    parts = [p.strip().replace(" AND_ ", " and ") for p in ITEM_SEPARATORS.split(protected.strip())]
     parts = [p for p in parts if p and content_words(p)]
     return parts if len(parts) > 1 else [text.strip()]
 
@@ -492,6 +550,14 @@ def size_of(text):
     return None
 
 
+UNIT_SYNONYMS = {
+    "tbsp": ("tbsp", "tablespoon"), "tablespoon": ("tbsp", "tablespoon"),
+    "tsp": ("tsp", "teaspoon"), "teaspoon": ("tsp", "teaspoon"),
+    "cup": ("cup",), "slice": ("slice",), "piece": ("piece",),
+}
+# Fractions of a cup, for converting a spoon measure through a listed cup.
+VOLUME_OF = {"tbsp": 1 / 16, "tablespoon": 1 / 16, "tsp": 1 / 48, "teaspoon": 1 / 48}
+
 GRAM_UNITS = {"g", "gram", "grams"}
 OUNCE_UNITS = {"oz", "ounce", "ounces"}
 
@@ -514,7 +580,17 @@ def grams_for(db, row, parsed, text=""):
     portions = portions_for(db, row[0])
     if unit:
         singular = unit.rstrip("s")
-        named = [(l.lower(), g) for l, g in portions if singular in l.lower()]
+        # USDA spells units out inconsistently: "1 tbsp" on one row,
+        # "1 tablespoon" on the next. "2 tbsp hummus" missed a "1 tablespoon"
+        # portion and was logged as a 120 g serving: 292 calories for 71.
+        names = UNIT_SYNONYMS.get(singular, (singular,))
+        named = [(l.lower(), g) for l, g in portions
+                 if any(re.search(rf"\b{n}\b", l.lower()) for n in names)]
+        if not named and singular in VOLUME_OF:
+            # No portion in that unit, but a cup is listed: convert by volume.
+            cup = [(l.lower(), g) for l, g in portions if re.search(r"^1 cup\b", l.lower())]
+            if cup:
+                return count * _plainest(cup) * VOLUME_OF[singular]
         if named:
             # Portions come back smallest first, so taking the first match meant
             # "4 slices of white bread" used a 10 g "1 slice, snack-size".
@@ -581,8 +657,25 @@ def _plainest(named):
     for want in ("medium", "regular"):
         for label, grams in named:
             if want in label:
-                return grams
-    return min(named, key=lambda p: len(p[0]))[1]
+                return grams / _label_amount(label)
+    label, grams = min(named, key=lambda p: len(p[0]))
+    return grams / _label_amount(label)
+
+
+def _label_amount(label):
+    """
+    How many units a portion label describes: "2 tbsp" is 2, "0.5 cup" is 0.5.
+
+    Callers multiply by the person's own count, so the label has to be reduced
+    to ONE unit first. USDA lists peanut butter as "2 tbsp = 32 g", and "2
+    tablespoons of peanut butter" was being logged as 2 x 32 g: 377 calories
+    for 191.
+    """
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)\s", label)
+    if not m:
+        return 1.0
+    v = float(m.group(1))
+    return v if v > 0 else 1.0
 
 
 def has_unknown_word(db, words):
