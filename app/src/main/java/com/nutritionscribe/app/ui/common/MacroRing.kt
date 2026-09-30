@@ -112,7 +112,7 @@ fun MacroRing(
                 verticalArrangement = Arrangement.Center,
             ) {
                 Text(
-                    value.toInt().toString(),
+                    Math.round(value).toString(),
                     style = MaterialTheme.typography.displaySmall,
                     fontSize = (size.value * 0.26f).sp,
                     color = MaterialTheme.colorScheme.onSurface,

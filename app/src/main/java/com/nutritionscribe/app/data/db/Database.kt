@@ -277,6 +277,11 @@ interface EntryDao {
     @Query("SELECT COUNT(*) FROM entries")
     suspend fun count(): Int
 
+    /** Every entry at once, for one-off passes over the whole log. */
+    @Transaction
+    @Query("SELECT * FROM entries ORDER BY timestampEpochMillis DESC")
+    suspend fun all(): List<EntryWithNutrients>
+
     @Transaction
     @Query("SELECT * FROM entries WHERE id = :id LIMIT 1")
     suspend fun find(id: String): EntryWithNutrients?
@@ -386,8 +391,9 @@ interface FixedFoodCacheDao {
         UnprocessedRow::class,
         FixedFoodCacheRow::class,
         PersonalFoodRow::class,
+        com.nutritionscribe.app.data.usage.AiUsageRow::class,
     ],
-    version = 5,
+    version = 6,
 )
 abstract class NutritionScribeDatabase : RoomDatabase() {
     abstract fun entryDao(): EntryDao
@@ -395,6 +401,7 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
     abstract fun unprocessedDao(): UnprocessedDao
     abstract fun fixedFoodCacheDao(): FixedFoodCacheDao
     abstract fun personalFoodDao(): PersonalFoodDao
+    abstract fun aiUsageDao(): com.nutritionscribe.app.data.usage.AiUsageDao
 
     companion object {
         @Volatile private var instance: NutritionScribeDatabase? = null
@@ -429,6 +436,22 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
                         "`json` TEXT NOT NULL, `timesUsed` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, " +
                         "`isMeal` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`key`))"
                 )
+            }
+        }
+
+        /** What AI calls cost. A new table and nothing else: no existing row is touched. */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `ai_usage` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`timestampEpochMillis` INTEGER NOT NULL, `provider` TEXT NOT NULL, `model` TEXT NOT NULL, " +
+                        "`kind` TEXT NOT NULL, `inputTokens` INTEGER NOT NULL, `cachedInputTokens` INTEGER NOT NULL, " +
+                        "`outputTokens` INTEGER NOT NULL, `audioSeconds` REAL NOT NULL, `costUsd` REAL NOT NULL, " +
+                        "`durationMillis` INTEGER NOT NULL, `status` INTEGER NOT NULL, `tag` TEXT, `entryId` TEXT)"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_usage_timestampEpochMillis` ON `ai_usage` (`timestampEpochMillis`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_usage_entryId` ON `ai_usage` (`entryId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_usage_tag` ON `ai_usage` (`tag`)")
             }
         }
 
@@ -511,7 +534,7 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
                     // the user, but renaming it would leave every existing log stranded
                     // in a file nothing opens any more — a rebrand must not cost data.
                     "protein-scribe.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build().also { instance = it }
             }
     }

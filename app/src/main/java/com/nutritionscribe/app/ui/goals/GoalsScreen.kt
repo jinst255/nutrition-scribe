@@ -20,6 +20,9 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.foundation.clickable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +45,7 @@ import kotlinx.coroutines.launch
 
 class GoalsViewModel : ViewModel() {
     val goals = ServiceLocator.goalsRepository
+    val profile = ServiceLocator.settingsRepository.profile
 }
 
 /**
@@ -56,8 +60,13 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
     val repo = viewModel.goals
     val scope = rememberCoroutineScope()
     val goals by repo.goals.collectAsState(initial = emptyList())
+    val profile by viewModel.profile.collectAsState(initial = null)
 
     val enabledCount = goals.count { it.enabled }
+    var showMicros by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(goals.any { it.enabled && it.metric.isMicro }) {
+        if (goals.any { it.enabled && it.metric.isMicro }) showMicros = true
+    }
     val onlyProtein = enabledCount == 1 && goals.firstOrNull { it.enabled }?.metric == Metric.PROTEIN
 
     LazyColumn(
@@ -67,13 +76,30 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
         item {
             Column(modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)) {
                 Text(
-                    "Pick what you want to pay attention to. Everything you log is " +
-                        "recorded either way, so you can turn something on later and " +
-                        "still see the months you already logged.",
+                    "Tick what you want as a goal: it goes to the top of Home, scored against your number. " +
+                        "Everything is recorded either way. Nothing turns red unless you set a line for it — " +
+                        "only you know how much sugar is too much for you.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )
             }
+        }
+
+        item {
+            ProfileCard(
+                profile = profile,
+                onSave = { p ->
+                    ServiceLocator.debugEvents.event("profile_saved", "sex" to p.sex.name, "age" to p.ageYears,
+                        "activity" to p.activity.name, "aim" to p.aim.name, "stage" to p.stage.name, "diet" to p.diet.name, "plasma" to p.plasmaDonor)
+                    scope.launch { ServiceLocator.settingsRepository.setProfile(p) }
+                },
+                onUseForGoals = { p ->
+                    val needs = com.nutritionscribe.shared.model.Needs.forProfile(p)
+                    val on = goals.filter { it.enabled }
+                    ServiceLocator.debugEvents.event("goals_from_profile", "metrics" to on.map { it.metric.key })
+                    scope.launch { on.forEach { g -> repo.setTarget(g.metric, needs.getValue(g.metric)) } }
+                },
+            )
         }
 
         if (enabledCount == 0) {
@@ -89,14 +115,49 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
             }
         }
 
-        items(goals, key = { it.metric.key }) { goal ->
+        items(goals.filter { !it.metric.isMicro }, key = { it.metric.key }) { goal ->
             GoalRow(
                 goal = goal,
                 onToggle = { on -> scope.launch { repo.setEnabled(goal.metric, on) } },
                 onTarget = { value -> scope.launch { repo.setTarget(goal.metric, value) } },
                 onFloor = { value -> scope.launch { repo.setFloor(goal.metric, value) } },
+                onCeiling = { value -> scope.launch { repo.setCeiling(goal.metric, value) } },
                 onDirection = { d -> scope.launch { repo.setDirection(goal.metric, d) } },
             )
+        }
+
+        // Fifteen more rows would bury the macros, so they fold away until wanted.
+        item(key = "micros_header") {
+            Column(
+                Modifier.fillMaxWidth().padding(top = 16.dp)
+                    .clickable { showMicros = !showMicros },
+            ) {
+                androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("Minerals & vitamins", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.Icon(
+                        if (showMicros) androidx.compose.material.icons.Icons.Filled.ExpandLess else androidx.compose.material.icons.Icons.Filled.ExpandMore,
+                        contentDescription = if (showMicros) "Hide" else "Show",
+                    )
+                }
+                Text(
+                    "Home shows all of these either way. Turn one on to make it a goal: it moves to the top and " +
+                        "is scored against your own number. Bars fill toward what you need (from About you), or the label's Daily Value until you fill that in.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+        }
+        if (showMicros) {
+            items(goals.filter { it.metric.isMicro }, key = { it.metric.key }) { goal ->
+                GoalRow(
+                    goal = goal,
+                    onToggle = { on -> scope.launch { repo.setEnabled(goal.metric, on) } },
+                    onTarget = { value -> scope.launch { repo.setTarget(goal.metric, value) } },
+                    onFloor = { value -> scope.launch { repo.setFloor(goal.metric, value) } },
+                    onCeiling = { value -> scope.launch { repo.setCeiling(goal.metric, value) } },
+                    onDirection = { d -> scope.launch { repo.setDirection(goal.metric, d) } },
+                )
+            }
         }
 
         item { Spacer(Modifier.height(24.dp)) }
@@ -135,6 +196,7 @@ private fun GoalRow(
     onToggle: (Boolean) -> Unit,
     onTarget: (Double?) -> Unit,
     onFloor: (Double?) -> Unit,
+    onCeiling: (Double?) -> Unit,
     onDirection: (GoalDirection) -> Unit,
 ) {
     // Keyed on the stored value so an edit elsewhere is reflected, but not so
@@ -142,9 +204,8 @@ private fun GoalRow(
     var targetText by remember(goal.target, goal.enabled) {
         mutableStateOf(goal.target?.let { formatTarget(it) } ?: "")
     }
-    var floorText by remember(goal.floorValue, goal.enabled) {
-        mutableStateOf(goal.floorValue?.let { formatTarget(it) } ?: "")
-    }
+    val hasLines = goal.floorValue != null || goal.ceilingValue != null
+    var showLines by remember(goal.metric) { mutableStateOf(hasLines) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -156,23 +217,17 @@ private fun GoalRow(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = if (goal.enabled) FontWeight.SemiBold else FontWeight.Normal,
                     )
-                    if (!goal.enabled) {
-                        Text(
-                            when (goal.effectiveDirection) {
-                                GoalDirection.REACH -> "Aim to reach this"
-                                GoalDirection.LIMIT -> "Aim to stay under this"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                        )
-                    }
+                    Text(
+                        lineSummary(goal) ?: if (goal.enabled) "Goal" else "Not a goal",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                 }
 
                 // Only while the goal is on. The defaults are right for most
                 // people — protein to reach, sodium to stay under — but not for
                 // everyone: someone cutting eats to a calorie LIMIT while someone
-                // bulking eats to a calorie target, and the app used to score
-                // both as "more is better".
+                // bulking eats to a calorie target.
                 if (goal.enabled) {
                     SingleChoiceSegmentedButtonRow {
                         GoalDirection.entries.forEachIndexed { index, direction ->
@@ -224,37 +279,60 @@ private fun GoalRow(
                         modifier = Modifier.padding(start = 12.dp, top = 4.dp),
                     )
                 }
+            }
 
-                // Only a REACH metric has a meaningful floor. For a LIMIT metric the
-                // target already IS the line that must not be crossed, so a second
-                // threshold underneath it would mean nothing.
-                if (goal.effectiveDirection == GoalDirection.REACH) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(start = 12.dp, top = 8.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = floorText,
-                            onValueChange = {
-                                floorText = it
-                                onFloor(if (it.isBlank()) null else it.toDoubleOrNull() ?: goal.floorValue)
-                            },
-                            label = { Text("Baseline") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            modifier = Modifier.width(160.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "days below this read red",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                        )
-                    }
+            // Red lines are separate from the goal: someone can want to know when
+            // sugar passes 60 g without making sugar something they aim at.
+            if (!showLines) {
+                androidx.compose.material3.TextButton(
+                    onClick = { showLines = true },
+                    modifier = Modifier.padding(start = 4.dp),
+                ) { Text("Set a red line") }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    LineField("Red below", goal.floorValue, goal.metric.unit, onFloor, Modifier.weight(1f))
+                    LineField("Red above", goal.ceilingValue, goal.metric.unit, onCeiling, Modifier.weight(1f))
                 }
+                Text(
+                    "Above shows red on Home as soon as today passes it. Below shows red in History for days that ended under it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.padding(start = 12.dp, top = 4.dp),
+                )
             }
         }
     }
+}
+
+@Composable
+private fun LineField(label: String, value: Double?, unit: String, onChange: (Double?) -> Unit, modifier: Modifier) {
+    var text by remember(value) { mutableStateOf(value?.let { formatTarget(it) } ?: "") }
+    OutlinedTextField(
+        value = text,
+        onValueChange = {
+            text = it
+            if (it.isBlank()) onChange(null) else it.toDoubleOrNull()?.let(onChange)
+        },
+        label = { Text(label) },
+        suffix = { Text(unit) },
+        placeholder = { Text("none") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        modifier = modifier,
+    )
+}
+
+/** "Red above 60 g", "Red below 20 g · above 40 g", or null with no lines. */
+private fun lineSummary(goal: MetricGoal): String? {
+    val parts = listOfNotNull(
+        goal.floorValue?.let { "below ${formatTarget(it)} ${goal.metric.unit}" },
+        goal.ceilingValue?.let { "above ${formatTarget(it)} ${goal.metric.unit}" },
+    )
+    if (parts.isEmpty()) return null
+    return (if (goal.enabled) "Goal · red " else "Red ") + parts.joinToString(" or ")
 }
 
 /** 160.0 -> "160", 2.5 -> "2.5". Trailing ".0" on a goal reads like false precision. */

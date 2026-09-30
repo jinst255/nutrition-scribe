@@ -115,10 +115,16 @@ class Resolver(
 
         val resolved = items.map { resolveLocal(it) }.toMutableList()
 
+        // "a hamburger from Costco and it had cheese": the cheese is ON the burger,
+        // a slice, not the 80 g of cheese remembered from a sandwich. A remembered
+        // food said as part of the one before it goes to the AI with the sentence.
+        fun pinned(i: Int, r: ResolvedItem) = r.status == Status.REMEMBERED &&
+            !(aiMode == AiMode.SENTENCE && ai is SentenceLookup && i > 0 && describesPrevious(r.item.said))
+
         // Layer 4 fills the cards the user will see anyway — never a remembered item.
         val fresh = resolved.withIndex().filter {
             val r = it.value
-            r.status != Status.REMEMBERED && when (aiMode) {
+            !pinned(it.index, r) && when (aiMode) {
                 AiMode.ALL_NEW, AiMode.SENTENCE -> true
                 AiMode.WEAK_ONLY -> r.weak || r.status == Status.UNKNOWN
                 AiMode.TRUSTED_LOCAL -> r.weak || r.status == Status.UNKNOWN ||
@@ -128,14 +134,16 @@ class Resolver(
         val lookup = ai
         if (lookup == null || fresh.isEmpty()) return Resolution(text, resolved)
         if (aiMode == AiMode.SENTENCE && lookup is SentenceLookup) {
-            val known = resolved.filter { it.status == Status.REMEMBERED }
+            val known = resolved.filterIndexed { i, r -> pinned(i, r) }
             val answers = try {
                 lookup.lookupSentence(text, known.map { it.item })
             } catch (e: Exception) {
                 return Resolution(text, resolved, aiProblem = e.message ?: "AI lookup failed")
             }
-            if (answers.isEmpty()) return Resolution(text, resolved, usedAi = true)
-            return Resolution(text, known + alignSentence(resolved.filter { it.status != Status.REMEMBERED }, answers), usedAi = true)
+            // Nothing new besides what is remembered: the rest the app split off was
+            // a remark. "A kiwi, though it's not very ripe" logged a raw plantain.
+            if (answers.isEmpty()) return Resolution(text, known.ifEmpty { resolved }, usedAi = true)
+            return Resolution(text, known + alignSentence(resolved.filterIndexed { i, r -> !pinned(i, r) }, answers), usedAi = true)
         }
         val answers = try {
             lookup.lookup(text, fresh.map { f -> f.value.item })
@@ -493,9 +501,18 @@ class Resolver(
                 )
             }
         }
-        val candidate = answer.asCandidate()
+        var candidate = answer.asCandidate()
         var nutrients = answer.nutrients
         item.statedProteinG?.let { nutrients = nutrients + (Metric.PROTEIN.key to it) }
+        // The AI gives no micronutrients. Borrow them from the offline match for the
+        // same food when it really is the same food (see MicroFill.sameFood); the
+        // AI's own calories and macros stand.
+        val offline = listOfNotNull(local.choice) + local.alternates +
+            (usda?.let { u -> runCatching { u.search(answer.name, limit = 3) }.getOrDefault(emptyList()) }.orEmpty())
+        MicroFill.sameFood(offline, nutrients, answer.grams)?.let { same ->
+            nutrients = nutrients + MicroFill.missing(nutrients, same.per100g, answer.grams)
+            candidate = MicroFill.withMicros(candidate, same)
+        }
         return local.copy(
             status = Status.NEW,
             choice = candidate,
@@ -531,6 +548,10 @@ class Resolver(
             }
         }
     }
+
+    private fun describesPrevious(said: String): Boolean =
+        Regex("^\\s*(?:and\\s+)?(?:it|that|which|they)\\s+(?:had|has|have|came with|comes with|was topped with|were topped with)\\b|" +
+            "^\\s*(?:topped with|on it|on top)\\b").containsMatchIn(said.lowercase())
 
     private fun unknown(item: ItemParser.Item, key: String, offerScan: Boolean = false, near: PersonalFood? = null) =
         ResolvedItem(

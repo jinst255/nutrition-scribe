@@ -6,6 +6,7 @@ import com.nutritionscribe.shared.model.GoalDirection
 import com.nutritionscribe.shared.model.Metric
 import com.nutritionscribe.shared.model.MetricGoal
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 fun MetricGoalRow.toModel(): MetricGoal? {
@@ -64,7 +65,13 @@ class GoalsRepository(
      * Without it an existing user silently loses the goal they had been using.
      */
     suspend fun ensureSeeded(legacyGoalGrams: Double?, legacyBaselineGrams: Double?) {
-        if (dao.count() > 0) return
+        if (dao.count() > 0) {
+            // Metrics added in a later version (the micronutrients) get their row,
+            // switched off, without disturbing anything already set.
+            Metric.entries.filter { dao.find(it.key) == null }
+                .forEach { dao.upsert(MetricGoal.default(it).toRow()) }
+            return
+        }
 
         val rows = Metric.entries.map { metric ->
             when (metric) {
@@ -88,37 +95,39 @@ class GoalsRepository(
 
     suspend fun setTarget(metric: Metric, target: Double?) {
         val existing = find(metric) ?: MetricGoal.default(metric)
-        dao.upsert(
-            existing.copy(
-                target = target,
-                // A LIMIT metric's target IS its ceiling; keeping them in step
-                // stops the chart colouring against a stale number.
-                ceilingValue = if (existing.effectiveDirection == GoalDirection.LIMIT) {
-                    target
-                } else {
-                    existing.ceilingValue
-                },
-            ).toRow(),
-        )
+        dao.upsert(existing.copy(target = target).toRow())
         mirrorProteinToLegacySettings(metric, target = target)
     }
 
-    /**
-     * Flips a goal between "reach this" and "stay under this".
-     *
-     * The ceiling has to move with it: a LIMIT goal colours against its ceiling,
-     * so switching to LIMIT without setting one leaves the day scored against
-     * nothing, and switching away without clearing it leaves a stale red line.
-     */
+    /** Flips a goal between "reach this" and "stay under this". Red lines are the user's and stay. */
     suspend fun setDirection(metric: Metric, direction: GoalDirection) {
         val existing = find(metric) ?: MetricGoal.default(metric)
         val override = if (direction == metric.direction) null else direction
-        dao.upsert(
-            existing.copy(
-                direction = override,
-                ceilingValue = if (direction == GoalDirection.LIMIT) existing.target else null,
-            ).toRow(),
-        )
+        dao.upsert(existing.copy(direction = override).toRow())
+    }
+
+    suspend fun setCeiling(metric: Metric, ceiling: Double?) {
+        val existing = find(metric) ?: MetricGoal.default(metric)
+        dao.upsert(existing.copy(ceilingValue = ceiling).toRow())
+    }
+
+    /**
+     * Once, on upgrade: clear the ceilings the app used to fill in by itself (the
+     * Daily Value on every limit, and a copy of each limit goal's target). They
+     * made sugar and sodium read red for people who had never said how much was
+     * too much. A ceiling that differs from both was typed, and stays.
+     */
+    suspend fun clearAutomaticLimits(): Int {
+        var cleared = 0
+        for (row in dao.observeAll().first()) {
+            val g = row.toModel() ?: continue
+            val c = g.ceilingValue ?: continue
+            if (c == g.metric.defaultTarget || c == g.target) {
+                dao.upsert(g.copy(ceilingValue = null).toRow())
+                cleared++
+            }
+        }
+        return cleared
     }
 
     suspend fun setFloor(metric: Metric, floor: Double?) {

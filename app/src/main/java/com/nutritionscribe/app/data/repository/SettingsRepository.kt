@@ -7,6 +7,8 @@ import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import com.nutritionscribe.shared.model.Profile
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.security.crypto.EncryptedSharedPreferences
@@ -37,6 +39,13 @@ private val scratchStores = mutableMapOf<String, androidx.datastore.core.DataSto
 
 enum class AiBackendKind { OPENAI, ANTHROPIC }
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+/**
+ * How the microphone button works. People split cleanly on this: some want to tap
+ * once and talk as long as they like, others want to hold it like a walkie-talkie
+ * so letting go is the "done". Neither stops on a pause.
+ */
+enum class MicMode { TAP, HOLD }
 
 /**
  * Where a food's nutrition numbers come from.
@@ -99,6 +108,21 @@ class SettingsRepository(
         val RETAIN_TOTALS_UNIT = stringPreferencesKey("retain_totals_unit")
         val RETAIN_DETAILS_AMOUNT = intPreferencesKey("retain_details_amount")
         val RETAIN_DETAILS_UNIT = stringPreferencesKey("retain_details_unit")
+        // "_v2": round 3 made hold-to-talk the default for everyone, including
+        // installs that had the old tap default stored.
+        val MIC_MODE = stringPreferencesKey("mic_mode_v2")
+        val MICRO_BACKFILL = intPreferencesKey("micro_backfill_version")
+        val GOAL_LINES_V2 = booleanPreferencesKey("goal_lines_v2")
+        val SHOW_ADVANCED = booleanPreferencesKey("show_advanced")
+        val DEBUG_MODE = booleanPreferencesKey("debug_mode")
+        val PROFILE = stringPreferencesKey("profile_v1")
+        val PLASMA_DONATIONS = stringSetPreferencesKey("plasma_donations")
+        val AI_CONSENT = stringSetPreferencesKey("ai_consent")
+        val NUTRIENT_REPAIR = intPreferencesKey("nutrient_repair_version")
+        val TESTER_NAME = stringPreferencesKey("tester_name")
+        val INSTALLED_AT = androidx.datastore.preferences.core.longPreferencesKey("installed_at")
+        val LOG_SENT_AT = androidx.datastore.preferences.core.longPreferencesKey("log_sent_at")
+        val LOG_SNOOZE_UNTIL = androidx.datastore.preferences.core.longPreferencesKey("log_snooze_until")
     }
 
     private val encryptedPrefs by lazy {
@@ -119,7 +143,11 @@ class SettingsRepository(
 
     fun setApiKey(backend: AiBackendKind, key: String) {
         encryptedPrefs.edit().putString("api_key_${backend.name}", key).apply()
+        keysChanged.value++
     }
+
+    /** Ticks whenever a key is saved, since the encrypted store has no flow to watch. */
+    val keysChanged = kotlinx.coroutines.flow.MutableStateFlow(0)
 
     /**
      * Forgets every stored API key. `commit()` rather than `apply()` on purpose:
@@ -232,5 +260,138 @@ class SettingsRepository(
             it[Keys.RETAIN_DETAILS_AMOUNT] = window.amount
             it[Keys.RETAIN_DETAILS_UNIT] = window.unit.name
         }
+    }
+
+    val micMode: Flow<MicMode> = store.data.map {
+        runCatching { MicMode.valueOf(it[Keys.MIC_MODE] ?: MicMode.HOLD.name) }.getOrDefault(MicMode.HOLD)
+    }
+
+    suspend fun setMicMode(mode: MicMode) {
+        store.edit { it[Keys.MIC_MODE] = mode.name }
+    }
+
+    /** Which [com.nutritionscribe.app.data.resolve.MicroBackfill] version has run. */
+    val microBackfillVersion: Flow<Int> = store.data.map { it[Keys.MICRO_BACKFILL] ?: 0 }
+
+    suspend fun setMicroBackfillVersion(v: Int) {
+        store.edit { it[Keys.MICRO_BACKFILL] = v }
+    }
+
+    /** Whether the automatic red lines of older versions have been cleared (see GoalsRepository). */
+    val goalLinesV2: Flow<Boolean> = store.data.map { it[Keys.GOAL_LINES_V2] ?: false }
+
+    suspend fun setGoalLinesV2() {
+        store.edit { it[Keys.GOAL_LINES_V2] = true }
+    }
+
+    /** Whether Settings shows the parts most people never need. */
+    val showAdvanced: Flow<Boolean> = store.data.map { it[Keys.SHOW_ADVANCED] ?: false }
+
+    suspend fun setShowAdvanced(value: Boolean) {
+        store.edit { it[Keys.SHOW_ADVANCED] = value }
+    }
+
+    /** Debug mode: a detailed record of everything done and typed, for finding problems. */
+    // On unless turned off: a quirk noticed today is only findable if it was
+    // recorded today. It stays on the phone either way.
+    val debugMode: Flow<Boolean> = store.data.map { it[Keys.DEBUG_MODE] ?: true }
+
+    suspend fun setDebugMode(value: Boolean) {
+        store.edit { it[Keys.DEBUG_MODE] = value }
+    }
+
+    /**
+     * Highest quality mode, as the person sees it: AI on, with a key to use. It is
+     * the existing lookup preference under a name that says what it is for, so
+     * nothing already set up changes meaning.
+     */
+    val highestQuality: Flow<Boolean> = lookupSource.map { it == LookupSource.AI && hasAnyApiKey() }
+
+    /** Speech goes to OpenAI only with an OpenAI key; an Anthropic key has no speech model. */
+    fun openAiKey(): String? = getApiKey(AiBackendKind.OPENAI)?.takeIf { it.isNotBlank() }
+
+    private val profileJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    /** What the user told the app about their body, or null if they never did. */
+    val profile: Flow<Profile?> = store.data.map { p ->
+        p[Keys.PROFILE]?.let { runCatching { profileJson.decodeFromString(Profile.serializer(), it) }.getOrNull() }
+    }
+
+    suspend fun setProfile(value: Profile?) {
+        store.edit {
+            if (value == null) it.remove(Keys.PROFILE)
+            else it[Keys.PROFILE] = profileJson.encodeToString(Profile.serializer(), value)
+        }
+    }
+
+    /** Days a plasma donation was logged, as ISO dates. */
+    val plasmaDonations: Flow<Set<java.time.LocalDate>> = store.data.map { p ->
+        p[Keys.PLASMA_DONATIONS].orEmpty().mapNotNull { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }.toSet()
+    }
+
+    suspend fun setPlasmaDonation(day: java.time.LocalDate, donated: Boolean) {
+        store.edit {
+            val now = it[Keys.PLASMA_DONATIONS].orEmpty()
+            // A year is plenty: only the last week decides anything.
+            val cutoff = day.minusDays(366).toString()
+            val kept = now.filter { d -> d >= cutoff }.toSet()
+            it[Keys.PLASMA_DONATIONS] = if (donated) kept + day.toString() else kept - day.toString()
+        }
+    }
+
+    /**
+     * Which AI providers the user agreed to send their words, photos and voice to,
+     * as "OPENAI:1". The number is [AiConsent.VERSION]: when what is sent or what
+     * the provider promises changes, it goes up and they are asked again.
+     */
+    val aiConsent: Flow<Set<String>> = store.data.map { it[Keys.AI_CONSENT].orEmpty() }
+
+    /** [agreed] false records a "no", so they aren't asked again until [AiConsent.VERSION] changes. */
+    suspend fun setAiConsent(kind: AiBackendKind, agreed: Boolean) {
+        store.edit {
+            val tag = if (agreed) "${kind.name}:${AiConsent.VERSION}" else "${kind.name}:no:${AiConsent.VERSION}"
+            val others = it[Keys.AI_CONSENT].orEmpty().filterNot { t -> t.startsWith("${kind.name}:") }.toSet()
+            it[Keys.AI_CONSENT] = others + tag
+        }
+    }
+
+    /**
+     * The first name of whoever the app was handed to, so a log that comes back
+     * says whose it is. Optional; asked for once at setup.
+     */
+    val testerName: Flow<String> = store.data.map { it[Keys.TESTER_NAME].orEmpty() }
+
+    suspend fun setTesterName(name: String) {
+        // The API key box is right below this one; a key pasted here would end up
+        // in the log's file name. Anything key-shaped is dropped.
+        val clean = name.substringBefore("sk-").trim().take(40)
+        store.edit { it[Keys.TESTER_NAME] = clean }
+    }
+
+    /** When this install first ran; the week-later log reminder counts from it. */
+    val installedAt: Flow<Long?> = store.data.map { it[Keys.INSTALLED_AT] }
+
+    suspend fun ensureInstalledAt(now: Long) {
+        store.edit { if (it[Keys.INSTALLED_AT] == null) it[Keys.INSTALLED_AT] = now }
+    }
+
+    /** When the debug log was last sent from the reminder or Settings. */
+    val logSentAt: Flow<Long?> = store.data.map { it[Keys.LOG_SENT_AT] }
+
+    suspend fun setLogSent(now: Long) {
+        store.edit { it[Keys.LOG_SENT_AT] = now }
+    }
+
+    val logSnoozeUntil: Flow<Long> = store.data.map { it[Keys.LOG_SNOOZE_UNTIL] ?: 0L }
+
+    suspend fun snoozeLogReminder(until: Long) {
+        store.edit { it[Keys.LOG_SNOOZE_UNTIL] = until }
+    }
+
+    /** Which [com.nutritionscribe.shared.model.NutrientRepair] pass has run over saved food. */
+    val nutrientRepairVersion: Flow<Int> = store.data.map { it[Keys.NUTRIENT_REPAIR] ?: 0 }
+
+    suspend fun setNutrientRepairVersion(v: Int) {
+        store.edit { it[Keys.NUTRIENT_REPAIR] = v }
     }
 }

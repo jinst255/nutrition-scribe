@@ -105,7 +105,7 @@ fun MyFoodsScreen() {
 private fun usual(f: PersonalFood): String? {
     val amount = f.amount?.let { if (it == it.toLong().toDouble()) it.toLong().toString() else "%.2g".format(it) }
     val said = listOfNotNull(amount, f.unit, f.size).joinToString(" ")
-    val g = f.grams?.let { "${it.toInt()} g" }
+    val g = f.grams?.let { com.nutritionscribe.shared.model.Liquids.amount(it, f.name, f.candidate?.labelServingText) }
     return listOfNotNull(said.ifBlank { null }, g).joinToString(" = ").ifBlank { null }
 }
 
@@ -128,7 +128,7 @@ private fun FoodEditor(food: PersonalFood, onSave: (PersonalFood) -> Unit, onDel
                     Text("Numbers for ${usual(food) ?: "one serving"}", style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier.padding(top = 6.dp))
                 }
-                items(Metric.entries.toList()) { m ->
+                items(Metric.MACROS + Metric.MICROS.filter { it.key in food.nutrients }) { m ->
                     OutlinedTextField(
                         value = values[m].orEmpty(), onValueChange = { values[m] = it },
                         label = { Text("${m.label} (${m.unit})") }, singleLine = true,

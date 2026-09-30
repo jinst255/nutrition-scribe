@@ -14,6 +14,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.QrCodeScanner
+import com.nutritionscribe.app.data.db.toEntry
+import kotlinx.coroutines.flow.map
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
@@ -30,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -60,7 +64,22 @@ class AddEntryViewModel : ViewModel() {
         private set
 
     val manualMode = settings.manualMode
+    val micMode = settings.micMode
     val frequentFoods = repository.observeFrequentFoods()
+
+    /** "The same again" in one tap: what is usually eaten around now, then the most frequent. */
+    val recent = ServiceLocator.database.entryDao().observeAll().map { rows ->
+        val now = System.currentTimeMillis()
+        val zone = java.time.ZoneId.systemDefault()
+        com.nutritionscribe.shared.model.LogAgain.smart(
+            com.nutritionscribe.shared.model.LogAgain.choices(rows.map { it.toEntry() }, now, zone), now,
+        ).map { it.entry }
+    }
+
+    fun setMicMode(mode: com.nutritionscribe.app.data.repository.MicMode) {
+        ServiceLocator.debugEvents.event("mic_mode_changed", "mode" to mode, "where" to "log_food")
+        viewModelScope.launch { settings.setMicMode(mode) }
+    }
 
     /** No key means no lookup is possible, whatever the manual-mode preference says. */
     fun hasApiKey(): Boolean = settings.hasAnyApiKey()
@@ -71,32 +90,44 @@ class AddEntryViewModel : ViewModel() {
      * cannot be reached falls back to the built-in list, and a food nothing knows
      * still reaches the card with the user's words on it.
      */
-    fun submit(rawText: String, onReadyForReview: () -> Unit, onLogged: () -> Unit = onReadyForReview) {
+    fun submit(
+        rawText: String,
+        onReadyForReview: () -> Unit,
+        onLogged: () -> Unit = onReadyForReview,
+        how: String = "typed",
+        tag: String? = null,
+    ) {
         if (rawText.isBlank()) return
         uiState = AddEntryUiState.Processing
         viewModelScope.launch {
-            try {
-                val r = pipeline.resolve(rawText)
-                if (r.silent) {
-                    val entry = pipeline.logNow(r)
-                    com.nutritionscribe.app.ui.home.LastLogged.entry.value = entry
+            when (val out = LogFlow.submit(rawText, how, tag)) {
+                is LogFlow.Outcome.Logged -> {
                     uiState = AddEntryUiState.Editing
+                    pastDayToast(out.entry.name)
                     onLogged()
-                } else {
-                    com.nutritionscribe.app.ui.confirm.LogSession.resolution = r
-                    com.nutritionscribe.app.ui.confirm.LogSession.editing = null
-                    uiState = AddEntryUiState.Editing
-                    onReadyForReview()
                 }
-            } catch (e: Exception) {
-                ServiceLocator.debugLogger.log("AddEntry", "resolve failed: ${e.message}")
-                uiState = AddEntryUiState.Failed("Something went wrong reading that. Your words are still here — try again, or enter it by hand.")
+                LogFlow.Outcome.Review -> { uiState = AddEntryUiState.Editing; onReadyForReview() }
+                is LogFlow.Outcome.Failed -> uiState = AddEntryUiState.Failed(out.message)
             }
         }
     }
 
+    fun logAgain(entry: com.nutritionscribe.shared.model.Entry, onDone: () -> Unit) {
+        viewModelScope.launch {
+            LogFlow.logAgain(entry, where = "log_food")
+            pastDayToast(entry.name)
+            onDone()
+        }
+    }
+
+    /** A past day's entry logs quietly onto that day; say so before going back. */
+    private fun pastDayToast(name: String) {
+        val day = com.nutritionscribe.app.ui.confirm.LogDay.label() ?: return
+        android.widget.Toast.makeText(ServiceLocator.appContext, "Added $name to $day", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     fun saveManual(input: ManualEntryInput, onDone: () -> Unit) {
-        val (timestamp, timeUnspecified) = input.resolveTimestamp(LocalDate.now())
+        val (timestamp, timeUnspecified) = input.resolveTimestamp(com.nutritionscribe.app.ui.confirm.LogDay.date ?: LocalDate.now())
         viewModelScope.launch {
             repository.logManual(
                 name = input.name,
@@ -117,8 +148,15 @@ fun AddEntryScreen(
     onReadyForReview: () -> Unit,
     onManualSaved: () -> Unit,
     onLogged: () -> Unit = onManualSaved,
+    onScan: () -> Unit = {},
+    /** From History's "+": the past day this is for. Null is today. */
+    date: LocalDate? = null,
+    /** Opened from "type it": the keyboard comes straight up. */
+    startTyping: Boolean = false,
     viewModel: AddEntryViewModel = viewModel(),
 ) {
+    // Set before anything below reads it, and again whenever the screen is opened.
+    remember(date) { com.nutritionscribe.app.ui.confirm.LogDay.set(date); 0 }
     val manualPreference by viewModel.manualMode.collectAsState(initial = false)
     val frequentFoods by viewModel.frequentFoods.collectAsState(initial = emptyList())
     // Manual mode is now only ever CHOSEN, never forced. It used to be forced
@@ -131,10 +169,14 @@ fun AddEntryScreen(
 
     if (manual || manualOverride) {
         Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 24.dp)) {
+            if (com.nutritionscribe.app.ui.confirm.LogDay.isPast) {
+                PastDayBanner(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            }
             ManualEntryForm(
-                title = "Add an entry",
+                title = com.nutritionscribe.app.ui.confirm.LogDay.label()?.let { "Add to $it" } ?: "Add an entry",
                 frequentFoods = frequentFoods,
-                defaultTime = LocalTime.now(),
+                // Backdating starts with no time rather than a made-up one.
+                defaultTime = if (com.nutritionscribe.app.ui.confirm.LogDay.isPast) null else LocalTime.now(),
                 onSave = { viewModel.saveManual(it, onManualSaved) },
             )
             if (!manual && manualOverride) {
@@ -147,51 +189,49 @@ fun AddEntryScreen(
         return
     }
 
-    AiAddEntry(
+    VoiceAddEntry(
         viewModel = viewModel,
         onReadyForReview = onReadyForReview,
         onLogged = onLogged,
+        onScan = onScan,
         onEnterManually = { manualOverride = true },
+        startTyping = startTyping,
     )
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun AiAddEntry(
+private fun VoiceAddEntry(
     viewModel: AddEntryViewModel,
     onReadyForReview: () -> Unit,
     onLogged: () -> Unit,
+    onScan: () -> Unit,
     onEnterManually: () -> Unit,
+    startTyping: Boolean = false,
 ) {
     var text by remember { mutableStateOf("") }
-    val state = viewModel.uiState
-
-    val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val spoken = result.data
-            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            ?.firstOrNull()
-        if (!spoken.isNullOrBlank()) {
-            text = spoken
-            viewModel.submit(spoken, onReadyForReview, onLogged)
-        }
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    androidx.compose.runtime.LaunchedEffect(startTyping) {
+        if (startTyping) runCatching { kotlinx.coroutines.delay(150); focus.requestFocus() }
     }
-
-    fun launchSpeech() {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "What did you eat")
-        }
-        speechLauncher.launch(intent)
+    var hint by remember { mutableStateOf<String?>(null) }
+    val state = viewModel.uiState
+    val micMode by viewModel.micMode.collectAsState(initial = com.nutritionscribe.app.data.repository.MicMode.TAP)
+    val recent by viewModel.recent.collectAsState(initial = emptyList())
+    val voice = com.nutritionscribe.app.ui.speech.rememberVoiceController { spoken, tag ->
+        text = spoken
+        viewModel.submit(spoken, onReadyForReview, onLogged, how = "voice", tag = tag)
     }
 
     when (state) {
-        is AddEntryUiState.Processing -> ProcessingView()
+        is AddEntryUiState.Processing -> ProcessingView(text)
         is AddEntryUiState.Failed -> Column(
             modifier = Modifier.fillMaxSize().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
             Text(state.message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-            TextButton(onClick = { viewModel.submit(text, onReadyForReview, onLogged) }, modifier = Modifier.padding(top = 12.dp)) {
+            TextButton(onClick = { viewModel.submit(text, onReadyForReview, onLogged, how = "retry") }, modifier = Modifier.padding(top = 12.dp)) {
                 Text("Try again")
             }
             // A failed lookup shouldn't strand the entry: offer the manual path right here
@@ -201,43 +241,83 @@ private fun AiAddEntry(
             }
         }
         is AddEntryUiState.Editing -> Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("What did you eat", style = MaterialTheme.typography.headlineSmall)
-            Column(modifier = Modifier.padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                FilledIconButton(onClick = { launchSpeech() }, modifier = Modifier.size(96.dp)) {
-                    Icon(Icons.Filled.Mic, contentDescription = "Tap to speak", modifier = Modifier.size(48.dp))
-                }
-                Text("Tap to speak", modifier = Modifier.padding(top = 8.dp))
+            if (com.nutritionscribe.app.ui.confirm.LogDay.isPast) PastDayBanner()
+            com.nutritionscribe.app.ui.speech.ListeningPanel(voice, micMode)
+            com.nutritionscribe.app.ui.speech.MicButton(voice, micMode, onHint = { hint = it })
+            hint?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, textAlign = TextAlign.Center)
             }
-            Text("or", color = MaterialTheme.colorScheme.secondary)
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                label = { Text("Type it instead") },
-                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-            )
-            Button(
-                onClick = { viewModel.submit(text, onReadyForReview, onLogged) },
-                enabled = text.isNotBlank(),
-                modifier = Modifier.padding(top = 16.dp),
-            ) { Text("Continue") }
-            TextButton(onClick = onEnterManually, modifier = Modifier.padding(top = 8.dp)) {
-                Text("Enter the numbers myself")
+            com.nutritionscribe.app.ui.speech.MicModeSwitch(micMode, { viewModel.setMicMode(it); hint = null })
+
+            if (!voice.isActive) {
+                OutlinedTextField(
+                    value = text,
+                    // Enter sends it: nobody types a line break into a food.
+                    onValueChange = { v ->
+                        if ('\n' in v) {
+                            text = v.replace('\n', ' ').trim()
+                            if (text.isNotBlank()) viewModel.submit(text, onReadyForReview, onLogged, how = "typed")
+                        } else text = v
+                    },
+                    label = { Text("Or type it") },
+                    placeholder = { Text("2 eggs and a slice of toast") },
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Go),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = {
+                        if (text.isNotBlank()) viewModel.submit(text, onReadyForReview, onLogged, how = "typed")
+                    }),
+                    trailingIcon = {
+                        TextButton(onClick = { viewModel.submit(text, onReadyForReview, onLogged, how = "typed") }, enabled = text.isNotBlank()) {
+                            Text("Go")
+                        }
+                    },
+                )
+
+                androidx.compose.material3.OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.QrCodeScanner, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
+                    Text("Scan a barcode or label")
+                }
+
+                if (recent.isNotEmpty()) {
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Log again", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                        androidx.compose.foundation.layout.FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            recent.forEach { e ->
+                                androidx.compose.material3.AssistChip(
+                                    onClick = { viewModel.logAgain(e, onLogged) },
+                                    label = { Text(e.name.substringBefore(",").take(28), maxLines = 1) },
+                                )
+                            }
+                        }
+                        Text(if (com.nutritionscribe.app.ui.confirm.LogDay.isPast) "Same food, same amount, added to that day." else "Same food, same amount, logged now.", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary)
+                    }
+                }
+
+                TextButton(onClick = onEnterManually) { Text("Enter the numbers myself") }
             }
         }
     }
 }
 
 @Composable
-private fun ProcessingView() {
+private fun ProcessingView(text: String) {
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        if (text.isNotBlank()) {
+            Text("“${text.trim()}”", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 20.dp))
+        }
         CircularProgressIndicator()
         Text("Looking it up", modifier = Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleMedium)
         Text("Your own foods first, then the food list", color = MaterialTheme.colorScheme.secondary)

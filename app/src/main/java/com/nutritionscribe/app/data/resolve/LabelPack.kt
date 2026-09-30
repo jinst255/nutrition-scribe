@@ -16,13 +16,12 @@ import java.net.URL
 import java.util.zip.GZIPInputStream
 
 /**
- * The optional label pack: ~137,000 real package labels (tools/build_label_pack.py),
+ * The optional label pack: ~230,000 real package labels (tools/build_label_pack.py),
  * searched offline and used for barcode scans.
  *
- * Optional because it is ~40 MB on the phone; recommended because it is the
- * single biggest accuracy gain for packaged food. It installs from a file today
- * (sideloaded, or shared by whoever gave you the app) and from [DOWNLOAD_URL] once
- * one exists. Either way it is validated before it replaces anything, so a bad
+ * About 70 MB on the phone, and the single biggest accuracy gain for packaged
+ * food. A test build bundles it in the APK ([installBundled]); otherwise it
+ * installs from a file, or from [DOWNLOAD_URL] once one exists. Either way it is validated before it replaces anything, so a bad
  * download can never take away a pack that worked.
  */
 class LabelPack(private val context: Context) {
@@ -30,13 +29,17 @@ class LabelPack(private val context: Context) {
     sealed class Status {
         data object NotInstalled : Status()
         data class Working(val what: String, val bytes: Long = 0) : Status()
-        data class Installed(val products: Int, val since: String, val bytes: Long) : Status()
+        /** [hasMicros]: a format 4 pack, which also carries the label micronutrients. */
+        data class Installed(val products: Int, val since: String, val bytes: Long, val hasMicros: Boolean = false) : Status()
         data class Failed(val message: String) : Status()
     }
 
     private val file = File(context.filesDir, FILE_NAME)
     private val _status = MutableStateFlow<Status>(Status.NotInstalled)
     val status: StateFlow<Status> = _status
+
+    /** Called after a pack installs: a newer format can fill in foods already logged. */
+    @Volatile var onInstalled: (() -> Unit)? = null
 
     @Volatile private var db: SQLiteDatabase? = null
     @Volatile private var source: LabelPackSource? = null
@@ -54,7 +57,10 @@ class LabelPack(private val context: Context) {
         return synchronized(this) {
             source ?: runCatching {
                 SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY).also { db = it }
-            }.getOrNull()?.let { LabelPackSource(AndroidSql(it)).also { s -> source = s } }
+            }.getOrNull()?.let { d ->
+                val micros = (_status.value as? Status.Installed)?.hasMicros ?: false
+                LabelPackSource(AndroidSql(d), hasMicros = micros).also { s -> source = s }
+            }
         }
     }
 
@@ -86,6 +92,26 @@ class LabelPack(private val context: Context) {
         }
     }
 
+    /**
+     * Installs the pack shipped inside the APK, when there is one and this phone
+     * has none or a smaller one. Someone handed the app then has real labels from
+     * the first launch without being told to find a file; a newer pack they
+     * installed themselves is left alone.
+     */
+    suspend fun installBundled(): Status? = withContext(Dispatchers.IO) {
+        val id = runCatching { context.assets.open(BUNDLED_ID).bufferedReader().use { it.readText().trim() } }.getOrNull()
+            ?: return@withContext null
+        val products = id.split('|').getOrNull(2)?.toIntOrNull() ?: return@withContext null
+        val have = describe(file)
+        if (have != null && have.products >= products) return@withContext null
+        _status.value = Status.Working("Installing")
+        // The build unpacks a .gz asset and stores it compressed inside the APK, so
+        // it arrives as labels.db; the gzipped name is kept in case a build doesn't.
+        val input = BUNDLED_FILES.firstNotNullOfOrNull { name -> runCatching { context.assets.open(name) }.getOrNull() }
+            ?: return@withContext fail("The bundled label pack is missing.")
+        install(input, notify = false)
+    }
+
     fun remove() {
         synchronized(this) {
             db?.close()
@@ -96,7 +122,8 @@ class LabelPack(private val context: Context) {
         _status.value = Status.NotInstalled
     }
 
-    private fun install(raw: InputStream): Status {
+    /** [notify] false when the caller runs the backfill itself, so two passes can't race. */
+    private fun install(raw: InputStream, notify: Boolean = true): Status {
         val tmp = File(context.filesDir, "$FILE_NAME.part")
         try {
             // Accept the pack gzipped (the 12 MB download) or as-is.
@@ -132,6 +159,7 @@ class LabelPack(private val context: Context) {
                 }
             }
             _status.value = described.copy(bytes = file.length())
+            if (notify) onInstalled?.invoke()
             return _status.value
         } catch (e: Exception) {
             tmp.delete()
@@ -147,9 +175,10 @@ class LabelPack(private val context: Context) {
                 val meta = d.rawQuery("SELECT key, value FROM meta", null).use { c ->
                     buildMap { while (c.moveToNext()) put(c.getString(0), c.getString(1)) }
                 }
-                if (meta["format"] != SUPPORTED_FORMAT) return@use null
+                val format = meta["format"]
+                if (format !in SUPPORTED_FORMATS) return@use null
                 val products = d.rawQuery("SELECT COUNT(*) FROM product", null).use { c -> c.moveToFirst(); c.getInt(0) }
-                Status.Installed(products, meta["since"].orEmpty(), f.length())
+                Status.Installed(products, meta["since"].orEmpty(), f.length(), hasMicros = format == "4")
             }
         }.getOrNull()
     }
@@ -163,7 +192,12 @@ class LabelPack(private val context: Context) {
 
     companion object {
         const val FILE_NAME = "labels.db"
-        const val SUPPORTED_FORMAT = "3"
+        /** In the APK's assets when a pack is bundled; see app/build.gradle.kts. */
+        private val BUNDLED_FILES = listOf("labels.db", "labels.db.gz")
+        /** "format|since|products" of the bundled pack, so it can be compared without unpacking. */
+        private const val BUNDLED_ID = "labels.id"
+        /** 3: macros only. 4: plus calcium, iron, potassium, vitamin D, cholesterol (tools/label_pack_micros.py). */
+        val SUPPORTED_FORMATS = setOf("3", "4")
 
         /**
          * Where the app downloads the pack from. Null until there is a public place

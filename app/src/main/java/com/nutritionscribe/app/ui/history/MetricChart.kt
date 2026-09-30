@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.history
 
+import com.nutritionscribe.app.di.ServiceLocator
+
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -53,7 +55,6 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nutritionscribe.app.ui.common.ManualEntrySheet
 import com.nutritionscribe.app.ui.common.timeLabel
 import com.nutritionscribe.shared.model.GoalDirection
 import com.nutritionscribe.shared.model.Metric
@@ -82,7 +83,8 @@ internal fun standingColors() = StandingColors(
     met = MaterialTheme.colorScheme.primary,
     short = MaterialTheme.colorScheme.tertiary,
     missed = MaterialTheme.colorScheme.error,
-    none = MaterialTheme.colorScheme.secondary,
+    // Nothing is being judged: the same green as a good day, never a verdict.
+    none = MaterialTheme.colorScheme.primary,
 )
 
 /**
@@ -142,14 +144,15 @@ private enum class Preset(val label: String, val days: Double?) {
  */
 @Composable
 fun MetricChartScreen(
-    metric: Metric,
+    startMetric: Metric,
     onOpenEntry: (String) -> Unit,
+    onAddToDay: (LocalDate) -> Unit = {},
     viewModel: HistoryViewModel = viewModel(),
 ) {
+    var metric by remember { mutableStateOf(startMetric) }
     val entries by viewModel.allEntries.collectAsState(initial = emptyList())
     val goals by viewModel.allGoals.collectAsState(initial = emptyList())
-    val frequentFoods by viewModel.frequentFoods.collectAsState(initial = emptyList())
-    val goal = goals.firstOrNull { it.metric == metric } ?: MetricGoal.default(metric)
+    val goal = chartGoal(metric, goals)
 
     val zone = remember { ZoneId.systemDefault() }
     val today = LocalDate.now(zone)
@@ -165,7 +168,6 @@ fun MetricChartScreen(
         settled = true
     }
     var selected by remember { mutableStateOf<Bucket?>(null) }
-    var addingToDate by remember { mutableStateOf<LocalDate?>(null) }
 
     val size = MetricHistory.bucketSizeFor(viewport.spanDays)
     val buckets = remember(days, size) { MetricHistory.buckets(days, size) }
@@ -176,8 +178,20 @@ fun MetricChartScreen(
 
     Column(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+            MetricPicker(
+                selected = metric,
+                goals = goals,
+                onSelect = {
+                    if (it != metric) {
+                        metric = it
+                        selected = null
+                        ServiceLocator.debugEvents.event("chart_metric", "metric" to it.key)
+                    }
+                },
+                modifier = Modifier.padding(bottom = 10.dp),
+            )
             Text(
-                rangeLabel(viewport),
+                metric.label + " · " + rangeLabel(viewport),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.secondary,
             )
@@ -199,7 +213,13 @@ fun MetricChartScreen(
                     append(if (loggedCount == 1) "1 day logged" else "$loggedCount days logged")
                     goal.target?.let {
                         append(" · ")
-                        append(if (goal.effectiveDirection == GoalDirection.LIMIT) "limit " else "goal ")
+                        append(
+                            when {
+                                !goal.enabled -> if (com.nutritionscribe.app.di.ServiceLocator.profileNow() != null) "you need " else "Daily Value "
+                                goal.effectiveDirection == GoalDirection.LIMIT -> "limit "
+                                else -> "goal "
+                            },
+                        )
                         append(formatAmount(it, metric))
                     }
                 },
@@ -241,7 +261,9 @@ fun MetricChartScreen(
             onSelect = { selected = it },
             firstDay = firstDay,
             today = todayDay,
-            modifier = Modifier.fillMaxWidth().height(300.dp).padding(top = 8.dp),
+            // Shorter than it was: the nutrient picker sits above it now, and the
+            // tapped bar's foods still need room underneath.
+            modifier = Modifier.fillMaxWidth().height(230.dp).padding(top = 8.dp),
         )
         if (goal.target != null && days.isNotEmpty()) {
             Legend(goal, colors, Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp))
@@ -267,7 +289,7 @@ fun MetricChartScreen(
             zone = zone,
             colors = colors,
             onOpenEntry = onOpenEntry,
-            onAdd = { addingToDate = it },
+            onAdd = onAddToDay,
             onZoomTo = { b ->
                 val span = max(MetricHistory.MIN_SPAN_DAYS, b.days.toDouble())
                 val center = (b.startEpochDay + b.endEpochDay + 1) / 2.0
@@ -281,18 +303,6 @@ fun MetricChartScreen(
         )
     }
 
-    addingToDate?.let { date ->
-        ManualEntrySheet(
-            title = "Add to ${dayLabel(date)}",
-            frequentFoods = frequentFoods,
-            defaultTime = null,
-            onDismiss = { addingToDate = null },
-            onSave = { input ->
-                viewModel.addTo(date, input)
-                addingToDate = null
-            },
-        )
-    }
 }
 
 /**
@@ -302,12 +312,21 @@ fun MetricChartScreen(
 @Composable
 private fun Legend(goal: MetricGoal, colors: StandingColors, modifier: Modifier = Modifier) {
     val limit = goal.effectiveDirection == GoalDirection.LIMIT
+    val lines = goal.floorValue != null || goal.ceilingValue != null
+    val scored = goal.enabled && goal.target != null
+    // Not a goal and no line of their own: nothing is being judged, so no key.
+    if (!scored && !lines) return
     val items = buildList {
-        add(Standing.MET to if (limit) "under limit" else "hit goal")
-        if (!limit) add(Standing.SHORT to if (goal.floorValue != null) "above baseline" else "under goal")
-        if (limit && goal.ceilingValue != null && goal.ceilingValue!! > goal.target!!) add(Standing.SHORT to "a little over")
-        if (!limit && goal.floorValue != null) add(Standing.MISSED to "below baseline")
-        if (limit) add(Standing.MISSED to "over")
+        if (scored) {
+            add(Standing.MET to if (limit) "under limit" else "hit goal")
+            if (!limit) add(Standing.SHORT to "under goal")
+            if (limit && goal.ceilingValue != null) add(Standing.SHORT to "a little over")
+            if (limit && goal.ceilingValue == null) add(Standing.MISSED to "over")
+        } else {
+            add(Standing.MET to "within your lines")
+        }
+        if (goal.floorValue != null) add(Standing.MISSED to "below ${formatAmount(goal.floorValue!!, goal.metric)}")
+        if (goal.ceilingValue != null) add(Standing.MISSED to "above ${formatAmount(goal.ceilingValue!!, goal.metric)}")
     }
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
         items.forEach { (standing, text) ->
@@ -397,6 +416,23 @@ internal fun InteractiveChart(
             // Bars.
             val barGap = if (viewport.spanDays <= 14) 0.28f else 0.18f
             for (b in visible) {
+                if (b.value == null && b.patchyDays > 0) {
+                    // Logged, but too patchy to total: a hatched stub, never a low bar.
+                    val x0 = x(b.startEpochDay.toDouble())
+                    val w = x(b.endEpochDay + 1.0) - x0
+                    val inset = w * barGap / 2
+                    val barW = max(w - inset * 2, 1.5.dp.toPx())
+                    val h = plotH * 0.22f
+                    val yTop = y(0.0) - h
+                    clipRect(left = x0 + inset, top = yTop, right = x0 + inset + barW, bottom = y(0.0)) {
+                        var sx = x0 + inset - h
+                        while (sx < x0 + inset + barW) {
+                            drawLine(ruleColor.copy(alpha = 0.5f), Offset(sx, y(0.0)), Offset(sx + h, yTop), strokeWidth = 1.2.dp.toPx())
+                            sx += 4.dp.toPx()
+                        }
+                    }
+                    continue
+                }
                 val v = b.value ?: continue
                 val x0 = x(b.startEpochDay.toDouble())
                 val x1 = x(b.endEpochDay + 1.0)
@@ -598,6 +634,7 @@ private fun SelectionPanel(
                     val v = bucket.value
                     Text(
                         when {
+                            v == null && bucket.patchyDays > 0 -> "Too few of the foods logged list it to give a total"
                             v == null -> "Nothing recorded"
                             oneDay -> formatAmount(v, metric)
                             else -> "${formatAmount(v, metric)} a day · ${bucket.recordedDays} of ${bucket.days} days logged"

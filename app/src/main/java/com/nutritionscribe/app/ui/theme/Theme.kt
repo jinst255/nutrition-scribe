@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 // Palette confirmed in Section 13.
 object NutritionScribeColors {
@@ -157,16 +158,58 @@ private val DarkColors = darkColorScheme(
     scrim = Color.Black,
 )
 
+/**
+ * Public Sans for text: plain, open, made for reading numbers-heavy public
+ * information, which is what a nutrition log is. One variable font file covers
+ * every weight. (SIL OFL; licence in assets/licenses.)
+ */
+@OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+private fun sans(weight: FontWeight) = androidx.compose.ui.text.font.Font(
+    com.nutritionscribe.app.R.font.public_sans, weight,
+    variationSettings = androidx.compose.ui.text.font.FontVariation.Settings(
+        androidx.compose.ui.text.font.FontVariation.weight(weight.weight),
+    ),
+)
+
+val AppSans = androidx.compose.ui.text.font.FontFamily(
+    sans(FontWeight.Normal), sans(FontWeight.Medium), sans(FontWeight.SemiBold), sans(FontWeight.Bold),
+)
+
+/** IBM Plex Mono for amounts, so columns of numbers line up digit for digit. */
+val AppMono = androidx.compose.ui.text.font.FontFamily(
+    androidx.compose.ui.text.font.Font(com.nutritionscribe.app.R.font.plex_mono_regular, FontWeight.Normal),
+    androidx.compose.ui.text.font.Font(com.nutritionscribe.app.R.font.plex_mono_medium, FontWeight.Medium),
+)
+
 // Material's default type scale, with the title and headline styles given more
 // weight. At the default Normal weight a screen's heading and its body text were
 // the same colour and nearly the same heft, so nothing led the eye.
-private val Base = Typography()
+private val Base = Typography().let { t ->
+    // Material's letter spacing was tuned for Roboto; Public Sans is already open,
+    // and with it on top body text read as spaced out.
+    fun androidx.compose.ui.text.TextStyle.sans() = copy(fontFamily = AppSans, letterSpacing = letterSpacing * 0.3f)
+    t.copy(
+        displayLarge = t.displayLarge.sans(), displayMedium = t.displayMedium.sans(), displaySmall = t.displaySmall.sans(),
+        headlineLarge = t.headlineLarge.sans(), headlineMedium = t.headlineMedium.sans(), headlineSmall = t.headlineSmall.sans(),
+        titleLarge = t.titleLarge.sans(), titleMedium = t.titleMedium.sans(), titleSmall = t.titleSmall.sans(),
+        bodyLarge = t.bodyLarge.sans(), bodyMedium = t.bodyMedium.sans(), bodySmall = t.bodySmall.sans(),
+        labelLarge = t.labelLarge.sans(), labelMedium = t.labelMedium.sans(), labelSmall = t.labelSmall.sans(),
+    )
+}
 private val AppTypography = Base.copy(
     headlineMedium = Base.headlineMedium.copy(fontWeight = FontWeight.SemiBold),
     headlineSmall = Base.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
-    titleLarge = Base.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+    titleLarge = Base.titleLarge.copy(fontWeight = FontWeight.Bold),
     titleMedium = Base.titleMedium.copy(fontWeight = FontWeight.SemiBold),
     labelSmall = Base.labelSmall.copy(letterSpacing = Base.labelSmall.letterSpacing * 1.4),
+)
+
+/** An amount on screen: mono, so "1,364" and "114" line up in a column. */
+val NumberStyle = androidx.compose.ui.text.TextStyle(fontFamily = AppMono, fontSize = 13.sp)
+
+/** The small caps-style section label ("YOUR GOALS", "MINERALS"). */
+val SectionLabelStyle = androidx.compose.ui.text.TextStyle(
+    fontFamily = AppSans, fontWeight = FontWeight.SemiBold, fontSize = 11.5.sp, letterSpacing = 1.1.sp,
 )
 
 // Slightly softer than Material's defaults (12dp cards), matching the rings.

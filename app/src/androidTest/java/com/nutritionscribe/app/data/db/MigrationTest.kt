@@ -182,4 +182,40 @@ class MigrationTest {
         }
         db.close()
     }
+
+    @Test
+    fun migrate5To6_keepsEverythingAndAddsAnEmptySpendingTable() {
+        helper.createDatabase(dbName, 5).use { db ->
+            db.execSQL(
+                "INSERT INTO entries (id, timestampEpochMillis, rawText, name, isFixedFood, source, confidence," +
+                    " detailCompacted, timeUnspecified, needsDetail, foodDbId, itemsJson, needsConfirm)" +
+                    " VALUES ('e5', 1789797747092, 'two eggs', 'Egg', 0, 'usda', 'ESTIMATED', 0, 0, 0, NULL, '[]', 1)"
+            )
+            db.execSQL("INSERT INTO entry_nutrient (entryId, metric, amount) VALUES ('e5', 'protein', 12.5)")
+            db.execSQL(
+                "INSERT INTO personal_food (`key`, name, json, timesUsed, updatedAt, isMeal) " +
+                    "VALUES ('egg', 'Egg', '{}', 3, 1789797747092, 0)"
+            )
+        }
+        val db = helper.runMigrationsAndValidate(dbName, 6, true, NutritionScribeDatabase.MIGRATION_5_6)
+        db.query("SELECT name, itemsJson, needsConfirm FROM entries WHERE id = 'e5'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("Egg", it.getString(0))
+            assertEquals("[]", it.getString(1))
+            assertEquals(1, it.getInt(2))
+        }
+        db.query("SELECT amount FROM entry_nutrient WHERE entryId = 'e5'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(12.5, it.getDouble(0), 0.0001)
+        }
+        db.query("SELECT timesUsed FROM personal_food WHERE `key` = 'egg'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(3, it.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM ai_usage").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(0, it.getInt(0))
+        }
+        db.close()
+    }
 }

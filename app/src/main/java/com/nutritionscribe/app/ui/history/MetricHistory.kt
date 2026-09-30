@@ -4,6 +4,8 @@ import com.nutritionscribe.shared.model.Entry
 import com.nutritionscribe.shared.model.GoalDirection
 import com.nutritionscribe.shared.model.Metric
 import com.nutritionscribe.shared.model.MetricGoal
+import com.nutritionscribe.shared.model.NutrientDay
+import com.nutritionscribe.shared.model.NutrientTotal
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -19,7 +21,15 @@ import kotlin.math.min
  * not the same as zero. The old chart filled every unlogged day with 0, so a
  * weekend off pulled the average down as if it had been a weekend of fasting.
  */
-data class DayValue(val epochDay: Long, val value: Double?)
+data class DayValue(
+    val epochDay: Long,
+    val value: Double?,
+    /**
+     * Food was logged but too little of it lists this nutrient to total it (a
+     * micronutrient on a day of package labels). Shown as unknown, not as low.
+     */
+    val patchy: Boolean = false,
+)
 
 /** A bar on the chart: one day, one week, or one month. */
 data class Bucket(
@@ -29,6 +39,8 @@ data class Bucket(
     /** Average per recorded day in the bucket, or null if none were recorded. */
     val value: Double?,
     val recordedDays: Int,
+    /** Days in the bucket that were logged but too patchy to total. */
+    val patchyDays: Int = 0,
 ) {
     val days: Long get() = endEpochDay - startEpochDay + 1
 }
@@ -66,10 +78,23 @@ object MetricHistory {
             val day = dayOf(entry, zone)
             byDay[day] = (byDay[day] ?: 0.0) + amount
         }
-        if (byDay.isEmpty()) return emptyList()
-        val first = byDay.keys.min()
-        val last = max(today.toEpochDay(), byDay.keys.max())
-        return (first..last).map { DayValue(it, byDay[it]) }
+        // A micronutrient's day only counts when enough of its food lists it;
+        // otherwise a day of labelled snacks reads as a deficiency.
+        val patchy = HashSet<Long>()
+        if (metric.isMicro) {
+            entries.groupBy { dayOf(it, zone) }.forEach { (day, list) ->
+                if (list.none { it.nutrients.isNotEmpty() }) return@forEach
+                if (NutrientDay.coverage(list, metric) < NutrientTotal.TRUSTED_COVERAGE) {
+                    patchy += day
+                    byDay.remove(day)
+                }
+            }
+        }
+        if (byDay.isEmpty() && patchy.isEmpty()) return emptyList()
+        val known = byDay.keys + patchy
+        val first = known.min()
+        val last = max(today.toEpochDay(), known.max())
+        return (first..last).map { DayValue(it, byDay[it], patchy = it in patchy) }
     }
 
     /** Mean over the days that were actually recorded. Null when there were none. */
@@ -102,7 +127,7 @@ object MetricHistory {
     fun buckets(days: List<DayValue>, size: BucketSize): List<Bucket> {
         if (days.isEmpty()) return emptyList()
         if (size == BucketSize.DAY) {
-            return days.map { Bucket(it.epochDay, it.epochDay, it.value, if (it.value != null) 1 else 0) }
+            return days.map { Bucket(it.epochDay, it.epochDay, it.value, if (it.value != null) 1 else 0, if (it.patchy) 1 else 0) }
         }
         return days.groupBy { bucketStart(it.epochDay, size) }.map { (start, group) ->
             val recorded = group.mapNotNull { it.value }
@@ -111,6 +136,7 @@ object MetricHistory {
                 endEpochDay = bucketEnd(start, size),
                 value = if (recorded.isEmpty()) null else recorded.average(),
                 recordedDays = recorded.size,
+                patchyDays = group.count { it.patchy },
             )
         }
     }
@@ -131,25 +157,27 @@ object MetricHistory {
     }
 
     /**
-     * Where a value stands against a goal, in the goal's own direction.
+     * Where a value stands, judged only by numbers the user chose.
      *
-     * For something to reach: at the target is MET, between the baseline and the
-     * target is SHORT, under the baseline is MISSED. For something to stay under:
-     * at or below the target is MET, over it but under a separate ceiling is SHORT,
-     * past the ceiling is MISSED.
+     * Their own lines first: under a floor or over a ceiling they typed is MISSED,
+     * whether or not the metric is a goal. Then, for a goal with a target, its
+     * direction: for something to reach, at the target is MET and under it SHORT;
+     * for something to stay under, at or below is MET, over it SHORT when they
+     * set a ceiling above it (still under that) and MISSED when they did not.
+     * A metric that is not a goal and has no lines is never judged: NO_GOAL, which
+     * is drawn the same green as a good day.
      */
     fun standing(goal: MetricGoal?, value: Double): Standing {
-        val target = goal?.target ?: return Standing.NO_GOAL
+        if (goal == null) return Standing.NO_GOAL
+        goal.floorValue?.let { if (value < it) return Standing.MISSED }
+        goal.ceilingValue?.let { if (value > it) return Standing.MISSED }
+        val target = goal.target?.takeIf { goal.enabled }
+            ?: return if (goal.floorValue != null || goal.ceilingValue != null) Standing.MET else Standing.NO_GOAL
         return when (goal.effectiveDirection) {
-            GoalDirection.REACH -> when {
-                value >= target -> Standing.MET
-                goal.floorValue == null || value >= goal.floorValue!! -> Standing.SHORT
-                else -> Standing.MISSED
-            }
+            GoalDirection.REACH -> if (value >= target) Standing.MET else Standing.SHORT
             GoalDirection.LIMIT -> when {
                 value <= target -> Standing.MET
-                goal.ceilingValue != null && goal.ceilingValue!! > target &&
-                    value <= goal.ceilingValue!! -> Standing.SHORT
+                goal.ceilingValue != null -> Standing.SHORT
                 else -> Standing.MISSED
             }
         }
@@ -199,7 +227,7 @@ object MetricHistory {
  * default locale's grouping is what the reader expects to see.
  */
 fun formatAmount(value: Double, metric: Metric, withUnit: Boolean = true): String {
-    val number = if (value < 10 && metric.unit == "g" && value != Math.floor(value)) {
+    val number = if (value < 10 && metric.unit != "kcal" && value != Math.floor(value)) {
         String.format("%.1f", value)
     } else {
         String.format("%,d", Math.round(value))

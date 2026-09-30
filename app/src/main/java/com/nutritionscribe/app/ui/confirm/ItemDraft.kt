@@ -1,5 +1,6 @@
 package com.nutritionscribe.app.ui.confirm
 
+import com.nutritionscribe.shared.model.Liquids
 import com.nutritionscribe.shared.resolve.FoodCandidate
 import com.nutritionscribe.shared.resolve.ItemParser
 import com.nutritionscribe.shared.resolve.Origin
@@ -31,8 +32,14 @@ data class ItemDraft(
     /** Remembered and untouched: nothing to write back. */
     val untouched: Boolean,
 ) {
-    val name: String get() = candidate?.let { c -> listOfNotNull(c.brand, c.name).distinct().joinToString(" — ") } ?: item.food
+    val name: String get() = candidate?.let { c -> withBrand(c, " — ") } ?: item.food
     val nutrients: Map<String, Double> get() = computed + overrides
+
+    /** A drink: its amount is shown and typed in mL (see [Liquids]). */
+    val liquid: Boolean get() = Liquids.isLiquid(candidate?.name ?: item.food, candidate?.labelServingText)
+
+    /** "240 mL · 8 fl oz" for a drink, "32 g" for anything else. */
+    fun amountText(g: Double): String = Liquids.amount(g, candidate?.name ?: item.food, candidate?.labelServingText)
 
     fun toConfirmed() = Resolver.Confirmed(
         item = item, key = key, name = name, candidate = candidate, grams = grams,
@@ -54,7 +61,7 @@ data class ItemDraft(
             this.grams != null && this.grams > 0 -> computed.mapValues { it.value * grams / this.grams }
             else -> computed
         }
-        return copy(item = item.copy(amount = grams, unit = "g"), grams = grams, portionNote = "${grams.toInt()} g",
+        return copy(item = item.copy(amount = grams, unit = "g"), grams = grams, portionNote = amountText(grams),
             computed = n, untouched = false)
     }
 
@@ -94,6 +101,27 @@ data class ItemDraft(
             computed = c.nutrients, status = Resolver.Status.REMEMBERED, weak = false, offerScan = false,
             offerBreakdown = false, alternates = emptyList(), untouched = false,
         )
+
+        /** A food found by scanning, as the one line of a new entry: one label serving. */
+        fun fromCandidate(c: FoodCandidate): ItemDraft {
+            val name = withBrand(c, " ").ifBlank { c.name }
+            val grams = c.labelServingGrams ?: c.defaultGrams ?: c.portions.firstOrNull()?.grams
+            val n = if (c.per100g != null && grams != null) c.nutrientsFor(grams) else c.perServing.orEmpty()
+            return ItemDraft(
+                item = ItemParser.Item(said = name, food = name),
+                key = com.nutritionscribe.shared.resolve.PersonalKeys.of(name),
+                candidate = c, grams = grams,
+                portionNote = c.labelServingText ?: grams?.let { Liquids.amount(it, c.name, c.labelServingText) },
+                computed = n, status = Resolver.Status.NEW, weak = false, offerScan = true,
+                offerBreakdown = false, alternates = emptyList(), untouched = false,
+            )
+        }
+
+        /** "Sun-maid — California Raisins", not "Sun-maid — Sun-maid California Raisins". */
+        fun withBrand(c: FoodCandidate, sep: String): String {
+            val b = c.brand?.trim()?.takeIf { it.isNotBlank() && !c.name.contains(it, ignoreCase = true) }
+            return if (b != null) "$b$sep${c.name}" else c.name
+        }
 
         fun label(origin: Origin?): String = when (origin) {
             Origin.PERSONAL -> "Your usual"

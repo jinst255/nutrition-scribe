@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.Card
@@ -44,9 +45,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nutritionscribe.app.di.ServiceLocator
-import com.nutritionscribe.app.ui.common.ManualEntryInput
-import com.nutritionscribe.app.ui.common.ManualEntrySheet
-import com.nutritionscribe.app.ui.common.resolveTimestamp
 import com.nutritionscribe.app.ui.common.timeLabel
 import com.nutritionscribe.shared.model.Entry
 import com.nutritionscribe.shared.model.Metric
@@ -76,24 +74,36 @@ class HistoryViewModel : ViewModel() {
     }
 
     fun deleteMany(ids: List<String>) {
+        ServiceLocator.debugEvents.event("entries_deleted", "where" to "history", "ids" to ids)
         viewModelScope.launch { repository.deleteMany(ids) }
     }
 
-    /** Adds an entry onto an arbitrary past day (the per-day + button). */
-    fun addTo(date: LocalDate, input: ManualEntryInput) {
-        val (timestamp, timeUnspecified) = input.resolveTimestamp(date)
+    /** The selected entries again, now, oldest first so they keep their order. */
+    fun logAgain(entries: List<com.nutritionscribe.shared.model.Entry>, onDone: (Int) -> Unit) {
+        ServiceLocator.debugEvents.event("log_again_tap", "where" to "history", "ids" to entries.map { it.id })
         viewModelScope.launch {
-            repository.logManual(
-                name = input.name,
-                proteinGrams = input.proteinGrams,
-                calories = input.calories,
-                carbsGrams = input.carbsGrams,
-                fatGrams = input.fatGrams,
-                timestampEpochMillis = timestamp,
-                timeUnspecified = timeUnspecified,
-            )
+            entries.sortedBy { it.timestampEpochMillis }.forEach { ServiceLocator.logPipeline.logAgain(it) }
+            onDone(entries.size)
         }
     }
+
+}
+
+/**
+ * What a chart compares against. The user's own goal when they have one; for a
+ * micronutrient, what they need (see Needs); for any other macro, nothing — a
+ * carbs line nobody asked for would read as a verdict.
+ */
+internal fun chartGoal(
+    metric: Metric,
+    goals: List<MetricGoal>,
+    refs: Map<Metric, Double> = com.nutritionscribe.shared.model.Needs.forProfile(ServiceLocator.profileNow()),
+): MetricGoal {
+    val g = goals.firstOrNull { it.metric == metric } ?: MetricGoal.default(metric)
+    if (g.enabled) return g
+    // Not a goal: only lines the user typed judge it. A micronutrient keeps its
+    // reference as a rule, which colours nothing.
+    return g.copy(target = if (metric.isMicro) refs.getValue(metric) else null)
 }
 
 internal fun dayLabel(date: LocalDate): String {
@@ -122,16 +132,18 @@ private const val CARD_DAYS = 30
 fun HistoryScreen(
     onOpenEntry: (String) -> Unit = {},
     onOpenMetric: (Metric) -> Unit = {},
+    onAddToDay: (LocalDate) -> Unit = {},
     viewModel: HistoryViewModel = viewModel(),
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val allEntries by viewModel.allEntries.collectAsState(initial = emptyList())
     val entries by viewModel.filteredEntries.collectAsState(initial = emptyList())
     val goals by viewModel.trackedGoals.collectAsState(initial = emptyList())
-    val frequentFoods by viewModel.frequentFoods.collectAsState(initial = emptyList())
+    val allGoals by viewModel.allGoals.collectAsState(initial = emptyList())
     var query by remember { mutableStateOf("") }
+    var picked by remember { mutableStateOf<Metric?>(null) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     val selecting = selectedIds.isNotEmpty()
-    var addingToDate by remember { mutableStateOf<LocalDate?>(null) }
 
     val zone = remember { ZoneId.systemDefault() }
     val today = LocalDate.now(zone)
@@ -149,13 +161,12 @@ fun HistoryScreen(
         }
     }
 
+    val shown = picked ?: goals.firstOrNull()?.metric ?: Metric.CALORIES
     // Always from the FULL history, never the search-filtered list: search
-    // narrows the list, it must not rewrite the charts.
-    val cards = remember(allEntries, goals) {
-        goals.map { goal ->
-            val days = MetricHistory.daily(allEntries, goal.metric, zone, today)
-            goal to MetricHistory.lastDays(days, CARD_DAYS)
-        }
+    // narrows the list, it must not rewrite the chart.
+    val card = remember(allEntries, allGoals, shown) {
+        val days = MetricHistory.daily(allEntries, shown, zone, today)
+        chartGoal(shown, allGoals) to MetricHistory.lastDays(days, CARD_DAYS)
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
@@ -187,6 +198,15 @@ fun HistoryScreen(
                     IconButton(onClick = { selectedIds = entries.map { it.id }.toSet() }) {
                         Icon(Icons.Filled.SelectAll, contentDescription = "Select all")
                     }
+                    IconButton(onClick = {
+                        val chosen = entries.filter { it.id in selectedIds }
+                        selectedIds = emptySet()
+                        viewModel.logAgain(chosen) { n ->
+                            android.widget.Toast.makeText(context, if (n == 1) "Logged again" else "Logged $n entries again", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }) {
+                        Icon(Icons.Filled.Replay, contentDescription = "Log again now")
+                    }
                     IconButton(onClick = { viewModel.deleteMany(selectedIds.toList()); selectedIds = emptySet() }) {
                         Icon(Icons.Filled.Delete, contentDescription = "Delete")
                     }
@@ -204,24 +224,25 @@ fun HistoryScreen(
             // The cards scroll away with the list rather than pinning to the top:
             // with four metrics they are half a screen, and the list below is
             // what most visits are for.
-            if (query.isBlank() && cards.isNotEmpty()) {
-                val rows = cards.chunked(2)
-                items(rows.size, key = { "cards_$it" }) { i ->
-                    Row(
+            if (query.isBlank()) {
+                item(key = "picker") {
+                    MetricPicker(
+                        selected = shown,
+                        goals = allGoals,
+                        onSelect = {
+                            picked = it
+                            ServiceLocator.debugEvents.event("history_metric", "metric" to it.key)
+                        },
+                        modifier = Modifier.padding(bottom = 10.dp),
+                    )
+                }
+                item(key = "card") {
+                    MetricCard(
+                        goal = card.first,
+                        days = card.second,
+                        onClick = { onOpenMetric(shown) },
                         modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        rows[i].forEach { (goal, days) ->
-                            MetricCard(
-                                goal = goal,
-                                days = days,
-                                onClick = { onOpenMetric(goal.metric) },
-                                // A lone card in the last row takes the full width
-                                // instead of sitting beside a hole.
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
+                    )
                 }
             }
 
@@ -248,7 +269,7 @@ fun HistoryScreen(
                     is HistoryListItem.Header -> DayHeader(
                         date = item.date,
                         count = item.count,
-                        onAdd = { addingToDate = item.date },
+                        onAdd = { onAddToDay(item.date) },
                     )
                     is HistoryListItem.EntryItem -> EntryRow(
                         entry = item.entry,
@@ -271,20 +292,6 @@ fun HistoryScreen(
         }
     }
 
-    addingToDate?.let { date ->
-        ManualEntrySheet(
-            title = "Add to ${dayLabel(date)}",
-            frequentFoods = frequentFoods,
-            // Backdating defaults to no time rather than "now on that date", which would
-            // write a timestamp the user never reported.
-            defaultTime = null,
-            onDismiss = { addingToDate = null },
-            onSave = { input ->
-                viewModel.addTo(date, input)
-                addingToDate = null
-            },
-        )
-    }
 }
 
 /**
@@ -321,7 +328,8 @@ private fun MetricCard(
                     style = MaterialTheme.typography.headlineSmall,
                 )
                 Text(
-                    " ${goal.metric.unit}/day",
+                    " ${goal.metric.unit}/day" + if (goal.metric.isMicro && average != null && goal.target != null)
+                        " · ${Math.round(average / goal.target!! * 100)}% of ${if (goal.enabled) "your goal" else if (ServiceLocator.profileNow() != null) "what you need" else "the Daily Value"}" else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.padding(bottom = 4.dp),
@@ -347,6 +355,11 @@ private fun MetricCard(
 /** A short verdict for the month, in the goal's own direction. */
 internal fun standingPhrase(standing: Standing, goal: MetricGoal): String {
     val target = goal.target?.let { formatAmount(it, goal.metric) }
+    if (!goal.enabled) return when (standing) {
+        Standing.MISSED -> "past your line"
+        Standing.NO_GOAL -> "30-day average"
+        else -> "within your lines"
+    }
     return when (standing) {
         Standing.MET -> "on target · $target"
         Standing.SHORT -> if (goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT) {

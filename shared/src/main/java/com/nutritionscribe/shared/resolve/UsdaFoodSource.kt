@@ -152,6 +152,23 @@ class UsdaFoodSource(private val sql: SqlReader) {
             "sat_fat_g" to Metric.SATURATED_FAT,
             "sodium_mg" to Metric.SODIUM,
             "caffeine_mg" to Metric.CAFFEINE,
+            // Micronutrients (food.db since asset version 6). The first nine are also
+            // the label pack's columns, so new ones only ever go on the end.
+            "calcium_mg" to Metric.CALCIUM,
+            "iron_mg" to Metric.IRON,
+            "potassium_mg" to Metric.POTASSIUM,
+            "magnesium_mg" to Metric.MAGNESIUM,
+            "zinc_mg" to Metric.ZINC,
+            "vitamin_a_ug" to Metric.VITAMIN_A,
+            "vitamin_c_mg" to Metric.VITAMIN_C,
+            "vitamin_d_ug" to Metric.VITAMIN_D,
+            "vitamin_e_mg" to Metric.VITAMIN_E,
+            "vitamin_k_ug" to Metric.VITAMIN_K,
+            "vitamin_b12_ug" to Metric.VITAMIN_B12,
+            "folate_ug" to Metric.FOLATE,
+            "selenium_ug" to Metric.SELENIUM,
+            "omega3_mg" to Metric.OMEGA3,
+            "cholesterol_mg" to Metric.CHOLESTEROL,
         )
 
         private val COLUMNS = "f.fdc_id, f.description, f.source, " +

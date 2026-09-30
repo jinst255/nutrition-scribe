@@ -53,9 +53,14 @@ object ItemParser {
         add("oz", "oz", "ounce", "ounces")
         add("lb", "lb", "lbs", "pound", "pounds")
         add("ml", "ml", "milliliter", "milliliters", "millilitre", "millilitres")
+        add("l", "liter", "liters", "litre", "litres")
+        // Joined from "fl oz" / "fluid ounces" in normaliseText.
+        add("floz", "floz")
         add("cup", "cup", "cups")
-        add("tbsp", "tbsp", "tablespoon", "tablespoons", "tbs", "spoonful", "spoonfuls")
-        add("tsp", "tsp", "teaspoon", "teaspoons")
+        // With the misspellings people type: "honey - 1 tbps" was read as a food.
+        add("tbsp", "tbsp", "tablespoon", "tablespoons", "tbs", "spoonful", "spoonfuls",
+            "tbsps", "tbps", "tbls", "tblsp", "tblsps", "tbl", "tablespon", "tablspoon", "tablespoonful")
+        add("tsp", "tsp", "teaspoon", "teaspoons", "tsps", "tspn", "teaspon", "teaspoonful")
         add("slice", "slice", "slices")
         add("piece", "piece", "pieces")
         add("serving", "serving", "servings", "portion", "portions")
@@ -350,6 +355,9 @@ object ItemParser {
             val n = m.groupValues[1].toDoubleOrNull() ?: NUMBER_WORDS[m.groupValues[1]] ?: 1.0
             " ${n + 0.5} "
         }
+        // "12 fl oz", "16 fl. oz.", "8 fluid ounces": a volume, not a weight.
+        t = Regex("\\bfl(?:uid)?\\.?\\s*(?:oz|ounces?)\\b\\.?").replace(t, " floz ")
+        t = Regex("(\\d)\\s*l\\b(?!\\.)").replace(t) { "${it.groupValues[1]} liter" }
         for ((pattern, replacement) in SYNONYMS) t = pattern.replace(t, replacement)
         t = fatLevels(t)
         return Regex("\\s+").replace(t, " ").trim()

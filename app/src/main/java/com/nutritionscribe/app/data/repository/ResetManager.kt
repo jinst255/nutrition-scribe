@@ -24,6 +24,10 @@ import com.nutritionscribe.app.data.db.UnprocessedDao
  *               "reset my settings" means the goals too; they are only in a
  *               different table for query reasons.
  *   API key   — every stored key, for every backend.
+ *   label pack — the 40 MB of package labels. Kept by default: it is not the
+ *               user's data, it is slow to get back, and nothing in it is personal.
+ *
+ * The AI spending history goes with the food log: its rows point at entries.
  */
 class ResetManager(
     private val entryDao: EntryDao,
@@ -33,6 +37,8 @@ class ResetManager(
     private val settingsRepository: SettingsRepository,
     private val personalFoodDao: com.nutritionscribe.app.data.db.PersonalFoodDao? = null,
     private val onPersonalFoodsCleared: () -> Unit = {},
+    private val aiUsageDao: com.nutritionscribe.app.data.usage.AiUsageDao? = null,
+    private val labelPack: com.nutritionscribe.app.data.resolve.LabelPack? = null,
 ) {
 
     /** What a reset will destroy, so the confirmation can say so in numbers. */
@@ -40,9 +46,12 @@ class ResetManager(
         val foodLog: Boolean,
         val settings: Boolean,
         val apiKey: Boolean,
+        val labelPack: Boolean = false,
     ) {
-        val erasesAnything: Boolean get() = foodLog || settings || apiKey
+        val erasesAnything: Boolean get() = foodLog || settings || apiKey || labelPack
     }
+
+    fun hasLabelPack(): Boolean = labelPack?.isInstalled == true
 
     suspend fun loggedEntryCount(): Int = entryDao.count()
 
@@ -66,6 +75,7 @@ class ResetManager(
             fixedFoodCacheDao.deleteAll()
             personalFoodDao?.deleteAll()
             onPersonalFoodsCleared()
+            aiUsageDao?.deleteAll()
         }
         if (scope.settings) {
             metricGoalDao.deleteAll()
@@ -73,6 +83,9 @@ class ResetManager(
         }
         if (scope.apiKey) {
             settingsRepository.clearApiKeys()
+        }
+        if (scope.labelPack) {
+            labelPack?.remove()
         }
     }
 }

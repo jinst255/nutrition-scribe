@@ -39,6 +39,15 @@ class WearRepository(private val context: Context) {
          * edge case — you leave your phone in another room and go for a run.
          */
         val PENDING = stringSetPreferencesKey("pending_entries")
+
+        /** "tap" or "hold": how the mic button works, set on the watch itself. */
+        val MIC_MODE = androidx.datastore.preferences.core.stringPreferencesKey("mic_mode")
+    }
+
+    val holdToTalk: Flow<Boolean> = context.wearDataStore.data.map { it[Keys.MIC_MODE] == "hold" }
+
+    suspend fun setHoldToTalk(hold: Boolean) {
+        context.wearDataStore.edit { it[Keys.MIC_MODE] = if (hold) "hold" else "tap" }
     }
 
     val todaySummary: Flow<TodaySummary> = context.wearDataStore.data.map {

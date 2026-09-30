@@ -54,8 +54,11 @@ means, and it is the number most worth improving.
 Gradle multi-module project (`app`, `wear`, `shared`) with the wrapper checked in.
 
 - JDK 17 (Temurin 17.0.20.1+1)
-- Gradle 8.11.1 / AGP 8.2.2 / Kotlin 1.9.22
-- Android SDK Platform 34, Build-Tools 34.0.0
+- Gradle 8.11.1 / AGP 8.9.2 / Kotlin 2.0.21
+- Android SDK Platform 36 (and 34 for the watch), Build-Tools 36.0.0
+
+Setting up a new machine, including the files that are deliberately not in this repo:
+[`docs/SETUP.md`](./docs/SETUP.md).
 
 ```
 ./gradlew :app:assembleDebug

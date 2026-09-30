@@ -35,19 +35,42 @@ NUTRIENTS = {
     208: "kcal", 203: "protein_g", 205: "carbs_g", 204: "fat_g",
     291: "fiber_g", 269: "sugar_g",
     606: "sat_fat_g", 307: "sodium_mg", 262: "caffeine_mg",
+    # --- micronutrients (FDC id, then legacy nbr) ---
+    1087: "calcium_mg", 301: "calcium_mg",
+    1089: "iron_mg", 303: "iron_mg",
+    1092: "potassium_mg", 306: "potassium_mg",
+    1090: "magnesium_mg", 304: "magnesium_mg",
+    1095: "zinc_mg", 309: "zinc_mg",
+    1106: "vitamin_a_ug", 320: "vitamin_a_ug",
+    1162: "vitamin_c_mg", 401: "vitamin_c_mg",
+    1114: "vitamin_d_ug", 328: "vitamin_d_ug",
+    1109: "vitamin_e_mg", 323: "vitamin_e_mg",
+    1185: "vitamin_k_ug", 430: "vitamin_k_ug",
+    1178: "vitamin_b12_ug", 418: "vitamin_b12_ug",
+    1190: "folate_ug", 435: "folate_ug",
+    1103: "selenium_ug", 317: "selenium_ug",
+    1253: "cholesterol_mg", 601: "cholesterol_mg",
 }
+
+# Read but not stored as-is: vitamin D in IU fills in when the µg value is
+# missing (40 IU = 1 µg), and EPA + DHA (grams) add up to omega3_mg.
+EXTRA = {1110: "vit_d_iu", 324: "vit_d_iu", 1278: "epa_g", 629: "epa_g", 1272: "dha_g", 621: "dha_g"}
 
 # Units are NOT uniform: sodium and caffeine are milligrams, everything else is
 # grams or kcal. Storing them in one "amount" column without this in mind is how
 # a 1180 mg sodium reading turns into 1180 g.
 COLUMNS = ["kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g",
-           "sat_fat_g", "sodium_mg", "caffeine_mg"]
+           "sat_fat_g", "sodium_mg", "caffeine_mg",
+           # Micronutrients. The order is what UsdaFoodSource.NUTRIENT_COLUMNS reads.
+           "calcium_mg", "iron_mg", "potassium_mg", "magnesium_mg", "zinc_mg",
+           "vitamin_a_ug", "vitamin_c_mg", "vitamin_d_ug", "vitamin_e_mg", "vitamin_k_ug",
+           "vitamin_b12_ug", "folate_ug", "selenium_ug", "omega3_mg", "cholesterol_mg"]
 
 
 def csv_dirs(base):
     """FDC zips extract to a nested dir of the same name; accept either level."""
     seen = []
-    for root, _dirs, files in os.walk(base):
+    for root, _dirs, files in os.walk(base, followlinks=True):
         if "food.csv" in files:
             seen.append(root)
     if not seen:
@@ -109,7 +132,7 @@ def build(base, out):
                 nid = int(float(r["nutrient_id"]))
             except (ValueError, KeyError, TypeError):
                 continue
-            col = NUTRIENTS.get(nid)
+            col = NUTRIENTS.get(nid) or EXTRA.get(nid)
             if not col:
                 continue
             try:
@@ -123,6 +146,16 @@ def build(base, out):
                 vals.setdefault(fid, {}).setdefault(col, amt)
                 kept += 1
     print(f"nutrient values kept: {kept}")
+
+    for v in vals.values():
+        iu = v.pop("vit_d_iu", None)
+        if "vitamin_d_ug" not in v and iu is not None:
+            v["vitamin_d_ug"] = iu / 40.0
+        epa, dha = v.pop("epa_g", None), v.pop("dha_g", None)
+        # Both or either: a food listing only one of them still states the other
+        # is absent rather than unknown, often enough that this is fair.
+        if epa is not None or dha is not None:
+            v["omega3_mg"] = ((epa or 0.0) + (dha or 0.0)) * 1000.0
 
     db.executemany(
         f"INSERT INTO food (fdc_id, description, source, {', '.join(COLUMNS)})"

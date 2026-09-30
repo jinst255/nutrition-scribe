@@ -36,7 +36,11 @@ object TestDbs {
     /** Null unless a label pack path was passed with -DlabelPack=... */
     val labels: LabelPackSource? by lazy {
         System.getProperty("labelPack")?.takeIf { it.isNotBlank() && File(it).exists() }
-            ?.let { LabelPackSource(open(it)) }
+            ?.let { path ->
+                val sql = open(path)
+                val format = sql.query("SELECT value FROM meta WHERE key = 'format'", emptyList()) { it.string(0).orEmpty() }.firstOrNull()
+                LabelPackSource(sql, hasMicros = format == "4")
+            }
     }
 
     fun report(name: String, text: String) {

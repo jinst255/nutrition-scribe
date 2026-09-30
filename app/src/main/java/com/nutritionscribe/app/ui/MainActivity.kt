@@ -58,7 +58,10 @@ import com.nutritionscribe.app.ui.unprocessed.UnprocessedScreen
 private object Routes {
     const val ONBOARDING = "onboarding"
     const val HOME = "home"
-    const val ADD_ENTRY = "add_entry"
+    /** date: an ISO day from History's "+" (blank is today). type=1: open with the keyboard up. */
+    const val ADD_ENTRY = "add_entry?date={date}&type={type}"
+    fun addEntry(date: java.time.LocalDate? = null, type: Boolean = false) =
+        "add_entry?date=${date?.toString().orEmpty()}&type=${if (type) 1 else 0}"
     const val REVIEW = "review"
     const val UNPROCESSED = "unprocessed"
     const val HISTORY = "history"
@@ -70,6 +73,9 @@ private object Routes {
     const val FIX = "fix/{entryId}"
     const val SCAN = "scan/{index}"
     const val MY_FOODS = "my_foods"
+    const val SPENDING = "spending"
+    /** Scan index for "start a new entry from a scan", from the Log screen. */
+    const val SCAN_NEW = -2
     fun fix(id: String) = "fix/$id"
     fun scan(index: Int) = "scan/$index"
     const val METRIC_CHART = "history/metric/{metric}"
@@ -120,7 +126,11 @@ private fun titleFor(route: String?, args: Bundle?): String = when (route) {
     Routes.HOME -> java.time.LocalDate.now().format(
         java.time.format.DateTimeFormatter.ofPattern("EEEE, MMM d"),
     )
-    Routes.ADD_ENTRY -> "Log food"
+    Routes.ADD_ENTRY -> args?.getString("date")?.takeIf { it.isNotBlank() }
+        ?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
+        ?.takeIf { it != java.time.LocalDate.now() }
+        ?.let { "Add to " + it.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d")) }
+        ?: "Log food"
     Routes.REVIEW -> "Check it once"
     Routes.FIX -> "Fix entry"
     Routes.SCAN -> "Scan the package"
@@ -129,10 +139,12 @@ private fun titleFor(route: String?, args: Bundle?): String = when (route) {
     Routes.HISTORY -> "History"
     Routes.GOALS -> "Goals"
     Routes.SETTINGS -> "Settings"
-    Routes.DEBUG_LOG -> "Error log"
+    Routes.DEBUG_LOG -> "Debug log"
+    Routes.SPENDING -> "AI spending"
     Routes.EXPORT_IMPORT -> "Back up & restore"
     Routes.ENTRY_DETAIL -> "Entry"
-    Routes.METRIC_CHART -> args?.getString("metric")?.let { Metric.fromKey(it)?.label } ?: "History"
+    // The chart switches nutrient in place, so the bar names the screen, not the nutrient.
+    Routes.METRIC_CHART -> "Over time"
     else -> "Nutrition Scribe"
 }
 
@@ -149,6 +161,16 @@ private fun MainNavScaffold() {
         BottomTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
     )
 
+    androidx.compose.runtime.DisposableEffect(navController) {
+        val l = androidx.navigation.NavController.OnDestinationChangedListener { _, dest, args ->
+            val (prev, prevMs) = ServiceLocator.debugEvents.screenChanged(dest.route?.substringBefore('?'))
+            ServiceLocator.debugEvents.event("screen", "route" to dest.route, "prev" to prev, "prev_ms" to prevMs,
+                "args" to args?.keySet()?.filterNot { it.startsWith("android-support-nav") }
+                    ?.associateWith { k -> @Suppress("DEPRECATION") args.get(k)?.toString() }?.takeIf { it.isNotEmpty() })
+        }
+        navController.addOnDestinationChangedListener(l)
+        onDispose { navController.removeOnDestinationChangedListener(l) }
+    }
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
     // The four tabs are places; everything else is somewhere you went FROM one of
@@ -209,24 +231,51 @@ private fun MainNavScaffold() {
         ) {
             composable(Routes.HOME) {
                 HomeScreen(
-                    onAddEntry = { navController.navigate(Routes.ADD_ENTRY) },
                     onOpenUnprocessed = { navController.navigate(Routes.UNPROCESSED) },
                     onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
                     onFixEntry = { id -> navController.navigate(Routes.fix(id)) },
+                    onTypeIt = { navController.navigate(Routes.addEntry(type = true)) },
+                    onScan = {
+                        com.nutritionscribe.app.ui.confirm.LogDay.today()
+                        navController.navigate(Routes.scan(Routes.SCAN_NEW))
+                    },
+                    onReview = { navController.navigate(Routes.REVIEW) },
+                    onOpenGoals = {
+                        navController.navigate(Routes.GOALS) {
+                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                        }
+                    },
                 )
             }
-            composable(Routes.ADD_ENTRY) {
+            composable(
+                Routes.ADD_ENTRY,
+                arguments = listOf(
+                    navArgument("date") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("type") { type = NavType.IntType; defaultValue = 0 },
+                ),
+            ) { backStackEntry ->
+                val date = backStackEntry.arguments?.getString("date")?.takeIf { it.isNotBlank() }
+                    ?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
                 AddEntryScreen(
                     onReadyForReview = { navController.navigate(Routes.REVIEW) },
-                    // A manual entry is already saved by the time this fires — there is
-                    // nothing to review, so it goes straight back Home.
-                    onManualSaved = { navController.popBackStack(Routes.HOME, inclusive = false) },
-                    onLogged = { navController.popBackStack(Routes.HOME, inclusive = false) },
+                    // Already saved by the time these fire: back to wherever this was
+                    // opened from — Home, or the day in History.
+                    onManualSaved = { navController.popBackStack() },
+                    onLogged = { navController.popBackStack() },
+                    onScan = { navController.navigate(Routes.scan(Routes.SCAN_NEW)) },
+                    date = date,
+                    startTyping = backStackEntry.arguments?.getInt("type") == 1,
                 )
             }
             composable(Routes.REVIEW) {
                 com.nutritionscribe.app.ui.confirm.ConfirmScreen(
-                    onLogged = { navController.popBackStack(Routes.HOME, inclusive = false) },
+                    onLogged = {
+                        // Past the Log food screen if it was used (History's day), else Home.
+                        if (!navController.popBackStack(Routes.ADD_ENTRY, inclusive = true)) {
+                            navController.popBackStack(Routes.HOME, inclusive = false)
+                        }
+                    },
                     onScan = { i -> navController.navigate(Routes.scan(i)) },
                 )
             }
@@ -238,8 +287,7 @@ private fun MainNavScaffold() {
                 var ready by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
                 androidx.compose.runtime.LaunchedEffect(id) {
                     val row = ServiceLocator.database.entryDao().find(id)
-                    com.nutritionscribe.app.ui.confirm.LogSession.resolution = null
-                    com.nutritionscribe.app.ui.confirm.LogSession.editing = row?.toEntry()
+                    com.nutritionscribe.app.ui.confirm.LogSession.startFix(row?.toEntry())
                     ready = true
                 }
                 if (ready && com.nutritionscribe.app.ui.confirm.LogSession.editing != null) {
@@ -258,8 +306,14 @@ private fun MainNavScaffold() {
                 val index = backStackEntry.arguments?.getInt("index") ?: 0
                 com.nutritionscribe.app.ui.scan.ScanScreen(
                     onFound = { candidate ->
-                        com.nutritionscribe.app.ui.confirm.LogSession.scanned = index to candidate
-                        navController.popBackStack()
+                        ServiceLocator.debugEvents.event("scan_used", "index" to index)
+                        if (index == Routes.SCAN_NEW) {
+                            com.nutritionscribe.app.ui.confirm.LogSession.startFromScan(candidate)
+                            navController.navigate(Routes.REVIEW) { popUpTo(Routes.SCAN) { inclusive = true } }
+                        } else {
+                            com.nutritionscribe.app.ui.confirm.LogSession.scanned = index to candidate
+                            navController.popBackStack()
+                        }
                     },
                     onCancel = { navController.popBackStack() },
                 )
@@ -269,6 +323,7 @@ private fun MainNavScaffold() {
             composable(Routes.HISTORY) {
                 HistoryScreen(
                     onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
+                    onAddToDay = { day -> navController.navigate(Routes.addEntry(day)) },
                     onOpenMetric = { metric -> navController.navigate(Routes.metricChart(metric)) },
                 )
             }
@@ -278,8 +333,9 @@ private fun MainNavScaffold() {
             ) { entry ->
                 val metric = entry.arguments?.getString("metric")?.let { Metric.fromKey(it) } ?: Metric.PROTEIN
                 MetricChartScreen(
-                    metric = metric,
+                    startMetric = metric,
                     onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
+                    onAddToDay = { day -> navController.navigate(Routes.addEntry(day)) },
                 )
             }
             composable(
@@ -298,6 +354,12 @@ private fun MainNavScaffold() {
                     onOpenDebugLog = { navController.navigate(Routes.DEBUG_LOG) },
                     onOpenExportImport = { navController.navigate(Routes.EXPORT_IMPORT) },
                     onOpenMyFoods = { navController.navigate(Routes.MY_FOODS) },
+                    onOpenSpending = { navController.navigate(Routes.SPENDING) },
+                )
+            }
+            composable(Routes.SPENDING) {
+                com.nutritionscribe.app.ui.cost.SpendingScreen(
+                    onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
                 )
             }
             composable(Routes.DEBUG_LOG) { DebugLogScreen() }

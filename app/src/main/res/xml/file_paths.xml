@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the debug export folder is shareable; nothing else in the app's storage is. -->
+<paths>
+    <cache-path name="debug" path="debug-export/" />
+</paths>

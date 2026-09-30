@@ -19,3 +19,7 @@ __pycache__/
 # Kotlin compiler scratch
 .kotlin/
 tools/.cache/
+
+# The bundled label pack (22 MB, rebuilt by tools/build_label_pack.py): copied in
+# before a release build, never committed.
+app/src/main/assets-pack/

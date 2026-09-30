@@ -27,8 +27,9 @@ android {
         applicationId = "com.nutritionscribe"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // Raise both for every APK handed out, so an export says which build it came from.
+        versionCode = 2
+        versionName = "1.1-test"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -71,6 +72,9 @@ android {
 
     sourceSets {
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
+        // The label pack, bundled so a phone it's handed to works fully from the
+        // first launch. Gitignored; the app runs without it (see LabelPack.installBundled).
+        getByName("main").assets.srcDir("src/main/assets-pack")
     }
 
 }

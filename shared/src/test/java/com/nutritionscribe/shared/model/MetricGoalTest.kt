@@ -63,9 +63,13 @@ class MetricGoalTest {
     }
 
     @Test
-    fun `a limit metric defaults to having a ceiling and a reach metric does not`() {
-        assertNotNull(MetricGoal.default(Metric.SODIUM).ceilingValue)
-        assertNull(MetricGoal.default(Metric.PROTEIN).ceilingValue)
+    fun `no metric starts with a red line the user did not set`() {
+        // Red lines are the user's alone: the app cannot know how much sugar is
+        // too much for this person, so it never draws one for them.
+        for (m in Metric.entries) {
+            assertNull(m.key, MetricGoal.default(m).ceilingValue)
+            assertNull(m.key, MetricGoal.default(m).floorValue)
+        }
     }
 
     @Test

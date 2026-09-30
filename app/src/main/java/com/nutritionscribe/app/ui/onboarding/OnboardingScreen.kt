@@ -55,6 +55,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
     val targetText = remember { mutableStateMapOf<Metric, String>() }
     val baselineText = remember { mutableStateMapOf<Metric, String>() }
     var showKeyHelp by remember { mutableStateOf(false) }
+    val keptKey = remember { ServiceLocator.settingsRepository.hasAnyApiKey() }
     val scope = rememberCoroutineScope()
     val settings = ServiceLocator.settingsRepository
 
@@ -74,16 +75,36 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 Text("Ready to go", style = MaterialTheme.typography.headlineSmall)
                 Text(
                     "Say or type what you ate. The first time you log a food you check it once; " +
-                        "after that it logs without asking. 13,400 foods are built in — no " +
-                        "account, no key, no connection needed, and nothing you eat leaves your phone.",
+                        "after that it logs without asking. 13,400 foods and 230,000 package labels are built in — no " +
+                        "account, key or connection needed, and without an AI key nothing you eat leaves your phone.",
                     modifier = Modifier.padding(vertical = 12.dp),
                     color = MaterialTheme.colorScheme.secondary,
+                )
+                // A test copy handed to a friend: the log that comes back should say
+                // whose it is, and they should know it's being kept.
+                var tester by remember { mutableStateOf("") }
+                OutlinedTextField(
+                    value = tester,
+                    onValueChange = { tester = it; scope.launch { settings.setTesterName(it) } },
+                    label = { Text("Your first name (optional)") },
+                    supportingText = { Text("So the person who gave you the app knows whose log is whose") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "This is a test version. It keeps a log on this phone of what you log and how the app " +
+                        "behaves, including label photos you scan. Nothing is sent unless you send it: after a week " +
+                        "the app will ask you to, and you can switch the log off in Settings > Advanced.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.padding(vertical = 8.dp),
                 )
                 Button(
                     onClick = {
                         scope.launch {
                             settings.setManualMode(false)
-                            settings.setLookupSource(LookupSource.OFFLINE)
+                            // A key kept through a reset keeps Highest quality mode on.
+                            settings.setLookupSource(if (keptKey) LookupSource.AI else LookupSource.OFFLINE)
                         }
                         step = 1
                     },
@@ -101,15 +122,20 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("Recommended: the label pack", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            if (packStatus is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed)
-                                "Installed. Branded food and barcode scans will use the real package label."
-                            else "Real Nutrition Facts for about 137,000 packaged products, so branded food and " +
-                                "barcode scans are exact instead of estimated. About 40 MB. You can add it later in Settings.",
+                            when (packStatus) {
+                                is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed ->
+                                    "Installed. Branded food and barcode scans will use the real package label."
+                                is com.nutritionscribe.app.data.resolve.LabelPack.Status.Working ->
+                                    "Setting up the package labels that came with the app. This takes a few seconds; you can carry on."
+                                else -> "Real Nutrition Facts for about 230,000 packaged products, so branded food and " +
+                                    "barcode scans are exact instead of estimated. About 70 MB. You can add it later in Settings."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.padding(top = 6.dp),
                         )
-                        if (packStatus !is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed) {
+                        if (packStatus !is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed &&
+                            packStatus !is com.nutritionscribe.app.data.resolve.LabelPack.Status.Working) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
                                 if (com.nutritionscribe.app.data.resolve.LabelPack.DOWNLOAD_URL != null) {
                                     Button(onClick = { scope.launch { pack.download() } }) { Text("Download") }
@@ -122,6 +148,22 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     }
                 }
 
+                if (keptKey) {
+                    // A reset that kept the key lands here too. Showing an empty key
+                    // box then read as "your key is gone", and invited pasting it again.
+                    Card(modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text("Your API key is still saved", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "Highest quality mode is on: AI checks foods you haven't logged before and turns your speech into text. " +
+                                    "You can switch it off or remove the key in Settings.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        }
+                    }
+                } else {
                 Text(
                     "Adding an API key is optional. It costs a fraction of a cent per " +
                         "entry and lets the app understand brands, restaurant meals and " +
@@ -135,11 +177,13 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     onValueChange = { apiKey = it },
                     label = { Text("sk-… (optional)") },
                     singleLine = true,
+                    // A key typed by hand got a space from autocorrect; a key is never words.
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrect = false),
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
                 Button(
                     onClick = {
-                        settings.setApiKey(AiBackendKind.OPENAI, apiKey.trim())
+                        settings.setApiKey(AiBackendKind.OPENAI, apiKey.filterNot { it.isWhitespace() })
                         scope.launch {
                             settings.setManualMode(false)
                             settings.setLookupSource(LookupSource.AI)
@@ -149,7 +193,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     enabled = apiKey.isNotBlank(),
                     modifier = Modifier.padding(top = 8.dp),
                 ) { Text("Use this key") }
-
                 TextButton(onClick = { showKeyHelp = !showKeyHelp }) {
                     Text(if (showKeyHelp) "Hide" else "How do I get an API key?")
                 }
@@ -174,6 +217,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                         }
                     }
                 }
+                }
             }
             1 -> {
                 Text("What do you want to track?", style = MaterialTheme.typography.headlineSmall)
@@ -188,7 +232,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 Column(
                     modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 ) {
-                    Metric.entries.forEach { metric ->
+                    Metric.MACROS.forEach { metric ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth(),
@@ -397,9 +441,12 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
     var activity by remember { mutableStateOf(TargetCalculator.Activity.LIGHT) }
     var aim by remember { mutableStateOf(TargetCalculator.Aim.MAINTAIN) }
     var done by remember { mutableStateOf(false) }
+    val saveScope = rememberCoroutineScope()
 
     if (!open) {
-        TextButton(onClick = { open = true }) { Text("Work these out for me") }
+        // A button, not a link: every bar on Home is scaled to these answers, so a
+        // friend handed the app should not skim past it.
+        androidx.compose.material3.OutlinedButton(onClick = { open = true }) { Text("Work these out from my height and weight") }
         return
     }
 
@@ -520,18 +567,23 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
                     } else {
                         TargetCalculator.poundsToKg(pounds.toDoubleOrNull() ?: 170.0)
                     }
-                    onCalculated(
-                        TargetCalculator.targetsFor(
-                            TargetCalculator.Body(
-                                sex = sex,
-                                ageYears = age.toIntOrNull()?.coerceIn(13, 100) ?: 30,
-                                heightCm = heightCm,
-                                weightKg = weightKg,
-                                activity = activity,
-                                aim = aim,
-                            ),
-                        ),
+                    val body = TargetCalculator.Body(
+                        sex = sex,
+                        ageYears = age.toIntOrNull()?.coerceIn(13, 100) ?: 30,
+                        heightCm = heightCm,
+                        weightKg = weightKg,
+                        activity = activity,
+                        aim = aim,
                     )
+                    // Kept, so Home's bars scale to this body too (Goals > About you).
+                    saveScope.launch {
+                        ServiceLocator.settingsRepository.setProfile(
+                            com.nutritionscribe.shared.model.Profile(body.sex, body.ageYears, body.heightCm, body.weightKg, body.activity, body.aim),
+                        )
+                    }
+                    onCalculated(com.nutritionscribe.shared.model.Needs.forProfile(
+                        com.nutritionscribe.shared.model.Profile(body.sex, body.ageYears, body.heightCm, body.weightKg, body.activity, body.aim),
+                    ))
                     done = true
                 },
                 modifier = Modifier.padding(top = 12.dp),

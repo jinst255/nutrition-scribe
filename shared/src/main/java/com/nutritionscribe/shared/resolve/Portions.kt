@@ -205,7 +205,7 @@ object Portions {
     )
 
     /** Volume units by millilitres; grams come via a cup portion when one exists. */
-    private val ML = mapOf("cup" to 236.6, "tbsp" to 14.79, "tsp" to 4.93, "ml" to 1.0)
+    private val ML = mapOf("cup" to 236.6, "tbsp" to 14.79, "tsp" to 4.93, "ml" to 1.0, "floz" to 29.57, "l" to 1000.0)
 
     data class Answer(val grams: Double, val how: String)
 
@@ -313,7 +313,7 @@ object Portions {
             .maxByOrNull { it.words.size }
 
     private fun labelSays(label: String, unit: String): Boolean {
-        val low = label.lowercase()
+        val low = label.lowercase().replace(Regex("\\bfl\\.?\\s*oz\\b"), "floz")
         val forms = ItemParser.UNITS.filterValues { it == unit }.keys + unit
         return forms.any { Regex("\\b${Regex.escape(it)}\\b").containsMatchIn(low) }
     }

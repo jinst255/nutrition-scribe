@@ -20,7 +20,8 @@ import kotlin.math.roundToInt
  * Sources, all mainstream and uncontroversial:
  *   - Resting energy: Mifflin-St Jeor, which is the one most dietetic practice
  *     guidelines recommend over Harris-Benedict.
- *   - Protein: 1.6 g per kg of body weight, mid-range for someone active.
+ *   - Protein: 1.0 g/kg sitting to 1.8 g/kg training hard (the RDA's 0.8 is the
+ *     floor for a sedentary adult, not a target), on adjusted weight above BMI 30.
  *   - Fibre: 14 g per 1,000 kcal (US Dietary Guidelines).
  *   - Added sugar and saturated fat: under 10% of energy (WHO / US DGA).
  *   - Sodium: 2,300 mg (US DGA upper limit).
@@ -34,11 +35,11 @@ object TargetCalculator {
      * The labels are what the user picks from, so they describe days rather
      * than gym sessions.
      */
-    enum class Activity(val label: String, val detail: String, val factor: Double) {
-        SEDENTARY("Mostly sitting", "desk job, little exercise", 1.2),
-        LIGHT("Lightly active", "some walking, 1–3 workouts a week", 1.375),
-        MODERATE("Active", "on your feet, 3–5 workouts a week", 1.55),
-        VERY("Very active", "hard training or physical work", 1.725),
+    enum class Activity(val label: String, val detail: String, val factor: Double, val proteinPerKg: Double) {
+        SEDENTARY("Mostly sitting", "desk job, little exercise", 1.2, 1.0),
+        LIGHT("Lightly active", "some walking, 1–3 workouts a week", 1.375, 1.3),
+        MODERATE("Active", "on your feet, 3–5 workouts a week", 1.55, 1.6),
+        VERY("Very active", "hard training or physical work", 1.725, 1.8),
     }
 
     /** What the user is trying to do, which only moves the calorie figure. */
@@ -79,14 +80,30 @@ object TargetCalculator {
      * calories to the nearest 10, grams to the nearest 5 — because a protein
      * target of 137.4 g implies a precision none of this has.
      */
-    fun targetsFor(body: Body): Map<Metric, Double> {
+    fun targetsFor(
+        body: Body,
+        stage: Profile.LifeStage = Profile.LifeStage.NONE,
+        diet: Profile.Diet = Profile.Diet.ANY,
+    ): Map<Metric, Double> {
         // Never prescribe a starvation diet: a deficit that takes someone below
         // roughly their resting energy is where a helpful default becomes a
         // harmful one, so the floor holds regardless of what was asked for.
         val floor = maxOf(restingEnergy(body), 1200.0)
-        val calories = maxOf(maintenanceEnergy(body) + body.aim.calorieDelta, floor)
+        val pregnant = body.sex == Sex.FEMALE && stage == Profile.LifeStage.PREGNANT
+        val nursing = body.sex == Sex.FEMALE && stage == Profile.LifeStage.BREASTFEEDING
+        // The Dietary Reference Intakes' extra energy: +340 kcal in the second
+        // trimester (the middle of pregnancy; the app doesn't ask which), +330
+        // while breastfeeding. Nobody should cut while doing either.
+        val extra = when { pregnant -> 340.0; nursing -> 330.0; else -> 0.0 }
+        val delta = if ((pregnant || nursing) && body.aim == Aim.LOSE) 0 else body.aim.calorieDelta
+        val calories = maxOf(maintenanceEnergy(body) + delta + extra, floor)
 
-        val protein = 1.6 * body.weightKg
+        // Protein by how much someone moves, on a weight that muscle can explain:
+        // 1.6 g/kg of a 130 kg body asks for 210 g, most of it for fat that needs
+        // none. Losing weight adds a little, to hold on to muscle. Pregnancy and
+        // breastfeeding add the DRI's 25 g.
+        val perKg = body.activity.proteinPerKg + if (body.aim == Aim.LOSE) 0.2 else 0.0
+        val protein = perKg * proteinWeight(body) + if (pregnant || nursing) 25.0 else 0.0
         val fat = calories * 0.27 / 9.0
         val carbs = maxOf((calories - protein * 4 - fat * 9) / 4.0, 0.0)
 
@@ -96,11 +113,25 @@ object TargetCalculator {
             Metric.FAT to round(fat, 5),
             Metric.CARBS to round(carbs, 5),
             Metric.FIBER to round(14.0 * calories / 1000.0, 1),
+            // Added sugar, if someone makes sugar a goal. Home's reference bar
+            // uses total sugar instead; see [Needs].
             Metric.SUGAR to round(calories * 0.10 / 4.0, 5),
             Metric.SATURATED_FAT to round(calories * 0.10 / 9.0, 1),
             Metric.SODIUM to 2300.0,
-            Metric.CAFFEINE to 400.0,
-        )
+            Metric.CAFFEINE to if (pregnant) 200.0 else 400.0,
+        ) + Metric.MICROS.associateWith { it.defaultTarget } +
+            Needs.micros(Profile(body.sex, body.ageYears, body.heightCm, body.weightKg, body.activity, body.aim, stage, diet))
+    }
+
+    /**
+     * The weight protein is worked out on. Up to a BMI of 30 that is body weight;
+     * above it, the dietitians' adjusted body weight: the weight at BMI 25 plus
+     * 40% of the rest.
+     */
+    fun proteinWeight(body: Body): Double {
+        val m = body.heightCm / 100.0
+        val lean = 25.0 * m * m
+        return if (body.weightKg <= 30.0 * m * m) body.weightKg else lean + 0.4 * (body.weightKg - lean)
     }
 
     /**

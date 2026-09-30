@@ -11,7 +11,7 @@ import java.util.Locale
  * request bodies (Section 3) — only status codes, short human-readable messages, and
  * truncated provider error bodies for non-auth API failures.
  */
-class DebugLogger(context: Context) {
+class DebugLogger(context: Context, private val events: DebugEvents? = null) {
     private val logFile = File(context.filesDir, "debug_log.txt")
     private val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
 
@@ -19,6 +19,7 @@ class DebugLogger(context: Context) {
     fun log(tag: String, message: String) {
         val line = "${formatter.format(Date())} [$tag] $message\n"
         logFile.appendText(line)
+        events?.event("error", "tag" to tag, "message" to message)
     }
 
     fun readAll(): String = if (logFile.exists()) logFile.readText() else ""

@@ -18,6 +18,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -72,7 +78,8 @@ private fun WearNavHost(repository: WearRepository) {
         composable(WearRoutes.HOME) {
             WearHomeScreen(
                 repository = repository,
-                onStartListening = { navController.navigate(WearRoutes.LISTENING) },
+                onSystemDialog = { navController.navigate(WearRoutes.LISTENING) },
+                onSent = { reached -> navController.navigate(WearRoutes.confirm(reached)) { popUpTo(WearRoutes.HOME) } },
             )
         }
         composable(WearRoutes.LISTENING) {
@@ -89,31 +96,157 @@ private fun WearNavHost(repository: WearRepository) {
                 repository = repository,
                 reachedPhone = backStackEntry.arguments?.getString("reached")?.toBoolean() ?: true,
                 onDone = { navController.popBackStack(WearRoutes.HOME, inclusive = false) },
-                onRedo = { navController.navigate(WearRoutes.LISTENING) { popUpTo(WearRoutes.HOME) } },
+                // Back to the microphone, which now listens in place.
+                onRedo = { navController.popBackStack(WearRoutes.HOME, inclusive = false) },
             )
         }
     }
 }
 
+/**
+ * Today's number and the microphone, which listens right here.
+ *
+ * It used to open the system "speak now" screen, which stops at the first pause —
+ * on a wrist, mid-sentence, that meant half an entry. Now it keeps listening
+ * until you tap again (Tap) or let go (Hold); the chip under the button switches
+ * between the two. If the watch has no speech service the app can use directly,
+ * it falls back to the system screen.
+ */
 @Composable
-private fun WearHomeScreen(repository: WearRepository, onStartListening: () -> Unit) {
+private fun WearHomeScreen(
+    repository: WearRepository,
+    onSystemDialog: () -> Unit,
+    onSent: (reachedPhone: Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val summary by repository.todaySummary.collectAsState(initial = null)
+    val hold by repository.holdToTalk.collectAsState(initial = false)
+    var listening by remember { mutableStateOf(false) }
+    var sending by remember { mutableStateOf(false) }
+    var heard by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf<String?>(null) }
+
+    val recognizer = remember {
+        com.nutritionscribe.shared.speech.ContinuousRecognizer(context, object : com.nutritionscribe.shared.speech.ContinuousRecognizer.Listener {
+            override fun onText(committed: String, partial: String) {
+                heard = listOf(committed, partial).filter { it.isNotBlank() }.joinToString(" ")
+            }
+            override fun onFinished(text: String, stats: com.nutritionscribe.shared.speech.ContinuousRecognizer.Stats) {
+                listening = false
+                if (text.isBlank()) { note = "Didn't catch that"; return }
+                sending = true
+                scope.launch {
+                    val reached = repository.relayToPhone(text)
+                    sending = false
+                    heard = ""
+                    onSent(reached)
+                }
+            }
+            override fun onFailed(code: Int, message: String) {
+                listening = false
+                note = message
+            }
+        })
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { recognizer.cancel() } }
+
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (!ok) note = "Microphone is off for this app"
+    }
+    fun hasMic() = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    fun begin(): Boolean {
+        note = null
+        if (!hasMic()) { permission.launch(android.Manifest.permission.RECORD_AUDIO); return false }
+        if (!recognizer.isAvailable) { onSystemDialog(); return false }
+        heard = ""
+        listening = true
+        recognizer.start()
+        buzz(context, 30)
+        return true
+    }
+    fun end() {
+        if (!listening) return
+        buzz(context, 30)
+        recognizer.stop()
+    }
 
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        val progress = summary?.let { (it.proteinGrams / it.goalGrams).toFloat().coerceIn(0f, 1f) } ?: 0f
-        CircularProgressIndicator(progress = progress, modifier = Modifier.size(64.dp))
-        Text(
-            summary?.let { "${it.proteinGrams.toInt()}/${it.goalGrams.toInt()}g" } ?: "--/--g",
-            modifier = Modifier.padding(top = 8.dp),
-        )
-        Button(onClick = onStartListening, modifier = Modifier.padding(top = 12.dp)) {
-            Icon(Icons.Filled.Mic, contentDescription = "Log entry")
+        if (!listening && !sending) {
+            val progress = summary?.let { (it.proteinGrams / it.goalGrams).toFloat().coerceIn(0f, 1f) } ?: 0f
+            CircularProgressIndicator(progress = progress, modifier = Modifier.size(40.dp))
+            Text(
+                summary?.let { "${it.proteinGrams.toInt()}/${it.goalGrams.toInt()}g" } ?: "--/--g",
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        } else {
+            Text(
+                when {
+                    sending -> "Sending…"
+                    heard.isBlank() -> if (hold) "Listening — let go when done" else "Listening — tap when done"
+                    else -> heard
+                },
+                style = MaterialTheme.typography.caption1,
+                textAlign = TextAlign.Center,
+                maxLines = 4,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+        }
+
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .padding(top = 8.dp)
+                .size(56.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(if (listening) MaterialTheme.colors.error else MaterialTheme.colors.primary)
+                .pointerInput(hold) {
+                    detectTapGestures(
+                        onPress = {
+                            if (!hold || sending) return@detectTapGestures
+                            val t0 = System.currentTimeMillis()
+                            if (!begin()) return@detectTapGestures
+                            tryAwaitRelease()
+                            if (System.currentTimeMillis() - t0 < 450) {
+                                recognizer.cancel(); listening = false
+                                note = "Hold while you talk"
+                            } else end()
+                        },
+                        onTap = {
+                            if (hold || sending) return@detectTapGestures
+                            if (listening) end() else begin()
+                        },
+                    )
+                },
+        ) {
+            Icon(
+                if (listening && !hold) Icons.Filled.Stop else Icons.Filled.Mic,
+                contentDescription = if (hold) "Hold to talk" else if (listening) "Stop" else "Tap to talk",
+                tint = MaterialTheme.colors.onPrimary,
+            )
+        }
+
+        note?.let { Text(it, style = MaterialTheme.typography.caption2, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp)) }
+
+        if (!listening && !sending) {
+            androidx.wear.compose.material.CompactChip(
+                onClick = { scope.launch { repository.setHoldToTalk(!hold) } },
+                label = { Text(if (hold) "Hold to talk" else "Tap to talk", style = MaterialTheme.typography.caption2) },
+                modifier = Modifier.padding(top = 6.dp),
+                colors = androidx.wear.compose.material.ChipDefaults.secondaryChipColors(),
+            )
         }
     }
+}
+
+private fun buzz(context: android.content.Context, ms: Long) {
+    context.getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
 }
 
 @Composable

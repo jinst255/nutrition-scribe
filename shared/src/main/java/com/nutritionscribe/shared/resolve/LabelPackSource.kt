@@ -1,6 +1,7 @@
 package com.nutritionscribe.shared.resolve
 
 import com.nutritionscribe.shared.food.FoodQuery
+import com.nutritionscribe.shared.model.Metric
 import kotlin.math.ln
 
 /**
@@ -16,7 +17,11 @@ import kotlin.math.ln
  *           kcal, protein_g, ... per ONE serving x10, pop)
  *   gtin(gtin, id), pword(word, id, in_brand), brand_word(word)
  */
-class LabelPackSource(private val sql: SqlReader) {
+class LabelPackSource(
+    private val sql: SqlReader,
+    /** A format 4 pack: the five label micronutrients follow the other columns. */
+    private val hasMicros: Boolean = false,
+) {
 
     /**
      * [counted]: the person gave a bare count ("3 oreos"), so a product sold in
@@ -118,7 +123,8 @@ class LabelPackSource(private val sql: SqlReader) {
         return runCatching {
             sql.query(
                 "SELECT id, NULL, brand, description, serving_g, " +
-                    "serving_text, count, count_unit, $NUTRIENTS, pop, measure, measure_unit, owner FROM product p " +
+                    "serving_text, count, count_unit, $NUTRIENTS, pop, measure, measure_unit, owner" +
+                    (if (hasMicros) ", $MICROS" else "") + " FROM product p " +
                     "WHERE id IN (${ids.joinToString(",") { "?" }})",
                 ids.map { it.toString() },
             ) { r ->
@@ -126,8 +132,11 @@ class LabelPackSource(private val sql: SqlReader) {
                 // Stored per serving x10; the rest of the app thinks per 100 g.
                 val per100 = buildMap {
                     if (servingG != null && servingG > 0) {
-                        UsdaFoodSource.NUTRIENT_COLUMNS.forEachIndexed { i, (_, metric) ->
+                        MACRO_COLUMNS.forEachIndexed { i, (_, metric) ->
                             r.doubleOrNull(8 + i)?.let { put(metric.key, it / 10.0 / servingG * 100.0) }
+                        }
+                        if (hasMicros) MICRO_COLUMNS.forEachIndexed { i, (_, metric) ->
+                            r.doubleOrNull(12 + MACRO_COLUMNS.size + i)?.let { put(metric.key, it / 10.0 / servingG * 100.0) }
                         }
                     }
                 }
@@ -139,8 +148,8 @@ class LabelPackSource(private val sql: SqlReader) {
                     }
                     if (servingG != null) add(Portion("1 serving", servingG))
                     // "1/4 cup (28 g)" -> a cup of it weighs 112 g.
-                    val measure = r.doubleOrNull(9 + UsdaFoodSource.NUTRIENT_COLUMNS.size)
-                    val measureUnit = r.string(10 + UsdaFoodSource.NUTRIENT_COLUMNS.size)
+                    val measure = r.doubleOrNull(9 + MACRO_COLUMNS.size)
+                    val measureUnit = r.string(10 + MACRO_COLUMNS.size)
                     if (servingG != null && measure != null && measure > 0 && !measureUnit.isNullOrBlank()) {
                         add(Portion("1 $measureUnit", servingG / measure))
                     }
@@ -155,15 +164,22 @@ class LabelPackSource(private val sql: SqlReader) {
                     labelServingGrams = servingG,
                     labelServingText = r.string(5),
                     brand = r.string(2)?.titleCase(),
-                    owner = r.string(11 + UsdaFoodSource.NUTRIENT_COLUMNS.size),
+                    owner = r.string(11 + MACRO_COLUMNS.size),
                     barcode = r.string(1),
-                ) to (r.doubleOrNull(8 + UsdaFoodSource.NUTRIENT_COLUMNS.size)?.toInt() ?: 0)
+                ) to (r.doubleOrNull(8 + MACRO_COLUMNS.size)?.toInt() ?: 0)
             }
         }.getOrDefault(emptyList())
     }
 
     companion object {
-        private val NUTRIENTS = UsdaFoodSource.NUTRIENT_COLUMNS.joinToString(", ") { it.first }
+        /** The pack's own columns: USDA's first nine, then (format 4) five label micros. */
+        private val MACRO_COLUMNS = UsdaFoodSource.NUTRIENT_COLUMNS.take(9)
+        private val MICRO_COLUMNS = listOf(
+            "calcium_mg" to Metric.CALCIUM, "iron_mg" to Metric.IRON, "potassium_mg" to Metric.POTASSIUM,
+            "vitamin_d_ug" to Metric.VITAMIN_D, "cholesterol_mg" to Metric.CHOLESTEROL,
+        )
+        private val NUTRIENTS = MACRO_COLUMNS.joinToString(", ") { it.first }
+        private val MICROS = MICRO_COLUMNS.joinToString(", ") { it.first }
         private val NOISE = setOf("oz", "fl", "ct", "count", "pack", "pk", "box", "bag", "bottle",
             "can", "jar", "size", "value", "family", "net", "wt", "per", "brand")
 

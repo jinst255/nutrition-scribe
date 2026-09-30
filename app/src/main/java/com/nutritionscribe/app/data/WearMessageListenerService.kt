@@ -33,8 +33,10 @@ class WearMessageListenerService : com.google.android.gms.wearable.WearableListe
             // on its best guess — today's total should not be missing it — and waits
             // on the phone for a glance; nothing is learned from it until then.
             val pipeline = ServiceLocator.logPipeline
-            val r = pipeline.resolve(rawText)
-            val entry = if (r.silent) pipeline.logNow(r) else pipeline.logProvisional(r)
+            val tag = java.util.UUID.randomUUID().toString()
+            ServiceLocator.debugEvents.event("watch_message", "text" to rawText, "tag" to tag)
+            val r = pipeline.resolve(rawText, tag = tag, how = "watch")
+            val entry = if (r.silent) pipeline.logNow(r, tag = tag) else pipeline.logProvisional(r, tag = tag)
             notifyWatch(entry)
             pushTodaySummary()
         }

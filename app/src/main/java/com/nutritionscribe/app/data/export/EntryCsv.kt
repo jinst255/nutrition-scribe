@@ -16,9 +16,20 @@ import java.time.format.DateTimeFormatter
  */
 object EntryCsv {
 
-    const val HEADER = "id,timestamp,local_datetime,time_unspecified,needs_detail,raw_text,name," +
+    /**
+     * Micronutrients go on the END, named with their unit, so every export made
+     * before them still imports (columns are read by header) and a spreadsheet
+     * never has to guess whether a number is mg or µg. Blank means not known.
+     */
+    val MICRO_COLUMNS: List<Pair<String, Metric>> = Metric.MICROS.map { m ->
+        "${m.key}_${m.unit.replace("µ", "u")}" to m
+    }
+
+    val HEADER = "id,timestamp,local_datetime,time_unspecified,needs_detail,raw_text,name," +
         "protein_grams,calories,carbs_grams,fat_grams,fiber_grams,sugar_grams," +
-        "saturated_fat_grams,sodium_mg,caffeine_mg,is_fixed_food,source,confidence"
+        "saturated_fat_grams,sodium_mg,caffeine_mg,is_fixed_food,source,confidence," +
+        MICRO_COLUMNS.joinToString(",") { it.first }
+
 
     fun encode(entries: List<Entry>, zone: ZoneId = ZoneId.systemDefault()): String {
         val rows = entries.joinToString("\n") { e ->
@@ -52,6 +63,7 @@ object EntryCsv {
                 e.isFixedFood.toString(),
                 escape(e.source),
                 e.confidence.name,
+                *MICRO_COLUMNS.map { (_, m) -> e.amountOf(m)?.toString().orEmpty() }.toTypedArray(),
             ).joinToString(",")
         }
         return "$HEADER\n$rows"
@@ -93,7 +105,7 @@ object EntryCsv {
                     saturatedFat = col("saturated_fat_grams")?.toDoubleOrNull(),
                     sodium = col("sodium_mg")?.toDoubleOrNull(),
                     caffeine = col("caffeine_mg")?.toDoubleOrNull(),
-                ),
+                ) + MICRO_COLUMNS.mapNotNull { (name, m) -> col(name)?.toDoubleOrNull()?.let { m.key to it } },
                 isFixedFood = col("is_fixed_food").toBoolean(),
                 source = col("source").orEmpty(),
                 confidence = runCatching { Confidence.valueOf(col("confidence").orEmpty()) }

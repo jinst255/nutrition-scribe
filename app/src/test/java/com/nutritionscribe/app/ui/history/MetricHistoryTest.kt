@@ -138,8 +138,23 @@ class MetricHistoryTest {
     }
 
     @Test
-    fun `no target means no judgement`() {
-        assertEquals(Standing.NO_GOAL, MetricHistory.standing(protein.copy(target = null), 10.0))
+    fun `no target means no judgement, except by a line the user typed`() {
+        assertEquals(Standing.NO_GOAL, MetricHistory.standing(protein.copy(target = null, floorValue = null), 10.0))
+        assertEquals(Standing.MISSED, MetricHistory.standing(protein.copy(target = null), 10.0))
+    }
+
+    @Test
+    fun `a metric that is not a goal is never red unless the user drew the line`() {
+        // Sugar is a limit by default, but nobody said how much is too much.
+        val sugar = MetricGoal(Metric.SUGAR, enabled = false, target = 50.0)
+        assertEquals(Standing.NO_GOAL, MetricHistory.standing(sugar, 130.0))
+        val theirs = sugar.copy(ceilingValue = 60.0)
+        assertEquals(Standing.MET, MetricHistory.standing(theirs, 40.0))
+        assertEquals(Standing.MISSED, MetricHistory.standing(theirs, 70.0))
+        // A floor works the same way without the goal switched on.
+        val fiber = MetricGoal(Metric.FIBER, enabled = false, target = 28.0, floorValue = 20.0)
+        assertEquals(Standing.MISSED, MetricHistory.standing(fiber, 12.0))
+        assertEquals(Standing.MET, MetricHistory.standing(fiber, 22.0))
     }
 
     // ---- viewport ---------------------------------------------------------

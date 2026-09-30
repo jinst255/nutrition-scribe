@@ -24,9 +24,13 @@ data class MetricGoal(
      * better". null means "whatever the metric says".
      */
     val direction: GoalDirection? = null,
-    /** Below this reads red. For a REACH metric this is "not enough". */
+    /**
+     * The user's own red lines, independent of [enabled]: below [floorValue] or
+     * above [ceilingValue] reads red whether or not this is a goal. Only a number
+     * they typed ever does; the app never draws one for them, because it cannot
+     * know how much sugar this person should or shouldn't eat.
+     */
     val floorValue: Double? = null,
-    /** Above this reads red. For a LIMIT metric this is "too much". */
     val ceilingValue: Double? = null,
     val sortOrder: Int = 0,
     val pinned: Boolean = false,
@@ -58,16 +62,13 @@ data class MetricGoal(
 
     companion object {
         /**
-         * The starting point for someone who has never set this metric up.
-         *
-         * A LIMIT metric gets its default as a ceiling as well as a target, because
-         * "2,300 mg of sodium" means an upper bound, not something to hit.
+         * The starting point for someone who has never set this metric up: the
+         * usual target, offered when they switch it on, and no red lines.
          */
         fun default(metric: Metric, enabled: Boolean = false): MetricGoal = MetricGoal(
             metric = metric,
             enabled = enabled,
             target = metric.defaultTarget,
-            ceilingValue = if (metric.direction == GoalDirection.LIMIT) metric.defaultTarget else null,
             sortOrder = Metric.entries.indexOf(metric),
         )
 

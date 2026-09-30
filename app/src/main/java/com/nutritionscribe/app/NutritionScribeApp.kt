@@ -14,7 +14,24 @@ class NutritionScribeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         ServiceLocator.init(this)
+        recordCrashes()
         scheduleBackgroundWork()
+    }
+
+    /**
+     * A crash is written down before the app dies, so "it just closed" becomes a
+     * stack trace. The plain error log always gets it; the debug log too when on.
+     */
+    private fun recordCrashes() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, e ->
+            runCatching {
+                ServiceLocator.debugLogger.log("Crash", "${thread.name}: ${e.stackTraceToString().take(4000)}")
+                ServiceLocator.debugEvents.event("crash", "thread" to thread.name, "error" to e)
+                ServiceLocator.debugEvents.flush()
+            }
+            previous?.uncaughtException(thread, e)
+        }
     }
 
     private fun scheduleBackgroundWork() {

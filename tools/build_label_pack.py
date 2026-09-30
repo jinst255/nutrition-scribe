@@ -139,6 +139,16 @@ def serving_text(household, serving_g, unit):
     return f"{h.lower()} ({g})"
 
 
+# Store brands, kept whatever year they were submitted: stores rarely resubmit
+# their own labels, so a 2020 Food Club peanut butter is still the one on the
+# shelf. Walmart, Sam's Club, Costco, and Broulim's (Rexburg), whose shelves the
+# user's debug log showed; Western Family is the other house brand common at
+# Intermountain independents.
+STORE_BRANDS = ["great value", "marketside", "freshness guaranteed", "sam's choice", "bettergoods",
+                "parent's choice", "equate", "member's mark", "kirkland signature", "kirkland",
+                "food club", "western family"]
+
+
 def build(src, out, since):
     s = sqlite3.connect(src)
     if os.path.exists(out):
@@ -159,7 +169,8 @@ def build(src, out, since):
     rows = s.execute(
         f"SELECT fdc_id, gtin, brand_name, brand_owner, description, serving_size, serving_unit, household, "
         f"{', '.join(COLUMNS)} FROM latest WHERE kcal IS NOT NULL AND serving_size > 0 "
-        f"AND modified >= ? ORDER BY modified DESC", (since,)).fetchall()
+        f"AND (modified >= ? OR lower(trim(brand_name)) IN ({', '.join('?' * len(STORE_BRANDS))})) "
+        f"ORDER BY modified DESC", (since, *STORE_BRANDS)).fetchall()
     seen, prods, pwords, brand_counts = set(), [], [], {}
     for r in rows:
         fid, gtin, bname, bowner, desc, sg, su, hh = r[:8]
@@ -236,7 +247,7 @@ def build(src, out, since):
     d.executemany("INSERT INTO brand_word VALUES (?)", [(w,) for w in sorted(brand_words)])
     d.executemany("INSERT INTO meta VALUES (?,?)", [
         ("format", "3"), ("source", "USDA FoodData Central, Branded Foods"),
-        ("since", since), ("products", str(len(real))),
+        ("since", since), ("store_brands", "all years"), ("products", str(len(real))),
     ])
     d.commit()
     d.execute("VACUUM")
@@ -249,6 +260,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--out", default="labels.db")
     ap.add_argument("--src", default=DEFAULT_SRC)
-    ap.add_argument("--since", default="2022-01-01")
+    ap.add_argument("--since", default="2020-01-01")
     a = ap.parse_args()
     build(a.src, a.out, a.since)
