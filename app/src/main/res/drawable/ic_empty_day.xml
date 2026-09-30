@@ -1,0 +1,44 @@
+<!--
+  Empty-state illustration for a day with no entries yet: an empty
+  bowl, drawn as calm line art, with the scribe's pen laid down
+  beside it - resting, not writing yet. Not wired into any screen;
+  available as @drawable/ic_empty_day for whichever empty state
+  wants it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="120dp"
+    android:height="120dp"
+    android:viewportWidth="120"
+    android:viewportHeight="120">
+
+    <!-- bowl rim -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#6B6B66"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M24,54 A34,8 0 1,0 92,54 A34,8 0 1,0 24,54" />
+
+    <!-- bowl body -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#6B6B66"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M24,54 C24,76 39,94 58,94 C77,94 92,76 92,54" />
+
+    <!-- resting foot -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#6B6B66"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M50,99 L66,99" />
+
+    <!-- pen, laid down beside the bowl -->
+    <path
+        android:fillColor="#2F6F4F"
+        android:pathData="M89.40,23.57 L106.20,6.22 L105.80,5.78 L86.60,20.43 L86.19,20.94 L85.95,21.55 L85.91,22.21 L86.08,22.84 L86.43,23.40 L86.94,23.81 L87.55,24.05 L88.21,24.09 L88.84,23.92 Z" />
+</vector>

@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.NutritionScribe" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

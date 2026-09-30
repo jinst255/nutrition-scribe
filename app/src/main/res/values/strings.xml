@@ -1,0 +1,79 @@
+<resources>
+    <string name="app_name">Nutrition Scribe</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_api_key_title">Add your API key</string>
+    <string name="onboarding_api_key_body">Nutrition Scribe uses your own key to look up nutrition info. It\'s not the same as a Claude or ChatGPT subscription.</string>
+    <string name="onboarding_api_key_help">How do I get a key</string>
+    <string name="onboarding_goal_title">Set your daily goal</string>
+    <string name="onboarding_goal_body">Grams of protein per day.</string>
+    <string name="onboarding_ready_title">You\'re set</string>
+    <string name="onboarding_ready_body">Type or speak what you ate.</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_start_logging">Start logging</string>
+
+    <!-- Home -->
+    <string name="home_today">Today</string>
+    <string name="home_per_meal">~%1$dg per meal</string>
+    <string name="home_needs_attention_one">%1$d entry needs attention</string>
+    <string name="home_needs_attention_other">%1$d entries need attention</string>
+    <string name="home_empty_title">Log your first meal</string>
+    <string name="home_empty_body">Type or speak what you ate.</string>
+    <string name="home_add_entry">Add entry</string>
+
+    <!-- Add Entry -->
+    <string name="add_entry_title">What did you eat</string>
+    <string name="add_entry_tap_to_speak">Tap to speak</string>
+    <string name="add_entry_or">or</string>
+    <string name="add_entry_type_instead">Type it instead</string>
+
+    <!-- Processing -->
+    <string name="processing_title">Looking up nutrition</string>
+    <string name="processing_subtitle">Usually under 2 seconds</string>
+
+    <!-- Review -->
+    <string name="review_title">Parsed from your entry</string>
+    <string name="review_estimated_note">Estimated, tap to adjust</string>
+    <string name="review_stated_note">You said the amount, so no lookup was needed.</string>
+    <string name="review_confirm">Confirm</string>
+
+    <!-- Unprocessed Queue -->
+    <string name="unprocessed_title">Needs attention</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_copy_error">Copy error</string>
+
+    <!-- Entry Detail -->
+    <string name="entry_detail_what_you_said">What you said</string>
+    <string name="action_save">Save</string>
+    <string name="action_delete">Delete</string>
+
+    <!-- History -->
+    <string name="history_search">Search entries</string>
+    <string name="action_select">Select</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="history_n_selected">%1$d selected</string>
+    <string name="action_select_all">Select all</string>
+    <string name="action_export">Export</string>
+    <string name="history_on_track">On track</string>
+    <string name="history_building_up">Building up</string>
+    <string name="history_best_point">Best point</string>
+    <string name="history_goal_met">Goal met</string>
+    <string name="history_n_of_n">%1$d of %2$d</string>
+
+    <!-- Settings -->
+    <string name="settings_daily_goal">Daily goal</string>
+    <string name="settings_api_key">API key</string>
+    <string name="settings_keep_protein_totals">Keep protein totals</string>
+    <string name="settings_keep_food_details">Keep food details</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_debug_log">Debug log</string>
+    <string name="settings_export_import">Export and import</string>
+
+    <!-- Debug Log -->
+    <string name="debug_log_export">Export log file</string>
+    <string name="debug_log_copy">Copy to clipboard</string>
+
+    <!-- Export/Import -->
+    <string name="export_import_format">Format</string>
+    <string name="export_import_import_note">Import accepts files exported from this app.</string>
+</resources>

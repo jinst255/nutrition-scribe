@@ -1,0 +1,21 @@
+# Signing secrets — never commit these.
+keystore.properties
+*.jks
+*.keystore
+
+# Build output
+build/
+.gradle/
+local.properties
+
+# Personal food log exports — real data, never commit.
+protein-scribe-export*.json
+nutrition-scribe-export*.json
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Kotlin compiler scratch
+.kotlin/
+tools/.cache/
