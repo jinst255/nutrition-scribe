@@ -47,6 +47,9 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
  */
 enum class MicMode { TAP, HOLD }
 
+/** How Home orders its rows: goals first (the default), or by how full each bar is. */
+enum class HomeSort(val label: String) { GOALS("Goals first"), LOWEST("Lowest first"), HIGHEST("Highest first") }
+
 /**
  * Where a food's nutrition numbers come from.
  *
@@ -111,18 +114,23 @@ class SettingsRepository(
         // "_v2": round 3 made hold-to-talk the default for everyone, including
         // installs that had the old tap default stored.
         val MIC_MODE = stringPreferencesKey("mic_mode_v2")
+        val HOME_SORT = stringPreferencesKey("home_sort")
+        val PLASMA_HIDDEN_ON = stringPreferencesKey("plasma_hidden_on")
         val MICRO_BACKFILL = intPreferencesKey("micro_backfill_version")
         val GOAL_LINES_V2 = booleanPreferencesKey("goal_lines_v2")
         val SHOW_ADVANCED = booleanPreferencesKey("show_advanced")
         val DEBUG_MODE = booleanPreferencesKey("debug_mode")
         val PROFILE = stringPreferencesKey("profile_v1")
         val PLASMA_DONATIONS = stringSetPreferencesKey("plasma_donations")
+        val IDEAS_DISMISSED = stringSetPreferencesKey("ideas_dismissed")
         val AI_CONSENT = stringSetPreferencesKey("ai_consent")
         val NUTRIENT_REPAIR = intPreferencesKey("nutrient_repair_version")
         val TESTER_NAME = stringPreferencesKey("tester_name")
         val INSTALLED_AT = androidx.datastore.preferences.core.longPreferencesKey("installed_at")
         val LOG_SENT_AT = androidx.datastore.preferences.core.longPreferencesKey("log_sent_at")
         val LOG_SNOOZE_UNTIL = androidx.datastore.preferences.core.longPreferencesKey("log_snooze_until")
+        val SCAN_GUIDE = booleanPreferencesKey("scan_guide")
+        val BETA_NOTES = stringPreferencesKey("beta_notes_v1")
     }
 
     private val encryptedPrefs by lazy {
@@ -270,6 +278,21 @@ class SettingsRepository(
         store.edit { it[Keys.MIC_MODE] = mode.name }
     }
 
+    /** The day the plasma line on Home was closed; it comes back the next day. */
+    val plasmaHiddenOn: Flow<String?> = store.data.map { it[Keys.PLASMA_HIDDEN_ON] }
+
+    suspend fun setPlasmaHiddenOn(day: String?) {
+        store.edit { if (day == null) it.remove(Keys.PLASMA_HIDDEN_ON) else it[Keys.PLASMA_HIDDEN_ON] = day }
+    }
+
+    val homeSort: Flow<HomeSort> = store.data.map {
+        runCatching { HomeSort.valueOf(it[Keys.HOME_SORT] ?: HomeSort.GOALS.name) }.getOrDefault(HomeSort.GOALS)
+    }
+
+    suspend fun setHomeSort(sort: HomeSort) {
+        store.edit { it[Keys.HOME_SORT] = sort.name }
+    }
+
     /** Which [com.nutritionscribe.app.data.resolve.MicroBackfill] version has run. */
     val microBackfillVersion: Flow<Int> = store.data.map { it[Keys.MICRO_BACKFILL] ?: 0 }
 
@@ -322,6 +345,13 @@ class SettingsRepository(
             if (value == null) it.remove(Keys.PROFILE)
             else it[Keys.PROFILE] = profileJson.encodeToString(Profile.serializer(), value)
         }
+    }
+
+    /** Ideas the person said "Not for me" to, by id; they never come back. */
+    val ideasDismissed: Flow<Set<String>> = store.data.map { it[Keys.IDEAS_DISMISSED].orEmpty() }
+
+    suspend fun dismissIdea(id: String) {
+        store.edit { it[Keys.IDEAS_DISMISSED] = it[Keys.IDEAS_DISMISSED].orEmpty() + id }
     }
 
     /** Days a plasma donation was logged, as ISO dates. */
@@ -388,6 +418,30 @@ class SettingsRepository(
         store.edit { it[Keys.LOG_SNOOZE_UNTIL] = until }
     }
 
+    /** The green box on the scan camera that shows where the label goes. On until they turn it off. */
+    val scanGuide: Flow<Boolean> = store.data.map { it[Keys.SCAN_GUIDE] ?: true }
+
+    suspend fun setScanGuide(on: Boolean) {
+        store.edit { it[Keys.SCAN_GUIDE] = on }
+    }
+
+    /**
+     * What a tester has told us from the Beta testing section, for "What I've sent".
+     * A note has gone out once the log was sent after it ([logSentAt]).
+     */
+    val betaNotes: Flow<List<BetaNote>> = store.data.map { p ->
+        p[Keys.BETA_NOTES]?.let { runCatching { notesJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(BetaNote.serializer()), it) }.getOrNull() }.orEmpty()
+    }
+
+    suspend fun addBetaNote(note: BetaNote) {
+        store.edit { p ->
+            val old = p[Keys.BETA_NOTES]?.let { runCatching { notesJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(BetaNote.serializer()), it) }.getOrNull() }.orEmpty()
+            p[Keys.BETA_NOTES] = notesJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(BetaNote.serializer()), (listOf(note) + old).take(100))
+        }
+    }
+
+    private val notesJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
     /** Which [com.nutritionscribe.shared.model.NutrientRepair] pass has run over saved food. */
     val nutrientRepairVersion: Flow<Int> = store.data.map { it[Keys.NUTRIENT_REPAIR] ?: 0 }
 
@@ -395,3 +449,13 @@ class SettingsRepository(
         store.edit { it[Keys.NUTRIENT_REPAIR] = v }
     }
 }
+
+/** One thing a tester told us: "Wrong numbers · the butter at lunch seemed like a lot". */
+@kotlinx.serialization.Serializable
+data class BetaNote(
+    val at: Long,
+    /** "problem", "idea" or "liked". */
+    val kind: String,
+    val tags: List<String> = emptyList(),
+    val text: String = "",
+)

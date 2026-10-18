@@ -31,6 +31,10 @@ android {
             it.systemProperty("reportDir", layout.buildDirectory.dir("reports/resolver").get().asFile.path)
             it.systemProperty("aiCacheDir", rootProject.file("tools/.cache").path)
             it.systemProperty("phrases", System.getProperty("phrases") ?: "")
+            it.systemProperty("personalFoods", System.getProperty("personalFoods") ?: "")
+            it.systemProperty("scanEvents", System.getProperty("scanEvents") ?: "")
+            // The accuracy benchmark (BenchRunTest): paths outside the repo, never logged.
+            for (p in listOf("bench", "benchOut", "benchModel", "benchOnly")) it.systemProperty(p, System.getProperty(p) ?: "")
             // Only for the opt-in AI replay; absent, those tests skip. Never logged.
             System.getenv("OPENAI_API_KEY")?.let { key -> it.environment("OPENAI_API_KEY", key) }
         }

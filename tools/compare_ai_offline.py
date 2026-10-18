@@ -19,7 +19,7 @@ import argparse, json, os, sqlite3, sys, time, urllib.error, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from foodsearch import search, parse_quantity
 
-MODEL = "gpt-5.6-luna"
+MODEL = "gpt-6-luna"
 
 # Extended beyond the four the app asks for today. Someone tracking sodium gets
 # nothing at all from the AI path as it stands, while the offline database has

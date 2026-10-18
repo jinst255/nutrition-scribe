@@ -121,6 +121,7 @@ object ServiceLocator {
             metricGoalDao = database.metricGoalDao(),
             settingsRepository = settingsRepository,
             personalFoodDao = database.personalFoodDao(),
+            personalStore = personalStore,
             onPersonalFoodsCleared = { personalStore.invalidate() },
             aiUsageDao = database.aiUsageDao(),
             labelPack = labelPack,
@@ -228,6 +229,9 @@ object ServiceLocator {
             "installed_at" to info?.lastUpdateTime,
             "device" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
             "android_sdk" to android.os.Build.VERSION.SDK_INT,
+            // Every event's time carries its offset; the zone itself says when that
+            // offset changes (daylight saving, travel) and which days are "today".
+            "time_zone" to java.util.TimeZone.getDefault().id,
             "lookup_source" to lookupSourceCache.value,
             "backend" to backendCache.value,
             "has_openai_key" to (settingsRepository.getApiKey(AiBackendKind.OPENAI)?.isNotBlank() == true),

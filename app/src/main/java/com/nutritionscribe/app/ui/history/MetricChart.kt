@@ -191,7 +191,7 @@ fun MetricChartScreen(
                 modifier = Modifier.padding(bottom = 10.dp),
             )
             Text(
-                metric.label + " · " + rangeLabel(viewport),
+                (if (metric == com.nutritionscribe.shared.model.Metric.SUGAR) "Added sugar" else metric.label) + " · " + rangeLabel(viewport),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.secondary,
             )
@@ -215,6 +215,7 @@ fun MetricChartScreen(
                         append(" · ")
                         append(
                             when {
+                                !goal.enabled && goal.metric.direction == GoalDirection.LIMIT -> "limit "
                                 !goal.enabled -> if (com.nutritionscribe.app.di.ServiceLocator.profileNow() != null) "you need " else "Daily Value "
                                 goal.effectiveDirection == GoalDirection.LIMIT -> "limit "
                                 else -> "goal "

@@ -39,7 +39,7 @@ STOP = {
     "just", "about", "like", "well", "kind", "sort", "probably", "maybe",
     "sure", "yet", "still", "really", "very", "quite", "pretty", "actually",
     "basically", "mostly", "approximately", "roughly", "around", "also", "too",
-    "more", "most", "less", "least", "typical", "usual", "decent", "amount",
+    "more", "most", "less", "least", "typical", "usual", "normal", "decent", "amount",
     "size", "sized", "today", "morning", "afternoon", "evening", "night",
     # size and vagueness words. These are stop words for SEARCHING only --
     # FoodQuery.sizeOf() still reads them to pick a portion.

@@ -2,6 +2,7 @@ package com.nutritionscribe.app.ui.history
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -133,6 +134,7 @@ fun HistoryScreen(
     onOpenEntry: (String) -> Unit = {},
     onOpenMetric: (Metric) -> Unit = {},
     onAddToDay: (LocalDate) -> Unit = {},
+    onOpenDay: (LocalDate) -> Unit = {},
     viewModel: HistoryViewModel = viewModel(),
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -141,7 +143,6 @@ fun HistoryScreen(
     val goals by viewModel.trackedGoals.collectAsState(initial = emptyList())
     val allGoals by viewModel.allGoals.collectAsState(initial = emptyList())
     var query by remember { mutableStateOf("") }
-    var picked by remember { mutableStateOf<Metric?>(null) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     val selecting = selectedIds.isNotEmpty()
 
@@ -161,32 +162,23 @@ fun HistoryScreen(
         }
     }
 
-    val shown = picked ?: goals.firstOrNull()?.metric ?: Metric.CALORIES
+    var showAll by remember { mutableStateOf(false) }
+    // Every chart on one page: goals first, then the main macros, then the rest on
+    // request. Picking one metric at a time to see it meant a tap per nutrient.
     // Always from the FULL history, never the search-filtered list: search
-    // narrows the list, it must not rewrite the chart.
-    val card = remember(allEntries, allGoals, shown) {
-        val days = MetricHistory.daily(allEntries, shown, zone, today)
-        chartGoal(shown, allGoals) to MetricHistory.lastDays(days, CARD_DAYS)
+    // narrows the list, it must not rewrite the charts.
+    val shownMetrics = remember(goals, showAll, allEntries) {
+        val mine = goals.map { it.metric }
+        val main = listOf(Metric.CALORIES, Metric.PROTEIN, Metric.CARBS, Metric.FAT, Metric.FIBER, Metric.SUGAR, Metric.SODIUM)
+        val logged = (Metric.MACROS + Metric.MICROS).filter { m -> allEntries.any { m.key in it.nutrients } }
+        val first = (mine + main).distinct()
+        if (showAll) (first + logged).distinct() else first.take(maxOf(6, mine.size))
+    }
+    val cards = remember(allEntries, allGoals, shownMetrics) {
+        shownMetrics.map { m -> chartGoal(m, allGoals) to MetricHistory.lastDays(MetricHistory.daily(allEntries, m, zone, today), CARD_DAYS) }
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it; viewModel.searchQuery.value = it },
-            placeholder = { Text("Search entries") },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            trailingIcon = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { query = ""; viewModel.searchQuery.value = "" }) {
-                        Icon(Icons.Filled.Close, contentDescription = "Clear search")
-                    }
-                }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(28.dp),
-            modifier = Modifier.fillMaxWidth(),
-        )
-
         if (selecting) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -225,25 +217,51 @@ fun HistoryScreen(
             // with four metrics they are half a screen, and the list below is
             // what most visits are for.
             if (query.isBlank()) {
-                item(key = "picker") {
-                    MetricPicker(
-                        selected = shown,
-                        goals = allGoals,
-                        onSelect = {
-                            picked = it
-                            ServiceLocator.debugEvents.event("history_metric", "metric" to it.key)
-                        },
-                        modifier = Modifier.padding(bottom = 10.dp),
-                    )
+                cards.chunked(2).forEachIndexed { row, pair ->
+                    item(key = "cards_$row") {
+                        Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            pair.forEach { (goal, days) ->
+                                MetricCard(
+                                    goal = goal,
+                                    days = days,
+                                    compact = true,
+                                    onClick = {
+                                        ServiceLocator.debugEvents.event("history_metric", "metric" to goal.metric.key)
+                                        onOpenMetric(goal.metric)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (pair.size == 1) androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                        }
+                    }
                 }
-                item(key = "card") {
-                    MetricCard(
-                        goal = card.first,
-                        days = card.second,
-                        onClick = { onOpenMetric(shown) },
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
-                    )
+                item(key = "all") {
+                    androidx.compose.material3.TextButton(onClick = {
+                        showAll = !showAll
+                        ServiceLocator.debugEvents.event("history_show_all", "open" to showAll)
+                    }) { Text(if (showAll) "Show fewer" else "Show all nutrients") }
                 }
+            }
+            // Below the charts: the charts are what History opens for, the search is
+            // for the list under it. At the top it sat over charts it never filters.
+            item(key = "search") {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it; viewModel.searchQuery.value = it },
+                    placeholder = { Text("Search entries") },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = ""; viewModel.searchQuery.value = "" }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(28.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                )
             }
 
             if (listItems.isEmpty()) {
@@ -270,6 +288,7 @@ fun HistoryScreen(
                         date = item.date,
                         count = item.count,
                         onAdd = { onAddToDay(item.date) },
+                        onOpen = { onOpenDay(item.date) },
                     )
                     is HistoryListItem.EntryItem -> EntryRow(
                         entry = item.entry,
@@ -304,6 +323,8 @@ private fun MetricCard(
     days: List<DayValue>,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Half-width, two to a row: the number, the line, and a few words. */
+    compact: Boolean = false,
 ) {
     val average = MetricHistory.average(days)
     val standing = average?.let { MetricHistory.standing(goal, it) } ?: Standing.NO_GOAL
@@ -314,9 +335,9 @@ private fun MetricCard(
         modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        Column(modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 10.dp)) {
+        Column(modifier = Modifier.padding(start = if (compact) 10.dp else 14.dp, end = if (compact) 10.dp else 14.dp, top = if (compact) 8.dp else 12.dp, bottom = if (compact) 8.dp else 10.dp)) {
             Text(
-                goal.metric.label,
+                if (goal.metric == Metric.SUGAR) "Added sugar" else if (compact) goal.metric.shortLabel else goal.metric.label,
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -325,11 +346,11 @@ private fun MetricCard(
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     average?.let { formatAmount(it, goal.metric, withUnit = false) } ?: "–",
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
                 )
                 Text(
-                    " ${goal.metric.unit}/day" + if (goal.metric.isMicro && average != null && goal.target != null)
-                        " · ${Math.round(average / goal.target!! * 100)}% of ${if (goal.enabled) "your goal" else if (ServiceLocator.profileNow() != null) "what you need" else "the Daily Value"}" else "",
+                    " ${goal.metric.unit}/day" + if (!compact && goal.metric.isMicro && average != null && goal.target != null)
+                        " · ${Math.round(average / goal.target!! * 100)}% of ${if (goal.enabled) "your goal" else if (goal.metric.direction == com.nutritionscribe.shared.model.GoalDirection.LIMIT) "the limit" else if (ServiceLocator.profileNow() != null) "what you need" else "the Daily Value"}" else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.padding(bottom = 4.dp),
@@ -346,7 +367,7 @@ private fun MetricCard(
                 days = days,
                 goal = goal,
                 color = colors.of(standing),
-                modifier = Modifier.fillMaxWidth().height(34.dp).padding(top = 6.dp),
+                modifier = Modifier.fillMaxWidth().height(if (compact) 28.dp else 34.dp).padding(top = 6.dp),
             )
         }
     }
@@ -377,14 +398,21 @@ internal fun standingPhrase(standing: Standing, goal: MetricGoal): String {
 }
 
 @Composable
-private fun DayHeader(date: LocalDate, count: Int, onAdd: () -> Unit) {
+private fun DayHeader(date: LocalDate, count: Int, onAdd: () -> Unit, onOpen: () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(dayLabel(date), style = MaterialTheme.typography.titleSmall)
+            // The day itself opens: that day's nutrients, the way Home shows today.
+            Row(
+                Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = "See this day's nutrients", onClick = onOpen).padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(dayLabel(date), style = MaterialTheme.typography.titleSmall)
+                Text("  Nutrients ›", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     if (count == 1) "1 entry" else "$count entries",

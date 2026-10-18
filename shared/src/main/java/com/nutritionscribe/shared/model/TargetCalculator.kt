@@ -84,6 +84,7 @@ object TargetCalculator {
         body: Body,
         stage: Profile.LifeStage = Profile.LifeStage.NONE,
         diet: Profile.Diet = Profile.Diet.ANY,
+        periods: Boolean? = null,
     ): Map<Metric, Double> {
         // Never prescribe a starvation diet: a deficit that takes someone below
         // roughly their resting energy is where a helpful default becomes a
@@ -102,7 +103,8 @@ object TargetCalculator {
         // 1.6 g/kg of a 130 kg body asks for 210 g, most of it for fat that needs
         // none. Losing weight adds a little, to hold on to muscle. Pregnancy and
         // breastfeeding add the DRI's 25 g.
-        val perKg = body.activity.proteinPerKg + if (body.aim == Aim.LOSE) 0.2 else 0.0
+        // Only when the deficit is really applied: pregnant or nursing, it is not.
+        val perKg = body.activity.proteinPerKg + if (body.aim == Aim.LOSE && delta < 0) 0.2 else 0.0
         val protein = perKg * proteinWeight(body) + if (pregnant || nursing) 25.0 else 0.0
         val fat = calories * 0.27 / 9.0
         val carbs = maxOf((calories - protein * 4 - fat * 9) / 4.0, 0.0)
@@ -117,10 +119,14 @@ object TargetCalculator {
             // uses total sugar instead; see [Needs].
             Metric.SUGAR to round(calories * 0.10 / 4.0, 5),
             Metric.SATURATED_FAT to round(calories * 0.10 / 9.0, 1),
-            Metric.SODIUM to 2300.0,
-            Metric.CAFFEINE to if (pregnant) 200.0 else 400.0,
+            Metric.ADDED_SUGAR to round(calories * 0.10 / 4.0, 5),
+            Metric.TRANS_FAT to round(calories * 0.01 / 9.0, 1),
+            // The sodium limit is 1,800 mg up to 13 (NASEM 2019), 2,300 after.
+            Metric.SODIUM to if (body.ageYears <= 13) 1800.0 else 2300.0,
+            // 400 mg is an adult's figure; for teens the paediatric advice is at most 100.
+            Metric.CAFFEINE to when { pregnant -> 200.0; body.ageYears < 19 -> 100.0; else -> 400.0 },
         ) + Metric.MICROS.associateWith { it.defaultTarget } +
-            Needs.micros(Profile(body.sex, body.ageYears, body.heightCm, body.weightKg, body.activity, body.aim, stage, diet))
+            Needs.micros(Profile(body.sex, body.ageYears, body.heightCm, body.weightKg, body.activity, body.aim, stage, diet, periods = periods))
     }
 
     /**

@@ -62,7 +62,7 @@ class AudioCapture(private val onLevel: (Float) -> Unit) {
         record?.let { runCatching { it.stop() }; it.release() }
         record = null
         val data = synchronized(pcm) { pcm.toByteArray() }
-        return wav(data)
+        return wav(trimSilence(data))
     }
 
     fun cancel() { stop() }
@@ -73,6 +73,54 @@ class AudioCapture(private val onLevel: (Float) -> Unit) {
         private const val MAX_BYTES = RATE * 2 * 120
 
         fun seconds(wav: ByteArray): Double = (wav.size - 44).coerceAtLeast(0) / (RATE * 2.0)
+
+        private const val FRAME = RATE / 50 * 2 // 20 ms of 16-bit samples, in bytes
+        private const val KEEP_EDGE = 10 // frames: 200 ms kept either side of speech
+        private const val LONG_PAUSE = 35 // frames: a pause over 0.7 s...
+        private const val SHORT_PAUSE = 15 // ...is shortened to 0.3 s
+
+        /**
+         * The recording without the silence a person leaves around and inside a
+         * sentence: the second before they start, the one after, and the long "um…"
+         * in the middle. Transcription is billed by the second of audio, so this is
+         * money, and the words are untouched (a pause still separates them).
+         * Quiet is judged against the recording's own floor, so a noisy room is not
+         * cut into pieces.
+         */
+        fun trimSilence(pcm: ByteArray): ByteArray {
+            val frames = pcm.size / FRAME
+            if (frames < KEEP_EDGE * 3) return pcm
+            val rms = DoubleArray(frames) { f ->
+                var sum = 0.0
+                var i = f * FRAME
+                while (i + 1 < (f + 1) * FRAME) {
+                    val v = ((pcm[i].toInt() and 0xff) or (pcm[i + 1].toInt() shl 8)).toShort().toDouble()
+                    sum += v * v; i += 2
+                }
+                sqrt(sum / (FRAME / 2))
+            }
+            val floor = rms.sorted()[frames / 10]
+            val loud = rms.map { it > maxOf(300.0, floor * 3.0) }
+            val first = loud.indexOfFirst { it }
+            val last = loud.indexOfLast { it }
+            if (first < 0) return pcm
+            val out = ByteArrayOutputStream(pcm.size)
+            var quiet = 0
+            for (f in maxOf(0, first - KEEP_EDGE)..minOf(frames - 1, last + KEEP_EDGE)) {
+                quiet = if (loud[f]) 0 else quiet + 1
+                // Inside a long pause, frames past the short one are dropped.
+                if (quiet in (SHORT_PAUSE + 1)..Int.MAX_VALUE && f in first..last && runLength(loud, f) >= LONG_PAUSE) continue
+                out.write(pcm, f * FRAME, FRAME)
+            }
+            return out.toByteArray()
+        }
+
+        /** The length of the quiet run [f] is in. */
+        private fun runLength(loud: List<Boolean>, f: Int): Int {
+            var a = f; while (a > 0 && !loud[a - 1]) a--
+            var b = f; while (b < loud.size - 1 && !loud[b + 1]) b++
+            return b - a + 1
+        }
 
         private fun level(buf: ByteArray, n: Int): Float {
             var sum = 0.0

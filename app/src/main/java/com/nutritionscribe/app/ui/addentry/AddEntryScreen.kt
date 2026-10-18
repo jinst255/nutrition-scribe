@@ -246,11 +246,12 @@ private fun VoiceAddEntry(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             if (com.nutritionscribe.app.ui.confirm.LogDay.isPast) PastDayBanner()
-            com.nutritionscribe.app.ui.speech.ListeningPanel(voice, micMode)
+            // The button above the words, so the words growing never move it.
             com.nutritionscribe.app.ui.speech.MicButton(voice, micMode, onHint = { hint = it })
             hint?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, textAlign = TextAlign.Center)
             }
+            com.nutritionscribe.app.ui.speech.ListeningPanel(voice, micMode)
             com.nutritionscribe.app.ui.speech.MicModeSwitch(micMode, { viewModel.setMicMode(it); hint = null })
 
             if (!voice.isActive) {

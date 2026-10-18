@@ -36,6 +36,8 @@ class ResetManager(
     private val metricGoalDao: MetricGoalDao,
     private val settingsRepository: SettingsRepository,
     private val personalFoodDao: com.nutritionscribe.app.data.db.PersonalFoodDao? = null,
+    /** The same foods through the store, to tell scanned labels from the rest. */
+    private val personalStore: com.nutritionscribe.shared.resolve.PersonalStore? = null,
     private val onPersonalFoodsCleared: () -> Unit = {},
     private val aiUsageDao: com.nutritionscribe.app.data.usage.AiUsageDao? = null,
     private val labelPack: com.nutritionscribe.app.data.resolve.LabelPack? = null,
@@ -43,17 +45,32 @@ class ResetManager(
 
     /** What a reset will destroy, so the confirmation can say so in numbers. */
     data class Scope(
+        /** The logged entries, the unprocessed queue and the AI spending history. */
         val foodLog: Boolean,
         val settings: Boolean,
         val apiKey: Boolean,
         val labelPack: Boolean = false,
+        /**
+         * Labels they scanned or picked. Kept apart because starting a fresh log is
+         * not starting from nothing: their milk is still their milk.
+         */
+        val scannedFoods: Boolean = foodLog,
+        /** Everything else learned from logging: remembered portions, AI answers, saved meals. */
+        val learnedFoods: Boolean = foodLog,
     ) {
-        val erasesAnything: Boolean get() = foodLog || settings || apiKey || labelPack
+        val erasesAnything: Boolean get() = foodLog || settings || apiKey || labelPack || scannedFoods || learnedFoods
     }
 
     fun hasLabelPack(): Boolean = labelPack?.isInstalled == true
 
     suspend fun loggedEntryCount(): Int = entryDao.count()
+
+    /** Saved foods by kind: scanned labels, and everything else learned. */
+    fun savedFoodCounts(): Pair<Int, Int> {
+        val all = personalStore?.all().orEmpty()
+        val scanned = all.count { !it.isMeal && it.candidate?.origin == com.nutritionscribe.shared.resolve.Origin.LABEL }
+        return scanned to (all.size - scanned)
+    }
 
     fun hasApiKey(): Boolean = settingsRepository.hasAnyApiKey()
 
@@ -65,17 +82,30 @@ class ResetManager(
      * leaves some categories erased. That is the honest behaviour for a
      * destructive action — a half-finished reset that reports success would be
      * worse than one that stops.
+     *
+     * Runs on the IO dispatcher: the personal store deletes one food at a time with
+     * blocking calls, which Room refuses on the main thread (1.3-test crashed here).
      */
-    suspend fun reset(scope: Scope) {
+    suspend fun reset(scope: Scope) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         if (scope.foodLog) {
             // Order matters only for readability; entry_nutrient goes with its
             // entries by ON DELETE CASCADE.
             entryDao.deleteAll()
             unprocessedDao.deleteAll()
-            fixedFoodCacheDao.deleteAll()
+            aiUsageDao?.deleteAll()
+        }
+        if (scope.learnedFoods) fixedFoodCacheDao.deleteAll()
+        if (scope.scannedFoods && scope.learnedFoods) {
             personalFoodDao?.deleteAll()
             onPersonalFoodsCleared()
-            aiUsageDao?.deleteAll()
+        } else if (scope.scannedFoods || scope.learnedFoods) {
+            val store = personalStore
+            if (store != null) {
+                for (f in store.all()) {
+                    val scanned = !f.isMeal && f.candidate?.origin == com.nutritionscribe.shared.resolve.Origin.LABEL
+                    if ((scanned && scope.scannedFoods) || (!scanned && scope.learnedFoods)) store.remove(f.key)
+                }
+            }
         }
         if (scope.settings) {
             metricGoalDao.deleteAll()

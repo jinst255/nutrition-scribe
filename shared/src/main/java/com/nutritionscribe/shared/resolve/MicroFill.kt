@@ -56,6 +56,18 @@ object MicroFill {
         }
     }
 
+    /**
+     * [c], a label with only the few micros a label prints, with the rest borrowed
+     * from the same food offline ([sameFood] on its own calories and protein per
+     * 100 g). [c] unchanged when nothing fits.
+     */
+    fun complete(c: FoodCandidate, offline: List<FoodCandidate>): FoodCandidate {
+        val per = c.per100g ?: return c
+        if (Metric.MICROS.count { it.key in per } >= 8) return c
+        val same = sameFood(offline.filter { it.id != c.id && it.origin != Origin.LABEL }, per, 100.0) ?: return c
+        return withMicros(c, same)
+    }
+
     /** [c] with [add] folded into its per-100 g and per-serving figures, so a portion change keeps them. */
     fun withMicros(c: FoodCandidate, from: FoodCandidate): FoodCandidate {
         val src = from.per100g ?: return c
@@ -83,7 +95,12 @@ object MicroFill {
         val items = entry.items.map { item ->
             val own = item.candidateId?.let(lookup)?.takeIf { c -> Metric.MICROS.any { c.per100g?.containsKey(it.key) == true } }
             val c = own ?: search?.let { sameFood(it(item.name), item.nutrients, item.grams) }
-            val add = missing(item.nutrients, c?.per100g, item.grams)
+            val first = missing(item.nutrients, c?.per100g, item.grams)
+            // A label prints five micros; the same food offline lends the rest.
+            val rest = if (own != null && search != null) {
+                missing(item.nutrients + first, sameFood(search(item.name).filter { it.id != own.id }, item.nutrients, item.grams)?.per100g, item.grams)
+            } else emptyMap()
+            val add = first + rest
             if (add.isEmpty()) item else {
                 changed = true
                 item.copy(nutrients = item.nutrients + add)
@@ -105,12 +122,17 @@ object MicroFill {
         if (food.isMeal) return fillMeal(food, search)
         val stored = food.candidate
         val own = stored?.let { lookup(it.id) }?.takeIf { c -> Metric.MICROS.any { c.per100g?.containsKey(it.key) == true } }
-        val source = own ?: search?.let { s -> sameFood(s(food.name).ifEmpty { s(food.phrase) }, food.nutrients, food.grams) } ?: return null
-        val add = missing(food.nutrients, source.per100g, food.grams)
+        val offline = search?.let { s -> sameFood(s(food.name).ifEmpty { s(food.phrase) }.filter { it.id != own?.id && it.id != stored?.id }, food.nutrients, food.grams) }
+        val source = own ?: offline ?: return null
+        var add = missing(food.nutrients, source.per100g, food.grams)
+        // A label's five micros, then the rest from the same food offline.
+        if (own != null && offline != null) add = add + missing(food.nutrients + add, offline.per100g, food.grams)
         if (add.isEmpty()) return null
         // The stored candidate is scaled from when a portion changes; give it the
         // micros too, or the next "2 cups" loses them again.
-        return food.copy(nutrients = food.nutrients + add, candidate = stored?.let { withMicros(it, source) })
+        var cand = stored?.let { withMicros(it, source) }
+        if (cand != null && own != null && offline != null) cand = withMicros(cand, offline)
+        return food.copy(nutrients = food.nutrients + add, candidate = cand)
     }
 
     /** A saved meal: each part by name, and the meal's total from the parts. */

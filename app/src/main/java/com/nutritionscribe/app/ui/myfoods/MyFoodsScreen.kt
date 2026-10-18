@@ -135,6 +135,7 @@ private fun FoodEditor(food: PersonalFood, onSave: (PersonalFood) -> Unit, onDel
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     )
                 }
+                item { KindSettings(food) }
                 item {
                     TextButton(onClick = { confirmDelete = true }) { Text("Forget this food", color = MaterialTheme.colorScheme.error) }
                 }

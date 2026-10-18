@@ -61,6 +61,11 @@ fun SettingsScreen(
     onOpenExportImport: () -> Unit,
     onOpenMyFoods: () -> Unit = {},
     onOpenSpending: () -> Unit = {},
+    onOpenFeedback: () -> Unit = {},
+    onOpenMyLabels: () -> Unit = {},
+    onOpenIdea: () -> Unit = {},
+    onOpenSent: () -> Unit = {},
+    onOpenCheckIn: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val settings = viewModel.settings
@@ -123,6 +128,16 @@ fun SettingsScreen(
         // ---- The everyday settings. Everything a friend who was handed the
         // app might touch is up here, in their words; the machinery is under
         // Advanced.
+        val testing = remember { com.nutritionscribe.app.ui.feedback.isTestBuild(ServiceLocator.appContext) }
+        if (testing) {
+            SectionHeader("Beta testing")
+            com.nutritionscribe.app.ui.feedback.BetaSection(
+                onTellUs = { events.event("beta_open", "what" to "tell_us"); onOpenFeedback() },
+                onIdea = { events.event("beta_open", "what" to "idea"); onOpenIdea() },
+                onSent = { events.event("beta_open", "what" to "sent"); onOpenSent() },
+                onCheckIn = { events.event("check_in_open", "where" to "settings"); onOpenCheckIn() },
+            )
+        }
         SectionHeader("Logging")
 
         SettingRow(
@@ -186,6 +201,18 @@ fun SettingsScreen(
             else "$myFoods remembered. They log without asking \u2014 view, change or forget them.",
             onClick = onOpenMyFoods,
         )
+        val myLabels by remember {
+            ServiceLocator.database.personalFoodDao().observeAll().map { rows ->
+                rows.mapNotNull { ServiceLocator.personalStore.decode(it) }.count { !it.isMeal && it.candidate?.origin == com.nutritionscribe.shared.resolve.Origin.LABEL }
+            }
+        }.collectAsState(initial = 0)
+        if (myLabels > 0) {
+            NavRow(
+                title = "My labels",
+                subtitle = "$myLabels scanned or picked. See the photo, check and fix the numbers.",
+                onClick = onOpenMyLabels,
+            )
+        }
         LabelPackRow(advanced = false)
         Hint("Built in: 13,400 USDA foods and a hand-checked list of everyday ones. Works offline, costs nothing.")
 
@@ -212,7 +239,12 @@ fun SettingsScreen(
         // send this, and shouldn't have to find an advanced switch first.
         val context = androidx.compose.ui.platform.LocalContext.current
         val sentAt by settings.logSentAt.collectAsState(initial = null)
-        NavRow(
+        if (!testing) NavRow(
+            title = "Something's wrong? Send feedback",
+            subtitle = "A few taps: what bothered you, and whether you'd keep using the app.",
+            onClick = onOpenFeedback,
+        )
+        if (!testing) NavRow(
             title = "Send my log",
             subtitle = "For whoever gave you the app: what you logged and how the app behaved, so they can fix problems." +
                 (sentAt?.let { " Last sent ${java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(it))}." } ?: ""),
@@ -552,6 +584,9 @@ private fun RetentionRow(
 private fun ResetSection(reset: ResetManager, onOpenExportImport: () -> Unit) {
     var showDialog by remember { mutableStateOf(false) }
     var keepFoodLog by remember { mutableStateOf(true) }
+    var keepScanned by remember { mutableStateOf(true) }
+    var keepLearned by remember { mutableStateOf(true) }
+    var foodCounts by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var keepSettings by remember { mutableStateOf(true) }
     var keepApiKey by remember { mutableStateOf(true) }
     var keepLabelPack by remember { mutableStateOf(true) }
@@ -566,6 +601,7 @@ private fun ResetSection(reset: ResetManager, onOpenExportImport: () -> Unit) {
     LaunchedEffect(showDialog) {
         if (showDialog) {
             entryCount = reset.loggedEntryCount()
+            foodCounts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { reset.savedFoodCounts() }.getOrNull() }
             hasKey = reset.hasApiKey()
             hasPack = reset.hasLabelPack()
         }
@@ -581,7 +617,7 @@ private fun ResetSection(reset: ResetManager, onOpenExportImport: () -> Unit) {
     )
     TextButton(
         onClick = {
-            keepFoodLog = true; keepSettings = true; keepApiKey = true; keepLabelPack = true
+            keepFoodLog = true; keepScanned = true; keepLearned = true; keepSettings = true; keepApiKey = true; keepLabelPack = true
             confirming = false
             showDialog = true
         },
@@ -596,6 +632,8 @@ private fun ResetSection(reset: ResetManager, onOpenExportImport: () -> Unit) {
         settings = !keepSettings,
         apiKey = !keepApiKey,
         labelPack = hasPack && !keepLabelPack,
+        scannedFoods = !keepScanned,
+        learnedFoods = !keepLearned,
     )
     val count = entryCount
 
@@ -612,14 +650,26 @@ private fun ResetSection(reset: ResetManager, onOpenExportImport: () -> Unit) {
                         modifier = Modifier.padding(bottom = 12.dp),
                     )
                     KeepRow(
-                        label = "Keep my food log",
+                        label = "Keep my logged entries",
                         detail = when (count) {
                             null -> "counting…"
-                            1 -> "1 entry, with your foods and AI spending history"
-                            else -> "$count entries, with your foods and AI spending history"
+                            1 -> "1 entry, with its AI spending history"
+                            else -> "$count entries, with their AI spending history"
                         },
                         checked = keepFoodLog,
                         onChange = { keepFoodLog = it },
+                    )
+                    KeepRow(
+                        label = "Keep labels I scanned",
+                        detail = foodCounts?.first?.let { "$it foods from real labels, so your milk is still your milk" } ?: "counting…",
+                        checked = keepScanned,
+                        onChange = { keepScanned = it },
+                    )
+                    KeepRow(
+                        label = "Keep other foods it learned",
+                        detail = foodCounts?.second?.let { "$it remembered portions, estimates and saved meals" } ?: "counting…",
+                        checked = keepLearned,
+                        onChange = { keepLearned = it },
                     )
                     KeepRow(
                         label = "Keep goals and settings",
@@ -727,12 +777,14 @@ private fun erasureSummary(scope: ResetManager.Scope, entryCount: Int?): String 
         if (scope.foodLog) {
             add(
                 when (entryCount) {
-                    null, 0 -> "your food log"
-                    1 -> "your food log (1 entry)"
-                    else -> "your food log ($entryCount entries)"
+                    null, 0 -> "your logged entries"
+                    1 -> "your logged entries (1 entry)"
+                    else -> "your logged entries ($entryCount entries)"
                 },
             )
         }
+        if (scope.scannedFoods) add("the labels you scanned")
+        if (scope.learnedFoods) add("the other foods it learned")
         if (scope.settings) add("your goals and settings")
         if (scope.apiKey) add("your API key")
         if (scope.labelPack) add("the label pack")

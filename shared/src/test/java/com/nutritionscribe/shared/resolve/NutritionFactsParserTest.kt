@@ -170,6 +170,47 @@ class NutritionFactsParserTest {
     @Test
     fun `a stray number that does not fit the macros is not taken as calories`() {
         val p = NutritionFactsParser.parse("Calories\nTotal Fat 3g\nTotal Carbohydrate 9g\nProtein 20g\n12")
+        // Not the 12. With calories unreadable, the macros' own figure stands in,
+        // marked as worked out so the form asks for a check.
+        assertEquals(140.0, p.perServing["calories"]!!, 0.0)
+        assertEquals("kcal_from_macros", p.reads.first { it.metric == "calories" }.fix)
+    }
+
+    @Test
+    fun `a panel printed as a paragraph gives each nutrient its own number`() {
+        val p = NutritionFactsParser.parse(
+            "Nutrition Facts Serving: 1, Serv. size: 1 pouch (25g),\n" +
+                "Amount per serving: Calories 80, Total Fat 0g (0% DV), Sat. Fat 0g (0% DV),\n" +
+                "Trans Fat 0g, Cholest. 0mg (0% DV), Sodium 20mg (1% DV), Total Carb. 19g (7%\n" +
+                "DV), Fiber 0g (0% DV), Total Sugars 11g (Incl. 11g Added Sugars, 22% DV), Protein\n" +
+                "1g, Vit. D (0% DV), Calcium (0% DV), Iron (0% DV), Potas. (0% DV).",
+        )
+        assertEquals(25.0, p.servingGrams!!, 0.0)
+        assertEquals(80.0, p.perServing["calories"]!!, 0.0)
+        assertEquals(20.0, p.perServing["sodium"]!!, 0.0)
+        assertEquals(19.0, p.perServing["carbs"]!!, 0.0)
+        assertEquals(11.0, p.perServing["sugar"]!!, 0.0)
+        assertEquals(11.0, p.perServing["added_sugar"]!!, 0.0)
+        assertEquals(1.0, p.perServing["protein"]!!, 0.0)
+    }
+
+    @Test
+    fun `two columns read as one row keep their own numbers`() {
+        val p = NutritionFactsParser.parse("Calories 90\nProtein 4g\nTotal Carbohydrate 16g\nTotal Fat 1g\nIron 1mg 6% Potassium 100mg 2%\nVitamin D 0mcg 0% Calcium 20rmg 2%")
+        assertEquals(1.0, p.perServing["iron"]!!, 0.0)
+        assertEquals(100.0, p.perServing["potassium"]!!, 0.0)
+        assertEquals(20.0, p.perServing["calcium"]!!, 0.0)
+    }
+
+    @Test
+    fun `a weight on the front of the box is not calories`() {
+        val p = NutritionFactsParser.parse("CALORIES\nNET WT 32.5 OZ (2 LB) 922 G")
         assertEquals(null, p.perServing["calories"])
+    }
+
+    @Test
+    fun `calories misread as zero come from the macros`() {
+        val p = NutritionFactsParser.parse("Calories /0\nTotal Fat 0g\nTotal Carbohydrate 17g\nProtein 1g")
+        assertEquals(70.0, p.perServing["calories"]!!, 0.0)
     }
 }

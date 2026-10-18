@@ -186,7 +186,7 @@ class DebugEvents(
      * what the camera actually saw. Only in debug mode; only the newest
      * [MAX_SCANS]. Returns the file name to put in the event.
      */
-    fun saveScan(bitmap: android.graphics.Bitmap): String? {
+    fun saveScan(bitmap: android.graphics.Bitmap, prefix: String = "scan"): String? {
         if (!enabled) return null
         return runCatching {
             scanDir.mkdirs()
@@ -194,7 +194,7 @@ class DebugEvents(
             val scale = if (long > 1600) 1600f / long else 1f
             val small = if (scale < 1f) android.graphics.Bitmap.createScaledBitmap(
                 bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true) else bitmap
-            val name = "scan-" + SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date()) + ".jpg"
+            val name = "$prefix-" + SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date()) + ".jpg"
             File(scanDir, name).outputStream().use { small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, it) }
             scanDir.listFiles()?.sortedByDescending { it.name }?.drop(MAX_SCANS)?.forEach { it.delete() }
             name

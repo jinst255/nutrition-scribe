@@ -21,7 +21,7 @@ import json, os, re, sys, time, urllib.error, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import foodsearch as F
 
-MODEL = os.environ.get("NS_MODEL", "gpt-5.6-luna")
+MODEL = os.environ.get("NS_MODEL", "gpt-6-luna")
 COLUMNS = F.COLUMNS
 URL = "https://api.openai.com/v1/chat/completions"
 

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +33,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -138,8 +141,21 @@ class HomeViewModel : ViewModel() {
     val unprocessedCount = repository.observeUnprocessed().map { it.size }
     val needsGlance = dao.observeNeedsConfirm().map { rows -> rows.map { it.entry.id } }
     val micMode = ServiceLocator.settingsRepository.micMode
+    val homeSort = ServiceLocator.settingsRepository.homeSort
+    val ideas = com.nutritionscribe.app.ui.ideas.IdeasSource.flow()
+
+    fun setSort(sort: com.nutritionscribe.app.data.repository.HomeSort) {
+        ServiceLocator.debugEvents.event("home_sort", "sort" to sort.name)
+        viewModelScope.launch { ServiceLocator.settingsRepository.setHomeSort(sort) }
+    }
     val profile = ServiceLocator.settingsRepository.profile
     val donations = ServiceLocator.settingsRepository.plasmaDonations
+    val plasmaHidden = ServiceLocator.settingsRepository.plasmaHiddenOn
+
+    fun hidePlasma(day: LocalDate) {
+        ServiceLocator.debugEvents.event("plasma_hidden", "day" to day.toString())
+        viewModelScope.launch { ServiceLocator.settingsRepository.setPlasmaHiddenOn(day.toString()) }
+    }
     /** The provider to ask about before anything is sent to it, or null. */
     val consentAsk: Flow<com.nutritionscribe.app.data.repository.AiBackendKind?> = kotlinx.coroutines.flow.combine(
         ServiceLocator.settingsRepository.aiConsent,
@@ -233,43 +249,28 @@ fun HomeScreen(
     onScan: () -> Unit = {},
     onReview: () -> Unit = {},
     onOpenGoals: () -> Unit = {},
+    onOpenIdeas: () -> Unit = {},
+    /** "What does fiber do for me?": the nutrient, today's amount and its target. */
+    onOpenNutrient: (Metric, Double, Double) -> Unit = { _, _, _ -> },
+    /** The week-later ask: three questions, then the log. */
+    onCheckIn: () -> Unit = {},
+    /** The Logged card's "scan its label" for a kind not saved yet. */
+    onScanKind: () -> Unit = {},
     viewModel: HomeViewModel = viewModel(),
 ) {
-    val snackbar = remember { SnackbarHostState() }
-    // Collected rather than keyed: clearing the value would otherwise restart the
-    // effect and cancel the message before anyone saw it.
-    LaunchedEffect(Unit) {
-        LastLogged.entry.collect { note ->
-            if (note == null) return@collect
-            LastLogged.entry.value = null
-            val e = note.entry
-            // Rounded the same way as the list, so the two agree.
-            val kcal = e.calories?.let { " · ${Math.round(it)} kcal" }.orEmpty()
-            val name = e.name.let { if (it.length > 40) it.take(38) + "…" else it }
-            val result = snackbar.showSnackbar(
-                message = if (note.how == "again") "Logged $name again$kcal" else "Logged $name$kcal — ${note.how}",
-                actionLabel = if (note.undoable) "Undo" else "Fix",
-                duration = SnackbarDuration.Long,
-            )
-            if (result == SnackbarResult.ActionPerformed) {
-                if (note.undoable) {
-                    ServiceLocator.debugEvents.event("log_again_undo", "entry_id" to e.id)
-                    viewModel.delete(e)
-                } else onFixEntry(e.id)
-            }
-        }
-    }
-
     val entries by viewModel.todayEntries.collectAsState(initial = emptyList())
     val goals by viewModel.goals.collectAsState(initial = emptyList())
     val glance by viewModel.needsGlance.collectAsState(initial = emptyList())
     val unprocessedCount by viewModel.unprocessedCount.collectAsState(initial = 0)
     val choices by viewModel.choices.collectAsState(initial = emptyList())
     val micMode by viewModel.micMode.collectAsState(initial = MicMode.HOLD)
+    val homeSort by viewModel.homeSort.collectAsState(initial = com.nutritionscribe.app.data.repository.HomeSort.GOALS)
     val profile by viewModel.profile.collectAsState(initial = null)
     val donations by viewModel.donations.collectAsState(initial = emptySet())
+    val plasmaHidden by viewModel.plasmaHidden.collectAsState(initial = null)
     val consentAsk by viewModel.consentAsk.collectAsState(initial = null)
     val logDue by viewModel.logDue.collectAsState(initial = false)
+    val ideas by viewModel.ideas.collectAsState(initial = null)
     val context = androidx.compose.ui.platform.LocalContext.current
     val shareScope = rememberCoroutineScope()
     consentAsk?.let { kind -> com.nutritionscribe.app.ui.common.AiConsentDialog(kind) { viewModel.answerConsent(kind, it) } }
@@ -293,11 +294,16 @@ fun HomeScreen(
 
     var detail by remember { mutableStateOf<Metric?>(null) }
     val totals = remember(entries) { NutrientDay.totals(entries) }
+    val splits = remember(entries, totals) {
+        Splits(
+            com.nutritionscribe.shared.resolve.Sugars.split(entries),
+            com.nutritionscribe.shared.resolve.Fats.split(totals.mapKeys { it.key.key }.mapValues { it.value.amount }),
+        )
+    }
     val goalOf = goals.associateBy { it.metric }
     val lead = goals.firstOrNull { it.enabled }?.metric ?: Metric.CALORIES
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             LogDock(
                 voice = voice,
@@ -311,7 +317,13 @@ fun HomeScreen(
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
+            val list = androidx.compose.foundation.lazy.rememberLazyListState()
+            val homeTaps by HomeTab.taps.collectAsState()
+            // Only taps not yet acted on: coming Back to Home keeps its place.
+            var seenTaps by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(HomeTab.taps.value) }
+            LaunchedEffect(homeTaps) { if (homeTaps > seenTaps) { seenTaps = homeTaps; HomeTab.reset.value++; list.animateScrollToItem(0) } }
             LazyColumn(
+                state = list,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -337,18 +349,25 @@ fun HomeScreen(
                 }
                 if (logDue) item {
                     LogReminder(
-                        onSend = { shareScope.launch { com.nutritionscribe.app.ui.debuglog.LogShare.share(context, "home_reminder") } },
+                        onSend = { ServiceLocator.debugEvents.event("check_in_open", "where" to "home_reminder"); onCheckIn() },
                         onLater = viewModel::snoozeLog,
                     )
                 }
-                if (profile?.plasmaDonor == true) item {
-                    PlasmaButton(today, donations, profile!!.weightKg) { viewModel.setDonated(today, it) }
+                if (profile?.plasmaDonor == true && plasmaHidden != today.toString()) item {
+                    PlasmaButton(today, donations, profile!!.weightKg, onHide = { viewModel.hidePlasma(today) }) { viewModel.setDonated(today, it) }
                 }
                 item {
                     NutrientPager(
                         totals, goalOf, refs, plasmaExtra,
                         hasFood = entries.any { it.nutrients.isNotEmpty() }, onOpen = { detail = it },
+                        splits = splits, sort = homeSort, onSort = viewModel::setSort,
                     )
+                }
+                item {
+                    IdeasButton(ideas) {
+                        ServiceLocator.debugEvents.event("ideas_tap", "headline" to ideas?.headline)
+                        onOpenIdeas()
+                    }
                 }
                 item {
                     LogAgainSection(
@@ -388,6 +407,12 @@ fun HomeScreen(
                 }
             }
 
+            LoggedHost(
+                onUndo = { viewModel.delete(it) },
+                onFix = { onFixEntry(it.id) },
+                onScanKind = { e, base -> KindScan.pending = e to base; onScanKind() },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
             ListeningOverlay(
                 voice = voice,
                 mode = micMode,
@@ -410,6 +435,7 @@ fun HomeScreen(
             entries = entries,
             onToggleGoal = { on -> viewModel.setGoal(m, on) },
             onOpenGoals = { detail = null; onOpenGoals() },
+            onLearnMore = { have, target -> detail = null; onOpenNutrient(m, have, target) },
             onDismiss = { detail = null },
         )
     }
@@ -425,12 +451,40 @@ private fun LogReminder(onSend: () -> Unit, onLater: () -> Unit) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("You've been testing for a week", style = MaterialTheme.typography.titleSmall)
             Text(
-                "Please send your log to whoever gave you the app. It has what you logged and how the app behaved, so they can fix what went wrong.",
+                "Three quick questions, then send your log to whoever gave you the app. It has what you logged and how the app behaved, so they can fix what went wrong.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                androidx.compose.material3.Button(onClick = onSend) { Text("Send log") }
+                androidx.compose.material3.Button(onClick = onSend) { Text("Answer and send") }
                 TextButton(onClick = onLater) { Text("Later") }
+            }
+        }
+    }
+}
+
+/**
+ * "Ideas · fiber averaged 13 of 38 g": one button, naming the most useful thing
+ * this week, that opens the rest. Quiet until there is something to say.
+ */
+@Composable
+private fun IdeasButton(result: com.nutritionscribe.shared.model.Ideas.Result?, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val line = when {
+        result == null -> null
+        !result.ready -> "after ${result.needed} full days (${result.fullDays} so far)"
+        else -> result.headline?.replaceFirstChar { it.lowercase() } ?: "meals and a store list"
+    }
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = if (result?.ready == true && result.headline != null) scheme.secondaryContainer else scheme.surface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, scheme.outlineVariant),
+        modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable(onClick = onClick)
+            .semantics { contentDescription = "Ideas from your week" + (line?.let { ": $it" } ?: "") },
+    ) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Ideas", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            line?.let {
+                Text(" · $it", style = MaterialTheme.typography.labelLarge, color = scheme.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -452,27 +506,44 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(text.uppercase(), style = SectionLabelStyle, color = MaterialTheme.colorScheme.secondary, modifier = modifier)
 }
 
+/**
+ * Taps on Home in the bottom bar. Each one puts Home back as it opens: the macros
+ * page, at the top. Before, it came back on whatever page was last left open.
+ */
+object HomeTab {
+    val taps = kotlinx.coroutines.flow.MutableStateFlow(0)
+    /** Taps Home has acted on, for the pager inside it. */
+    val reset = kotlinx.coroutines.flow.MutableStateFlow(0)
+}
+
 // ---------------------------------------------------------------------------
 // The two pages: Macros, then Minerals & vitamins. Goals lead each page.
 // ---------------------------------------------------------------------------
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NutrientPager(
+internal fun NutrientPager(
     totals: Map<Metric, NutrientTotal>,
     goals: Map<Metric, MetricGoal>,
     refs: Map<Metric, Double>,
     plasmaExtra: Double,
     hasFood: Boolean,
     onOpen: (Metric) -> Unit,
+    splits: Splits,
+    sort: com.nutritionscribe.app.data.repository.HomeSort,
+    onSort: (com.nutritionscribe.app.data.repository.HomeSort) -> Unit,
 ) {
     val pager = rememberPagerState { 2 }
     val scope = rememberCoroutineScope()
+    // Home tapped in the bottom bar: back to the page it opens on.
+    val resets by HomeTab.reset.collectAsState()
+    var seenResets by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(HomeTab.reset.value) }
+    LaunchedEffect(resets) { if (resets > seenResets) { seenResets = resets; pager.animateScrollToPage(0) } }
     LaunchedEffect(pager.currentPage) {
         ServiceLocator.debugEvents.event("home_page", "page" to if (pager.currentPage == 0) "macros" else "micros")
     }
     Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.Bottom) {
             listOf("Macros", "Minerals & vitamins").forEachIndexed { i, label ->
                 val on = pager.currentPage == i
                 Column(
@@ -493,6 +564,8 @@ private fun NutrientPager(
                     )
                 }
             }
+            Spacer(Modifier.weight(1f))
+            SortSwitch(sort, onSort)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         HorizontalPager(
@@ -501,7 +574,7 @@ private fun NutrientPager(
             verticalAlignment = Alignment.Top,
         ) { page ->
             Column(Modifier.fillMaxWidth().padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                val row = RowContext(refs, plasmaExtra, hasFood, onOpen)
+                val row = RowContext(refs, plasmaExtra, hasFood, onOpen, splits, sort)
                 if (page == 0) MacroPage(totals, goals, row) else MicroPage(totals, goals, row)
             }
         }
@@ -510,36 +583,26 @@ private fun NutrientPager(
 
 @Composable
 private fun MacroPage(totals: Map<Metric, NutrientTotal>, goals: Map<Metric, MetricGoal>, row: RowContext) {
-    val mine = goals.values.filter { it.enabled && !it.metric.isMicro }.sortedBy { it.sortOrder }.map { it.metric }
-    val rest = Metric.MACROS.filter { it !in mine }
+    val mineMetrics = goals.values.filter { it.enabled && !it.metric.isMicro }.sortedBy { it.sortOrder }.map { it.metric }
+    val mine = HomeRow.of(mineMetrics)
+    val rest = HomeRow.of(Metric.MACROS).filter { it !in mine }
     // One value column for the page, so every bar starts and ends in the same place.
-    val valueWidth = if (mine.isEmpty()) 64.dp else 120.dp
-    if (mine.isNotEmpty()) {
-        SectionLabel("Your goals")
-        mine.forEach { m -> NutrientRow(m, totals[m], goals[m], row, valueWidth) }
-    }
-    SectionLabel(if (mine.isEmpty()) "Today" else "Other macros", Modifier.padding(top = if (mine.isEmpty()) 0.dp else 8.dp))
-    rest.forEach { m -> NutrientRow(m, totals[m], goals[m], row, valueWidth) }
+    // Wide enough for the split rows' "12 / ≤50 g".
+    val valueWidth = 120.dp
+    ShowSections(mine, listOf((if (mine.isEmpty()) "Today" else "Other macros") to rest), totals, goals, row, valueWidth)
 }
 
 @Composable
 private fun MicroPage(totals: Map<Metric, NutrientTotal>, goals: Map<Metric, MetricGoal>, row: RowContext) {
     val mine = goals.values.filter { it.enabled && it.metric.isMicro }.sortedBy { it.sortOrder }.map { it.metric }
-    val valueWidth = if (mine.isEmpty()) 52.dp else 120.dp
-    if (mine.isNotEmpty()) {
-        SectionLabel("Your goals")
-        mine.forEach { m -> NutrientRow(m, totals[m], goals[m], row, valueWidth) }
-    }
+    val valueWidth = if (mine.isEmpty() && row.sort == com.nutritionscribe.app.data.repository.HomeSort.GOALS) 52.dp else 120.dp
     val rest = Metric.MICROS.filter { it !in mine }
     val sections = listOf(
         "Minerals" to rest.filter { it.group == MetricGroup.MINERAL && it.direction == GoalDirection.REACH },
         "Vitamins" to rest.filter { it.group == MetricGroup.VITAMIN && it.direction == GoalDirection.REACH },
         "Stay under" to rest.filter { it.direction == GoalDirection.LIMIT },
-    )
-    sections.filter { it.second.isNotEmpty() }.forEachIndexed { i, (label, list) ->
-        SectionLabel(label, Modifier.padding(top = if (i == 0 && mine.isEmpty()) 0.dp else 8.dp))
-        list.forEach { m -> NutrientRow(m, totals[m], goals[m], row, valueWidth) }
-    }
+    ).map { (label, list) -> label to list.map { HomeRow.One(it) as HomeRow } }
+    ShowSections(mine.map { HomeRow.One(it) }, sections, totals, goals, row, valueWidth)
 }
 
 /** What every row on a page shares: what bars fill toward, and where a tap goes. */
@@ -548,7 +611,45 @@ private class RowContext(
     val plasmaExtra: Double,
     val hasFood: Boolean,
     val onOpen: (Metric) -> Unit,
+    val splits: Splits,
+    val sort: com.nutritionscribe.app.data.repository.HomeSort,
 )
+
+/** One row of either page: a plain nutrient, or the split sugar or fat pair. */
+@Composable
+private fun ShowRow(r: HomeRow, totals: Map<Metric, NutrientTotal>, goals: Map<Metric, MetricGoal>, row: RowContext, valueWidth: androidx.compose.ui.unit.Dp) {
+    when (r) {
+        is HomeRow.One -> NutrientRow(r.metric, totals[r.metric], goals[r.metric], row, valueWidth)
+        HomeRow.SugarPair -> SugarRows(row.splits.sugar, goals, row.refs, valueWidth, row.onOpen)
+        HomeRow.FatPair -> FatRows(row.splits.fat, goals, row.refs, valueWidth, row.onOpen)
+    }
+}
+
+/** Goals then the rest, or one list ordered by how full each bar is. */
+@Composable
+private fun ShowSections(
+    mine: List<HomeRow>,
+    rest: List<Pair<String, List<HomeRow>>>,
+    totals: Map<Metric, NutrientTotal>,
+    goals: Map<Metric, MetricGoal>,
+    row: RowContext,
+    valueWidth: androidx.compose.ui.unit.Dp,
+) {
+    if (row.sort != com.nutritionscribe.app.data.repository.HomeSort.GOALS) {
+        val all = sortRows(mine + rest.flatMap { it.second }, row.sort) { fullness(it, totals, goals, row.refs, row.splits) }
+        SectionLabel(if (row.sort == com.nutritionscribe.app.data.repository.HomeSort.LOWEST) "Most needed first" else "Fullest first")
+        all.forEach { ShowRow(it, totals, goals, row, valueWidth) }
+        return
+    }
+    if (mine.isNotEmpty()) {
+        SectionLabel("Your goals")
+        mine.forEach { ShowRow(it, totals, goals, row, valueWidth) }
+    }
+    rest.filter { it.second.isNotEmpty() }.forEachIndexed { i, (label, list) ->
+        SectionLabel(label, Modifier.padding(top = if (i == 0 && mine.isEmpty()) 0.dp else 8.dp))
+        list.forEach { ShowRow(it, totals, goals, row, valueWidth) }
+    }
+}
 
 /**
  * "Donated plasma today": shown only to someone who said they donate. Tapping it
@@ -556,7 +657,7 @@ private class RowContext(
  * day the FDA rule would, so a stray tap can't count twice.
  */
 @Composable
-private fun PlasmaButton(today: LocalDate, donations: Set<LocalDate>, weightKg: Double, onSet: (Boolean) -> Unit) {
+private fun PlasmaButton(today: LocalDate, donations: Set<LocalDate>, weightKg: Double, onHide: () -> Unit, onSet: (Boolean) -> Unit) {
     val check = com.nutritionscribe.shared.model.PlasmaDonation.check(today, donations)
     val grams = Math.round(com.nutritionscribe.shared.model.PlasmaDonation.proteinLost(weightKg))
     val fmt = DateTimeFormatter.ofPattern("EEEE")
@@ -578,13 +679,21 @@ private fun PlasmaButton(today: LocalDate, donations: Set<LocalDate>, weightKg: 
             is com.nutritionscribe.shared.model.PlasmaDonation.Check.TooSoon -> {
                 val when_ = if (check.earliest == today.plusDays(1)) "tomorrow" else check.earliest.format(fmt)
                 val bump = com.nutritionscribe.shared.model.PlasmaDonation.extraProtein(today, donations, weightKg)
+                // One short line: it took a sixth of the screen as two sentences.
                 Text(
-                    (if (bump > 0) "+${Math.round(bump)} g protein from yesterday's donation. " else "") +
-                        "Next donation $when_ at the earliest. ${check.reason}",
+                    (if (bump > 0) "+${Math.round(bump)} g protein from yesterday's donation · " else "") +
+                        "next one $when_ or later",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
+                    maxLines = 2,
+                    modifier = Modifier.weight(1f),
                 )
             }
+        }
+        // Closed for today; the protein it adds still counts.
+        androidx.compose.material3.IconButton(onClick = onHide, modifier = Modifier.size(32.dp)) {
+            androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Close, contentDescription = "Hide for today",
+                tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -647,7 +756,7 @@ private fun NutrientRow(
             maxLines = 1,
             modifier = Modifier.width(88.dp),
         )
-        Bar(fraction, fill, unknown, Modifier.weight(1f))
+        HomeBar(fraction, fill, unknown, Modifier.weight(1f))
         Text(
             value,
             style = NumberStyle,
@@ -660,7 +769,7 @@ private fun NutrientRow(
 }
 
 @Composable
-private fun Bar(fraction: Float, color: Color, unknown: Boolean, modifier: Modifier = Modifier) {
+internal fun HomeBar(fraction: Float, color: Color, unknown: Boolean, modifier: Modifier = Modifier) {
     val track = MaterialTheme.colorScheme.surfaceContainerHighest
     val stripe = MaterialTheme.colorScheme.outline
     Box(modifier.height(7.dp).clip(RoundedCornerShape(4.dp)).background(track)) {
@@ -682,7 +791,7 @@ private fun Bar(fraction: Float, color: Color, unknown: Boolean, modifier: Modif
 /** Tapping a nutrient: what today's number is made of, and what is missing from it. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NutrientSheet(
+internal fun NutrientSheet(
     metric: Metric,
     total: NutrientTotal,
     goal: MetricGoal?,
@@ -692,6 +801,8 @@ private fun NutrientSheet(
     entries: List<Entry>,
     onToggleGoal: (Boolean) -> Unit,
     onOpenGoals: () -> Unit,
+    /** Opens the nutrient's page with what the sheet shows: the amount and the target. */
+    onLearnMore: ((have: Double, target: Double) -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     LaunchedEffect(metric) { ServiceLocator.debugEvents.event("nutrient_open", "metric" to metric.key, "amount" to total.amount, "coverage" to total.coverage) }
@@ -710,13 +821,43 @@ private fun NutrientSheet(
                 Text(metric.unit, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 3.dp))
                 Text(
                     if (isGoal) "of your ${if ((goal?.effectiveDirection ?: metric.direction) == GoalDirection.LIMIT) "limit" else "goal"}, ${formatAmount(target, metric)}"
+                    // A limit is not something anyone needs: 178% of the added sugar "you need" read as praise.
+                    else if (metric.direction == GoalDirection.LIMIT) "of the ${formatAmount(target, metric)} limit"
                     else if (personal) "of the ${formatAmount(target, metric)} you need"
-                    else if (metric == Metric.SUGAR) "of ${formatAmount(target, metric)}, a typical day's total sugar"
+                    else if (metric == Metric.SUGAR) "total sugar today"
                     else if (metric.isMicro) "of the ${formatAmount(target, metric)} Daily Value"
                     else "today",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+            if (onLearnMore != null) {
+                // The sugar limit is a limit on added sugar, so the page measures that.
+                val have = if (metric == Metric.SUGAR) com.nutritionscribe.shared.resolve.Sugars.split(entries).let { it.added + it.unknown } else total.amount
+                LearnMoreRow(metric) { onLearnMore(have, target) }
+            }
+            if (metric == Metric.SUGAR) {
+                val sp = remember(entries) { com.nutritionscribe.shared.resolve.Sugars.split(entries) }
+                Text(
+                    "Added ${formatAmount(sp.added, metric)} · natural ${formatAmount(sp.natural, metric)}" +
+                        (if (sp.unknown > 0.5) " · not split ${formatAmount(sp.unknown, metric)}" else "") + ". " +
+                        "The limit is for added sugar only: what a label lists as \"added sugars\", plus honey, syrup and soda. " +
+                        "Fruit and plain milk count as natural." +
+                        (if (sp.unknown > 0.5) " Sugar the app can't split is counted as added." else ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+            if (metric == Metric.FAT || metric == Metric.SATURATED_FAT) {
+                val fp = remember(total, entries) {
+                    com.nutritionscribe.shared.resolve.Fats.split(com.nutritionscribe.shared.resolve.sumNutrients(entries.map { it.nutrients }))
+                }
+                Text(
+                    "Saturated + trans ${formatAmount(fp.saturatedAndTrans, Metric.FAT)} · unsaturated ${formatAmount(fp.unsaturated, Metric.FAT)}. " +
+                        "Saturated and trans fat are the kinds to keep low; unsaturated fat (nuts, avocado, olive oil, fish) is the kind to have instead.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
                 )
             }
             if (extra > 0) {
@@ -758,6 +899,31 @@ private fun NutrientSheet(
                 }
                 TextButton(onClick = onOpenGoals) { Text("Change the target") }
             }
+        }
+    }
+}
+
+/** "What does fiber do for me? ›", the sheet's way to the nutrient's own page. */
+@Composable
+private fun LearnMoreRow(metric: Metric, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Outlined.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+            Text(
+                com.nutritionscribe.shared.model.NutrientGuide.question(metric),
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, fontSize = 15.sp),
+                modifier = Modifier.weight(1f),
+            )
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
         }
     }
 }
@@ -944,7 +1110,8 @@ private fun TimeGroup(
         )
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             group.forEach { e ->
-                EntryRow(e, lead, { onOpen(e.id) }, { onLogAgain(e) }, { onFix(e.id) }, { onDelete(e) })
+                // A tap is the quick edit; the full breakdown is in the long-press menu.
+                EntryRow(e, lead, { onFix(e.id) }, { onLogAgain(e) }, { onOpen(e.id) }, { onDelete(e) })
             }
         }
     }
@@ -961,7 +1128,7 @@ private fun EntryRow(
     lead: Metric,
     onClick: () -> Unit,
     onLogAgain: () -> Unit,
-    onFix: () -> Unit,
+    onDetails: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -996,7 +1163,7 @@ private fun EntryRow(
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         menu = true
                     },
-                    onLongClickLabel = "More: log again, fix, delete",
+                    onLongClickLabel = "More: log again, details, delete",
                 )
                 .padding(horizontal = 12.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1022,9 +1189,9 @@ private fun EntryRow(
                 onClick = { menu = false; onLogAgain() },
             )
             DropdownMenuItem(
-                text = { Text("Fix") },
+                text = { Text("Details · report a problem") },
                 leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
-                onClick = { menu = false; onFix() },
+                onClick = { menu = false; onDetails() },
             )
             DropdownMenuItem(
                 text = { Text("Delete", color = MaterialTheme.colorScheme.error) },

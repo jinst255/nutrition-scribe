@@ -222,7 +222,11 @@ class OpenAiItemLookup(
     }
 
     companion object {
-        const val DEFAULT_MODEL = "gpt-5.6-luna"
+        /**
+         * GPT-6 Luna (September 2026): half GPT-5.6 Luna's price ($0.10 / $0.50 per
+         * million tokens against $0.20 / $1.20) and takes the same request.
+         */
+        const val DEFAULT_MODEL = "gpt-6-luna"
 
         private val FIELDS = listOf(
             "kcal" to Metric.CALORIES, "protein_g" to Metric.PROTEIN, "carbs_g" to Metric.CARBS,
@@ -271,9 +275,12 @@ Rules for reading the description:
 - One item per distinct food actually eaten. A sandwich is ONE item only if it is a single known thing (a Big Mac); a homemade sandwich is its parts (bread, filling, spread), because the parts are what decide the numbers.
 - Never count the same food twice. "A PB&J with 2 tbsp of peanut butter" is bread + 2 tbsp peanut butter + jelly, not a sandwich plus peanut butter.
 - grams is the edible weight actually eaten, as eaten (cooked weight for cooked food). Convert the stated amount: 1 cup cooked rice = 158 g, 1 cup milk = 244 g, 1 tbsp peanut butter = 16 g, 1 tbsp oil = 13.5 g, 1 large egg = 50 g, 1 slice bread = 28-32 g, 1 oz = 28.35 g. With no amount, use one ordinary serving of that food as a person would eat it (a medium banana 118 g, one chicken breast 170 g).
-- "a little bit of", "a splash" = a small amount (about a tablespoon), not a serving.
+- "a little bit of", "a little", "a splash" = a small amount, never a serving: about a teaspoon (5 g) of butter, oil, mayo or a spread on toast; about a tablespoon of anything else. "A decent amount", "a lot of", "a generous" = about one and a half of the usual amount.
+- When they read words off a package ("it says ...", "is what it says", "the label says"), those words are the name and flavour of ONE product, not separate foods.
+- Water, ice, or "in water" used to make something (a shake, oatmeal) is not an item. Words in parentheses describe the item before them.
+- "N servings" of a packaged product is N times its label serving.
 - Fat level words matter: "0%", "nonfat", "2%", "4%", "85/15", "lean".
-- needs_detail is true for an item only when it names no identifiable food at all ("a solid breakfast", "leftovers", "the usual") - then give it null nutrients.
+- needs_detail is true for an item only when it names no identifiable food at all ("a solid breakfast", "leftovers", "the usual") - then give it null nutrients. "Leftover pot roast" names a food: estimate it. Every other item gets numbers, never null: a restaurant plate or combo you do not know is its parts (the meat, the rice, each side) as separate items, estimated.
 - For every item give its nutrients for the WHOLE amount eaten (kcal; grams for macros; mg for sodium and caffeine) from your nutrition knowledge -- USDA for generic food, the published label for a brand or chain. Home-cooked plain food has no added salt unless the person said so.
 - A number of grams next to a protein product ("38 g protein shake", "17g built bar") is its protein, not its weight: protein_g is that number. A number the person stated for an item always wins over your estimate.
 - brand: the brand of a packaged product ("Quaker", "Premier Protein"), else null. product_search: brand + product + flavour for finding its label ("quaker chewy chocolate chip granola bar"), else null. Restaurant food has brand null.
@@ -290,9 +297,12 @@ You get what the person said and a numbered list of the items the app read out o
 - Never count the same food twice. If two listed items are really one thing (a dish and its own ingredient), give the full numbers on the first and zeros on the other.
 - A generic item like "sandwich" or "casserole" is the typical homemade version unless the sentence says more.
 - grams is the edible weight actually eaten, as eaten (cooked weight for cooked food). Convert the stated amount: 1 cup cooked rice = 158 g, 1 cup milk = 244 g, 1 tbsp peanut butter = 16 g, 1 tbsp oil = 13.5 g, 1 large egg = 50 g, 1 slice bread = 28-32 g, 1 oz = 28.35 g. With no amount, use one ordinary serving of that food as a person would eat it (a medium banana 118 g, one chicken breast 170 g).
-- "a little bit of", "a splash" = a small amount (about a tablespoon), not a serving.
+- "a little bit of", "a little", "a splash" = a small amount, never a serving: about a teaspoon (5 g) of butter, oil, mayo or a spread on toast; about a tablespoon of anything else. "A decent amount", "a lot of", "a generous" = about one and a half of the usual amount.
+- When they read words off a package ("it says ...", "is what it says", "the label says"), those words are the name and flavour of ONE product, not separate foods.
+- Water, ice, or "in water" used to make something (a shake, oatmeal) is not an item. Words in parentheses describe the item before them.
+- "N servings" of a packaged product is N times its label serving.
 - Fat level words matter: "0%", "nonfat", "2%", "4%", "85/15", "lean".
-- needs_detail is true for an item only when it names no identifiable food at all ("a solid breakfast", "leftovers", "the usual") - then give it null nutrients.
+- needs_detail is true for an item only when it names no identifiable food at all ("a solid breakfast", "leftovers", "the usual") - then give it null nutrients. "Leftover pot roast" names a food: estimate it. Every other item gets numbers, never null: a restaurant plate or combo you do not know is its parts (the meat, the rice, each side) as separate items, estimated.
 - For every item give its nutrients for the WHOLE amount eaten (kcal; grams for macros; mg for sodium and caffeine) from your nutrition knowledge -- USDA for generic food, the published label for a brand or chain. Home-cooked plain food has no added salt unless the person said so.
 - A number of grams next to a protein product ("38 g protein shake", "17g built bar") is its protein, not its weight: protein_g is that number. A number the person stated for an item always wins over your estimate.
 - brand: the brand of a packaged product ("Quaker", "Premier Protein"), else null. product_search: brand + product + flavour for finding its label ("quaker chewy chocolate chip granola bar"), else null. Restaurant food has brand null.

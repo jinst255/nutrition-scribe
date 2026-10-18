@@ -62,6 +62,9 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
     val goals by repo.goals.collectAsState(initial = emptyList())
     val profile by viewModel.profile.collectAsState(initial = null)
 
+    // What About you works out, to point at a saved goal that is far from it (an
+    // old 20 mg of iron for a man who needs 8).
+    val needs = remember(profile) { profile?.let { com.nutritionscribe.shared.model.Needs.forProfile(it) } }
     val enabledCount = goals.count { it.enabled }
     var showMicros by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
     androidx.compose.runtime.LaunchedEffect(goals.any { it.enabled && it.metric.isMicro }) {
@@ -97,7 +100,7 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
                     val needs = com.nutritionscribe.shared.model.Needs.forProfile(p)
                     val on = goals.filter { it.enabled }
                     ServiceLocator.debugEvents.event("goals_from_profile", "metrics" to on.map { it.metric.key })
-                    scope.launch { on.forEach { g -> repo.setTarget(g.metric, needs.getValue(g.metric)) } }
+                    scope.launch { on.forEach { g -> repo.setTarget(g.metric, needs.getValue(g.metric.goalMeasure)) } }
                 },
             )
         }
@@ -115,9 +118,10 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
             }
         }
 
-        items(goals.filter { !it.metric.isMicro }, key = { it.metric.key }) { goal ->
+        items(goals.filter { !it.metric.isMicro && it.metric.partOf == null }, key = { it.metric.key }) { goal ->
             GoalRow(
                 goal = goal,
+                need = needs?.get(goal.metric.goalMeasure),
                 onToggle = { on -> scope.launch { repo.setEnabled(goal.metric, on) } },
                 onTarget = { value -> scope.launch { repo.setTarget(goal.metric, value) } },
                 onFloor = { value -> scope.launch { repo.setFloor(goal.metric, value) } },
@@ -151,6 +155,7 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
             items(goals.filter { it.metric.isMicro }, key = { it.metric.key }) { goal ->
                 GoalRow(
                     goal = goal,
+                    need = needs?.get(goal.metric.goalMeasure),
                     onToggle = { on -> scope.launch { repo.setEnabled(goal.metric, on) } },
                     onTarget = { value -> scope.launch { repo.setTarget(goal.metric, value) } },
                     onFloor = { value -> scope.launch { repo.setFloor(goal.metric, value) } },
@@ -193,6 +198,7 @@ private fun GoalNotice(text: String, error: Boolean) {
 @Composable
 private fun GoalRow(
     goal: MetricGoal,
+    need: Double?,
     onToggle: (Boolean) -> Unit,
     onTarget: (Double?) -> Unit,
     onFloor: (Double?) -> Unit,
@@ -213,7 +219,7 @@ private fun GoalRow(
                 Checkbox(checked = goal.enabled, onCheckedChange = onToggle)
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        goal.metric.label,
+                        goal.metric.goalLabel,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = if (goal.enabled) FontWeight.SemiBold else FontWeight.Normal,
                     )
@@ -270,6 +276,23 @@ private fun GoalRow(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(goal.metric.unit, style = MaterialTheme.typography.bodyMedium)
+                }
+                val t = goal.target
+                if (t != null && need != null && need > 0 && kotlin.math.abs(t - need) > maxOf(0.25 * need, 1.0)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 12.dp)) {
+                        Text(
+                            "About you works out ${formatTarget(need)} ${goal.metric.unit}" +
+                                if (goal.metric.direction == GoalDirection.LIMIT) " as the limit" else " a day",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        androidx.compose.material3.TextButton(onClick = {
+                            ServiceLocator.debugEvents.event("goal_use_need", "metric" to goal.metric.key, "from" to t, "to" to need)
+                            targetText = formatTarget(need)
+                            onTarget(need)
+                        }) { Text("Use ${formatTarget(need)}") }
+                    }
                 }
                 if (targetText.isBlank()) {
                     Text(

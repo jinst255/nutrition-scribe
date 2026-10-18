@@ -46,6 +46,9 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -70,6 +73,8 @@ object LogSession {
     var timestamp: Long? = null
     /** A scan finished: which line it was for, and what it found. */
     var scanned: Pair<Int, FoodCandidate>? = null
+    /** The name of the line a scan was started from, to fill the scan form's name. */
+    var scanHint: String? = null
     /** Lines to start from when there was no sentence: a scan from the Log screen. */
     var startDrafts: List<ItemDraft>? = null
     /** Groups this entry's AI calls, so what they cost is pinned to it. */
@@ -147,9 +152,13 @@ class ConfirmViewModel : ViewModel() {
         handEdited = true
     }
 
+    /** Remembered lines they took off the card: those words meant something else. */
+    private val forgetKeys = mutableSetOf<String>()
+
     fun remove(i: Int) {
         if (i !in drafts.indices) return
         events.event("confirm_remove", "index" to i, "line" to lineOf(drafts[i]))
+        if (drafts[i].status == Resolver.Status.REMEMBERED) forgetKeys += drafts[i].key
         drafts.removeAt(i)
         handEdited = true
     }
@@ -199,13 +208,62 @@ class ConfirmViewModel : ViewModel() {
         }
     }
 
-    fun add(more: String, how: String = "typed") {
-        if (more.isBlank()) return
+    /** What the last change did, in words, under the change box. */
+    var lastChange by mutableStateOf<String?>(null)
+        private set
+
+    /** One tap of − or + on a line, in that line's unit's steps. */
+    fun bump(i: Int, dir: Int) {
+        val d = drafts.getOrNull(i) ?: return
+        val next = com.nutritionscribe.shared.resolve.Units.bump(d.item.unit, d.amount, dir)
+        events.event("confirm_step", "index" to i, "dir" to dir, "unit" to d.item.unit, "from" to d.amount, "to" to next)
+        update(i, d.withAmount(next))
+    }
+
+    fun setAmount(i: Int, amount: Double) {
+        val d = drafts.getOrNull(i) ?: return
+        if (amount <= 0) return
+        update(i, d.withAmount(amount))
+    }
+
+    /** Count the line in another unit, keeping how much food it is. */
+    fun setUnit(i: Int, unit: String?) {
+        val d = drafts.getOrNull(i) ?: return
+        if (unit == d.item.unit) return
+        update(i, d.withUnitKept(unit))
+    }
+
+    /**
+     * "actually 2 slices", "remove the cheese", "make the milk 300 mL", "add a
+     * tablespoon of honey": a change, typed or said. A food that is already a line
+     * changes that line instead of being added again.
+     */
+    fun applyChange(said: String, how: String = "typed") {
+        if (said.isBlank()) return
         busy = true
         handEdited = true
-        events.event("confirm_add", "how" to how, "text" to more)
+        events.event("confirm_add", "how" to how, "text" to said)
         viewModelScope.launch {
-            drafts.addAll(pipeline.resolveItem(more, tag = tag, why = "add").map { ItemDraft.from(it) })
+            val lines = drafts.map { com.nutritionscribe.shared.resolve.Changes.Line(it.name, it.item.food.ifBlank { it.name }, it.item.unit) }
+            val changes = pipeline.changes(said, lines)
+            val notes = mutableListOf<String>()
+            fun short(n: String) = n.substringAfter(" — ").substringBefore(",").take(28)
+            for (c in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.SetAmount>()) {
+                val d = drafts.getOrNull(c.line) ?: continue
+                val nd = if (c.unitSaid && c.unit != d.item.unit) d.withAmountIn(c.amount, c.unit) else d.withAmount(c.amount)
+                drafts[c.line] = nd
+                notes += "${short(nd.name)}: ${com.nutritionscribe.shared.resolve.Units.format(nd.amount)} ${nd.unitLabel}"
+            }
+            for (i in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Remove>().map { it.line }.distinct().sortedDescending()) {
+                drafts.getOrNull(i)?.let { notes += "removed ${short(it.name)}"; drafts.removeAt(i) }
+            }
+            for (a in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Add>()) {
+                val found = pipeline.resolveItem(a.text, tag = tag, why = "add").map { ItemDraft.from(it) }
+                drafts.addAll(found)
+                found.forEach { notes += "added ${short(it.name)}" }
+            }
+            lastChange = if (notes.isEmpty()) "Nothing changed. Try \"2 slices\", \"remove the cheese\" or \"add a cup of milk\"."
+            else notes.joinToString(" · ").replaceFirstChar { it.uppercase() }
             busy = false
         }
     }
@@ -227,6 +285,9 @@ class ConfirmViewModel : ViewModel() {
         busy = true
         val (stamp, unspecified) = LogSession.timestamp?.let { it to false } ?: LogDay.stamp()
         viewModelScope.launch {
+            // Before confirming, so the lines kept are what is learned afresh.
+            val keep = drafts.map { it.key }.toSet()
+            (forgetKeys - keep).takeIf { it.isNotEmpty() }?.let { pipeline.forget(null, it, "removed_from_card") }
             pipeline.confirm(
                 text = text,
                 items = drafts.map { it.toConfirmed() },
@@ -309,17 +370,26 @@ fun ConfirmScreen(
                 tracked = tracked,
                 onChange = { editingIndex = i },
                 onRemove = { viewModel.remove(i) },
-                onScan = { onScan(i) },
+                onScan = {
+                    // What they called it, so the scan form starts with a name.
+                    LogSession.scanHint = (d.item.brand?.let { "$it " }.orEmpty() + d.item.food).trim().takeIf { it.isNotBlank() }
+                    onScan(i)
+                },
                 onBreakdown = { breakdownIndex = i },
                 onPick = { c -> viewModel.update(i, d.withCandidate(c)) },
+                onBump = { dir -> viewModel.bump(i, dir) },
+                onAmount = { viewModel.setAmount(i, it) },
+                onUnit = { viewModel.setUnit(i, it) },
             )
         }
         item {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = { adding = true }) { Text("+ Type something else") }
-                TextButton(onClick = { addingByVoice = true }) { Text("+ Say something else") }
-                TextButton(onClick = { onScan(-1) }) { Text("+ Scan") }
-            }
+            ChangeBox(
+                busy = viewModel.busy,
+                last = viewModel.lastChange,
+                onSubmit = { viewModel.applyChange(it, "typed") },
+                onSay = { addingByVoice = true },
+            )
+            TextButton(onClick = { onScan(-1) }) { Text("+ Scan a package") }
         }
         item {
             HorizontalDivider()
@@ -353,6 +423,8 @@ fun ConfirmScreen(
                 if (viewModel.busy) CircularProgressIndicator(modifier = Modifier.width(18.dp), strokeWidth = 2.dp)
                 else Text(if (viewModel.editing != null) "Save fix" else "Log it")
             }
+            // Right where a fix happens: the note travels with the entry as it was.
+            viewModel.editing?.let { com.nutritionscribe.app.ui.entry.ReportProblem(it) }
             Spacer(Modifier.padding(bottom = 24.dp))
         }
     }
@@ -386,9 +458,9 @@ fun ConfirmScreen(
     }
     if (addingByVoice) {
         com.nutritionscribe.app.ui.speech.VoiceDialog(
-            title = "Add something",
+            title = "Say a change",
             tag = viewModel.tag,
-            onResult = { addingByVoice = false; viewModel.add(it, how = "voice") },
+            onResult = { addingByVoice = false; viewModel.applyChange(it, how = "voice") },
             onDismiss = { addingByVoice = false },
         )
     }
@@ -405,7 +477,7 @@ fun ConfirmScreen(
         TextPrompt(
             title = "Add something",
             hint = "e.g. a glass of milk",
-            onDone = { viewModel.add(it); adding = false },
+            onDone = { viewModel.applyChange(it); adding = false },
             onDismiss = { adding = false },
         )
     }
@@ -485,6 +557,9 @@ private fun DraftCard(
     onScan: () -> Unit,
     onBreakdown: () -> Unit,
     onPick: (FoodCandidate) -> Unit,
+    onBump: (Int) -> Unit = {},
+    onAmount: (Double) -> Unit = {},
+    onUnit: (String?) -> Unit = {},
 ) {
     val unknown = draft.candidate == null && draft.nutrients.isEmpty()
     Card(
@@ -500,10 +575,10 @@ private fun DraftCard(
                     Text(if (unknown) "“${draft.item.said}”" else draft.name,
                         style = MaterialTheme.typography.titleSmall)
                     Text(
+                        // The amount is on the stepper below; here, only where it came from.
                         listOfNotNull(
                             if (draft.status == Resolver.Status.REMEMBERED) "Your usual" else ItemDraft.label(draft.candidate?.origin),
-                            draft.portionNote?.takeIf { it != "your usual" },
-                            draft.grams?.let { draft.amountText(it) },
+                            draft.grams.takeIf { unknown }?.let { draft.amountText(it) },
                         ).joinToString(" · "),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.secondary,
@@ -527,7 +602,26 @@ private fun DraftCard(
                     }
                 }
             } else {
+                AmountStepper(draft, onBump, onAmount, onUnit)
                 Text(numbersLine(draft.nutrients, tracked), style = MaterialTheme.typography.bodyMedium)
+                KindChips(draft, onPick, onOther = onChange)
+                // Their other brands of the same food (bread changes every shop):
+                // the latest is picked, the rest are a tap away.
+                if (draft.otherBrands && draft.alternates.isNotEmpty()) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Or:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.align(Alignment.CenterVertically))
+                        draft.alternates.take(3).forEach { c ->
+                            androidx.compose.material3.SuggestionChip(
+                                onClick = {
+                                    ServiceLocator.debugEvents.event("brand_swap", "from" to draft.candidate?.id, "to" to c.id)
+                                    onPick(c)
+                                },
+                                label = { Text(ItemDraft.withBrand(c, " "), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                            )
+                        }
+                    }
+                }
                 if (draft.weak && draft.status != Resolver.Status.REMEMBERED) {
                     Text("Best guess — worth a look", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error)
@@ -538,6 +632,53 @@ private fun DraftCard(
                 if (draft.offerScan || unknown) AssistChip(onClick = onScan, label = { Text("Scan the package") })
                 if (draft.offerBreakdown) AssistChip(onClick = onBreakdown, label = { Text("Break it down") })
             }
+        }
+    }
+}
+
+/**
+ * "Which kind? Optional": a packaged food's other kinds (the strawberry and
+ * blueberry of the vanilla yogurt), right under it. Never needed: when they are
+ * within a few calories it says so, and the line logs fine as it is.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun KindChips(draft: ItemDraft, onPick: (FoodCandidate) -> Unit, onOther: () -> Unit) {
+    val c = draft.candidate ?: return
+    if (draft.status == Resolver.Status.REMEMBERED || !c.id.startsWith("label:")) return
+    val kinds by androidx.compose.runtime.produceState<List<FoodCandidate>>(emptyList(), c.id) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { ServiceLocator.labelPack.source()?.siblings(c, limit = 4).orEmpty() }.getOrDefault(emptyList())
+        }
+    }
+    if (kinds.isEmpty()) return
+    val numbers = (listOf(c) + kinds).map { com.nutritionscribe.shared.resolve.Kinds.nutrientsFor(it, draft.grams, draft.amount) }
+    val spread = com.nutritionscribe.shared.resolve.Kinds.spread(numbers)
+    val differ = com.nutritionscribe.shared.resolve.Kinds.differ(numbers)
+    Column(
+        Modifier.fillMaxWidth().padding(top = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Text(
+            if (differ) "Which kind? They differ by up to ${Math.round(spread)} kcal"
+            else "Which kind? Optional, they're within ${maxOf(5L, Math.round(spread / 5.0) * 5)} kcal",
+            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+            androidx.compose.material3.FilterChip(selected = true, onClick = {}, label = { Text(com.nutritionscribe.shared.resolve.Kinds.label(c)) })
+            kinds.forEach { k ->
+                androidx.compose.material3.FilterChip(
+                    selected = false,
+                    onClick = {
+                        ServiceLocator.debugEvents.event("kind_pick", "where" to "confirm", "from" to c.id, "to" to k.id)
+                        onPick(k)
+                    },
+                    label = { Text(com.nutritionscribe.shared.resolve.Kinds.label(k)) },
+                )
+            }
+            androidx.compose.material3.FilterChip(selected = false, onClick = onOther, label = { Text("+ Other", color = MaterialTheme.colorScheme.primary) })
         }
     }
 }
@@ -567,7 +708,7 @@ private fun ItemEditor(
                 item {
                     Text("How much", style = MaterialTheme.typography.labelLarge)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = { d = d.withAmount(step(d.amount, -1)) }) { Text("−") }
+                        OutlinedButton(onClick = { d = d.withAmount(com.nutritionscribe.shared.resolve.Units.bump(d.item.unit, d.amount, -1)) }) { Text("−") }
                         // Counted in the food's own pieces where the label says what one is.
                         val piece = d.candidate?.portions?.firstOrNull { it.label != "1 serving" && !it.label.startsWith("1 cup") &&
                             !it.label.startsWith("1 tbsp") && !it.label.startsWith("1 tsp") }?.label?.removePrefix("1 ")
@@ -576,7 +717,7 @@ private fun ItemEditor(
                             "${fmt(d.amount)} ${if (d.amount == 1.0 || unitWord.endsWith("s")) unitWord else unitWord + "s"}",
                             modifier = Modifier.padding(horizontal = 12.dp),
                         )
-                        OutlinedButton(onClick = { d = d.withAmount(step(d.amount, +1)) }) { Text("+") }
+                        OutlinedButton(onClick = { d = d.withAmount(com.nutritionscribe.shared.resolve.Units.bump(d.item.unit, d.amount, +1)) }) { Text("+") }
                     }
                     val portions = d.candidate?.portions.orEmpty().take(6)
                     if (portions.isNotEmpty()) {
@@ -646,6 +787,115 @@ private fun ItemEditor(
     )
 }
 
+/**
+ * − amount unit +. The steps fit the unit (½ slice, ¼ cup, 5 g, 25 mL); the amount
+ * can be typed, and the unit switched without changing how much food it is.
+ */
+@Composable
+private fun AmountStepper(draft: ItemDraft, onBump: (Int) -> Unit, onAmount: (Double) -> Unit, onUnit: (String?) -> Unit) {
+    var typing by remember { mutableStateOf(false) }
+    var unitMenu by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        OutlinedButton(onClick = { onBump(-1) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+            modifier = Modifier.width(40.dp).height(36.dp)) { Text("−") }
+        Text(
+            com.nutritionscribe.shared.resolve.Units.format(draft.amount),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.clickable { typing = true }.padding(horizontal = 6.dp, vertical = 6.dp)
+                .androidx_semantics("Amount, tap to type"),
+        )
+        androidx.compose.foundation.layout.Box {
+            AssistChip(
+                onClick = { unitMenu = true },
+                enabled = draft.unitOptions.size > 1,
+                label = { Text("${draft.unitLabel} ▾") },
+            )
+            androidx.compose.material3.DropdownMenu(expanded = unitMenu, onDismissRequest = { unitMenu = false }) {
+                draft.unitOptions.forEach { o ->
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(o.label, fontWeight = if (o.unit == draft.item.unit) FontWeight.SemiBold else FontWeight.Normal) },
+                        onClick = { unitMenu = false; onUnit(o.unit) },
+                    )
+                }
+            }
+        }
+        OutlinedButton(onClick = { onBump(+1) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+            modifier = Modifier.width(40.dp).height(36.dp)) { Text("+") }
+        draft.grams?.let { g ->
+            Text(draft.amountText(g), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+        }
+    }
+    if (typing) {
+        var t by remember { mutableStateOf(com.nutritionscribe.shared.resolve.Units.format(draft.amount)) }
+        AlertDialog(
+            onDismissRequest = { typing = false },
+            title = { Text("How many ${draft.unitLabel}?") },
+            text = {
+                OutlinedTextField(
+                    value = t, onValueChange = { t = it }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    supportingText = { Text("Fractions work too: 1/2, 1.5") },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    parseAmount(t)?.let(onAmount); typing = false
+                }, enabled = parseAmount(t) != null) { Text("OK") }
+            },
+            dismissButton = { TextButton(onClick = { typing = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** "1/2", "1 1/2", "1.5", ".5": an amount typed by hand. */
+internal fun parseAmount(text: String): Double? {
+    val t = text.trim().replace(',', '.')
+    t.toDoubleOrNull()?.let { return it.takeIf { v -> v > 0 } }
+    Regex("^(\\d+)\\s+(\\d+)/(\\d+)$").find(t)?.let { m ->
+        val d = m.groupValues[3].toDouble(); if (d == 0.0) return null
+        return m.groupValues[1].toDouble() + m.groupValues[2].toDouble() / d
+    }
+    Regex("^(\\d+)/(\\d+)$").find(t)?.let { m ->
+        val d = m.groupValues[2].toDouble(); if (d == 0.0) return null
+        return m.groupValues[1].toDouble() / d
+    }
+    return null
+}
+
+private fun Modifier.androidx_semantics(label: String): Modifier =
+    this.then(Modifier.semantics { contentDescription = label })
+
+/** "Say or type a change": the one box for adding, removing and changing amounts. */
+@Composable
+private fun ChangeBox(busy: Boolean, last: String?, onSubmit: (String) -> Unit, onSay: () -> Unit) {
+    var text by remember { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            enabled = !busy,
+            placeholder = { Text("Say or type a change…") },
+            supportingText = { Text("\"2 slices of bread\", \"remove the cheese\", \"add a cup of milk\"") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
+                if (text.isNotBlank()) { onSubmit(text.trim()); text = "" }
+            }),
+            trailingIcon = {
+                Row {
+                    if (text.isNotBlank()) {
+                        TextButton(onClick = { onSubmit(text.trim()); text = "" }) { Text("Go") }
+                    } else {
+                        IconButton(onClick = onSay, enabled = !busy) { Icon(Icons.Default.Mic, contentDescription = "Say a change") }
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        last?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+    }
+}
+
 @Composable
 private fun TextPrompt(title: String, hint: String, onDone: (String) -> Unit, onDismiss: () -> Unit) {
     var text by remember { mutableStateOf("") }
@@ -665,11 +915,6 @@ internal fun numbersLine(n: Map<String, Double>, tracked: List<Metric>): String 
     val show = (listOf(Metric.CALORIES, Metric.PROTEIN) + tracked).distinct()
     return show.mapNotNull { m -> n[m.key]?.let { "${fmt(it)} ${if (m == Metric.CALORIES) "kcal" else "${m.unit} ${m.label.lowercase().take(7)}"}" } }
         .joinToString(" · ").ifBlank { "no numbers yet" }
-}
-
-private fun step(v: Double, dir: Int): Double {
-    val s = if (v < 1.0 || (v < 2 && dir < 0 && v <= 1.0)) 0.25 else if (v < 4) 0.5 else 1.0
-    return (v + dir * s).coerceAtLeast(0.25)
 }
 
 internal fun fmt(v: Double): String =

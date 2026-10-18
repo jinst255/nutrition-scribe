@@ -74,7 +74,12 @@ object MetricHistory {
     fun daily(entries: List<Entry>, metric: Metric, zone: ZoneId, today: LocalDate): List<DayValue> {
         val byDay = HashMap<Long, Double>()
         for (entry in entries) {
-            val amount = entry.amountOf(metric) ?: continue
+            // Sugar is charted as ADDED sugar, the part its limit is for. Fruit and
+            // milk made every day look over. Unsplit sugar counts as added, as on Home.
+            val amount = if (metric == Metric.SUGAR) {
+                if (Metric.SUGAR.key !in entry.nutrients) continue
+                com.nutritionscribe.shared.resolve.Sugars.splitEntry(entry).let { it.added + it.unknown }
+            } else entry.amountOf(metric) ?: continue
             val day = dayOf(entry, zone)
             byDay[day] = (byDay[day] ?: 0.0) + amount
         }

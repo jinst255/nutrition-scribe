@@ -44,6 +44,11 @@ object ItemParser {
         val group: String? = null,
         /** "jam on my pancakes", "peanut butter on toast": what it was on. */
         val onTopOf: String? = null,
+        /**
+         * "a little bit of cheese": less than a portion. Not their usual 80 g, and not
+         * a spoonful either when it is not a topping (see [Portions.LITTLE]).
+         */
+        val little: Boolean = false,
     )
 
     /** Canonical unit for every way of saying it. */
@@ -85,6 +90,12 @@ object ItemParser {
         add("fillet", "fillet", "fillets", "filet", "filets")
         add("sprinkle", "sprinkle", "dash", "splash", "drizzle", "pinch")
     }
+
+    /** Fraction words after a number: "one third", "two thirds", "three quarters". */
+    private val FRACTIONS = mapOf(
+        "half" to 0.5, "halves" to 0.5, "third" to 1.0 / 3, "thirds" to 1.0 / 3,
+        "quarter" to 0.25, "quarters" to 0.25, "fourth" to 0.25, "fourths" to 0.25,
+    )
 
     private val NUMBER_WORDS = mapOf(
         "one" to 1.0, "two" to 2.0, "three" to 3.0, "four" to 4.0, "five" to 5.0,
@@ -136,6 +147,11 @@ object ItemParser {
         Regex("(?<!french )\\bfries\\b") to "french fries",
         Regex("\\bcorn on (?:a|the) cob\\b") to "corn cob",
         Regex("\\byoghurt\\b") to "yogurt",
+        Regex("\\bover night\\b") to "overnight",
+        // Speech and thumbs: "a little bit kf tomato".
+        Regex("\\bkf\\b") to "of",
+        // "a soda with raspberry flavoring": a shot of flavour syrup, not raspberries.
+        Regex("\\b(?:some |a )?flavou?r(?:ings?| shots?)\\b") to "a splash of flavored syrup",
     )
 
     /** Throat-clearing at the start of a fragment. Repeated until nothing changes. */
@@ -233,6 +249,19 @@ object ItemParser {
         // "bag of veggies (⅓ bell pepper, several baby carrots, 1.5 stalks of celery)":
         // the brackets ARE the bag. Logging both would count the vegetables twice.
         val groups = mutableListOf<Pair<String, String>>()
+        // "my bag of veggies which consists of a third of a pepper, two stalks of
+        // celery…": the same as brackets, said aloud. The list runs to the end of the
+        // sentence.
+        text = Regex("([^,;.()]*?)\\s+(?:which|that)\\s+(?:mostly |mainly |basically |usually )?(?:consisted|consists|consist|is made up|was made up|includes|included|contains|contained|has|had) (?:of |with )?((?:[^.;()]|\\.(?=\\d))+)")
+            .replace(text) { m ->
+                val name = m.groupValues[1].trim()
+                val inner = m.groupValues[2]
+                val headIsContainer = FoodQuery.contentWords(name).any { it in CONTAINERS } || Regex("\\b(?:bag|bowl|plate|box|lunch|salad|platter|tray)\\b").containsMatchIn(name)
+                if (headIsContainer && FoodQuery.contentWords(inner).size >= 2) {
+                    groups += name to inner
+                    " \u0001${groups.size - 1}\u0001 "
+                } else m.value
+            }
         text = Regex("([^,;.()]*?)\\s*\\(([^)]*)\\)").replace(text) { m ->
             val name = m.groupValues[1].trim()
             val inner = m.groupValues[2]
@@ -258,10 +287,7 @@ object ItemParser {
 
         // "a kind dark chocolate nuts and sea salt bar" is one product: a phrase that
         // opens with a brand keeps its "and" when nothing after it has an amount.
-        val protected = protectBrandedAnd(protectCompounds(text))
-        val fragments = SEPARATOR.split(protected).map { restoreCompounds(it).trim() }
-            .filter { it.isNotBlank() }
-            .flatMap { splitOnSecondAmount(it) }
+        val fragments = splitParts(protectBrandedAnd(protectCompounds(text)))
 
         val items = mutableListOf<Item>()
         for (fragment in fragments) {
@@ -270,8 +296,7 @@ object ItemParser {
                 val (groupName, inner) = groups[marker.groupValues[1].toInt()]
                 val before = fragment.substring(0, marker.range.first)
                 val label = cleanFood("$before $groupName").ifBlank { groupName }
-                for (part in SEPARATOR.split(protectCompounds(inner)).map { restoreCompounds(it).trim() }) {
-                    if (part.isBlank()) continue
+                for (part in splitParts(protectCompounds(inner))) {
                     readFragment(part, isFoodWord)?.let { items += it.copy(group = label) }
                 }
                 continue
@@ -286,7 +311,35 @@ object ItemParser {
                 if (!known && baseWords.isNotEmpty()) readFragment(base, isFoodWord)?.let { fold(items, it, isFoodWord) }
             }
         }
-        return openUpGenericDishes(items.filter { FoodQuery.contentWords(it.food).isNotEmpty() })
+        return openUpGenericDishes(mergeRestated(items.filter { FoodQuery.contentWords(it.food).isNotEmpty() }))
+    }
+
+    /**
+     * "a bowl of Life cereal, …a cup of milk and probably about two and a half cups
+     * of Life cereal": the same food said twice, the second time measured. One food,
+     * with the better measure: a weight or a cup beats a count, a count beats a bowl.
+     */
+    private fun mergeRestated(items: List<Item>): List<Item> {
+        if (items.size < 2) return items
+        fun precision(i: Item): Int = when {
+            i.unit in WEIGHT_UNITS || i.unit in setOf("cup", "tbsp", "tsp", "ml", "l", "floz") -> 3
+            i.amount != null && i.unit !in setOf("bowl", "plate", "bag", "glass", "handful", "container") -> 2
+            i.amount != null -> 1
+            else -> 0
+        }
+        val out = mutableListOf<Item>()
+        for (item in items) {
+            val words = FoodQuery.contentWords(item.food).toSet()
+            val same = out.indexOfFirst { o ->
+                o.group == item.group && o.brand == item.brand && words.isNotEmpty() &&
+                    FoodQuery.contentWords(o.food).toSet() == words
+            }
+            if (same < 0) { out += item; continue }
+            val o = out[same]
+            // A tie goes to the later one: "about an egg, a little less than an egg" is a correction.
+            out[same] = if (precision(item) >= precision(o)) item.copy(said = o.said, size = item.size ?: o.size) else o
+        }
+        return out
     }
 
     /**
@@ -314,8 +367,11 @@ object ItemParser {
         val count = dish.amount ?: 1.0
         val parts = items.subList(i + 1, items.size)
         val opened = parts.map { p ->
-            val isBread = FoodQuery.contentWords(p.food).lastOrNull() in BREADS
+            val head = FoodQuery.contentWords(p.food).lastOrNull()
+            val isBread = head in BREADS
             when {
+                // One tortilla a burrito, two slices a sandwich.
+                isBread && p.amount == null && head == "tortilla" -> p.copy(amount = count)
                 isBread && p.amount == null -> p.copy(amount = 2.0 * count, unit = "slice")
                 p.amount != null && p.unit !in WEIGHT_UNITS && count > 1 -> p.copy(amount = p.amount * count)
                 p.amount == null && !p.topping && count > 1 -> p.copy(amount = count)
@@ -329,16 +385,17 @@ object ItemParser {
         if (missing.isNotEmpty() && dishWords.size > 1) {
             opened += Item(said = dish.said, food = missing.joinToString(" "), topping = true)
         }
-        if (kind in setOf("sandwich", "wrap", "burrito") && opened.none { FoodQuery.contentWords(it.food).lastOrNull() in BREADS }) {
+        if (kind in setOf("sandwich", "wrap", "burrito", "taco", "quesadilla") && opened.none { FoodQuery.contentWords(it.food).lastOrNull() in BREADS + "shell" }) {
             opened.add(0, when (kind) {
                 "sandwich" -> Item(said = dish.said, food = "bread", amount = 2.0 * count, unit = "slice")
+                "taco" -> Item(said = dish.said, food = "taco shell", amount = count)
                 else -> Item(said = dish.said, food = "flour tortilla", amount = count)
             })
         }
         return items.subList(0, i) + opened.map { it.copy(group = it.group ?: dish.said) }
     }
 
-    private val DISHES = setOf("sandwich", "salad", "wrap", "bowl", "burrito", "toast")
+    private val DISHES = setOf("sandwich", "salad", "wrap", "bowl", "burrito", "toast", "taco", "quesadilla")
     private val BREADS = setOf("bread", "toast", "bun", "roll", "tortilla", "bagel", "pita")
 
     /** Lowercase, unicode and slash fractions, "a cup and a half", typo fixes. */
@@ -359,8 +416,53 @@ object ItemParser {
         t = Regex("\\bfl(?:uid)?\\.?\\s*(?:oz|ounces?)\\b\\.?").replace(t, " floz ")
         t = Regex("(\\d)\\s*l\\b(?!\\.)").replace(t) { "${it.groupValues[1]} liter" }
         for ((pattern, replacement) in SYNONYMS) t = pattern.replace(t, replacement)
+        t = spokenStructure(t)
+        t = roughAmounts(t)
         t = fatLevels(t)
         return Regex("\\s+").replace(t, " ").trim()
+    }
+
+    /**
+     * How people talk a meal through: "two burritos for breakfast, each consisting
+     * of those flour tortillas I have, they're medium in size. Inside I had some
+     * pulled pork… a little less than an egg in each one, and I threw in some
+     * spinach to both of them." The per-each words go (the dish's count multiplies
+     * its parts, see [openUpGenericDishes]), "each consisting of" and "inside" start
+     * the list of parts, and the talk around it goes.
+     */
+    private fun spokenStructure(text: String): String {
+        var t = text
+        // "a ½ avocado": the half is the amount, not "a" (one) of something called "0 5 avocado".
+        t = Regex("\\b(?:a|an)\\s+(0?\\.\\d+)\\b").replace(t) { " ${it.groupValues[1]} " }
+        t = Regex("\\blet'?s see\\b|\\blet me (?:see|think)\\b").replace(t, " , ")
+        t = Regex("\\bfor (?:breakfast|lunch|dinner|supper|dessert|a snack|snack)\\b").replace(t, " ")
+        t = Regex("\\beach\\s+(?:one\\s+)?(?:consisting of|consisted of|with|had|having|containing|filled with|made with|made of)\\b").replace(t, " , ")
+        t = Regex("\\b(?:in|to|on|for|inside|into)\\s+(?:each|both)(?:\\s+(?:of\\s+)?(?:them|those|these|one|ones))?\\b").replace(t, " ")
+        t = Regex("\\beach one\\b|\\bapiece\\b|\\bper (?:burrito|sandwich|taco|wrap|tortilla|one|piece)\\b").replace(t, " ")
+        t = Regex("\\binside(?:\\s+(?:of\\s+)?(?:it|them))?(?:\\s+(?:i (?:had|put)|there was|there were|was|were|went))?\\b").replace(t, " , ")
+        t = Regex("\\b(?:threw|tossed|put)\\s+in\\b|\\bthrew\\b").replace(t, " ")
+        // "those flour tortillas I have, they're medium": which ones, and how big.
+        t = Regex("\\bi (?:have|usually (?:get|buy|use)|always (?:get|buy|use))\\b(?=\\s*(?:[,.;]|$))").replace(t, " ")
+        t = Regex("\\bthey'?re\\b|\\bthey are\\b|\\bin size\\b").replace(t, " ")
+        return t
+    }
+
+    /**
+     * "a little less than a serving of raisins", "almost 2 servings of peanut
+     * butter": amounts, and so where a new food starts. Unread, the raisins were
+     * glued onto the oats said before them and never logged.
+     */
+    private fun roughAmounts(text: String): String {
+        var t = text
+        t = Regex("\\b(?:a little|a bit|slightly|just) (?:less than|under) (?:a|an|one)\\b").replace(t, " 0.8 ")
+        t = Regex("\\b(?:less than|under) (?:a|an|one)\\b(?= [a-z])").replace(t, " 0.75 ")
+        t = Regex("\\b(?:almost|nearly|just under|a little under|not quite)\\s+(\\d+(?:\\.\\d+)?|${NUMBER_WORDS.keys.filter { it.length > 2 }.joinToString("|")})\\b")
+            .replace(t) { m ->
+                val n = m.groupValues[1].toDoubleOrNull() ?: NUMBER_WORDS[m.groupValues[1]] ?: return@replace m.value
+                val v = if (n > 0.5) n - 0.25 else n * 0.75
+                " ${if (v == Math.floor(v)) v.toLong().toString() else v.toString()} "
+            }
+        return t
     }
 
     /**
@@ -410,6 +512,64 @@ object ItemParser {
     private fun restoreCompounds(text: String): String = text.replace("\u0002", " and ")
         .replace("\u0003", ",").replace("\u0004", " & ").replace("\u0005", "&").replace("\u0006", " with ")
 
+    /** Split on separators, then on a second amount, then on two vegetables said back to back. */
+    private fun splitParts(protectedText: String): List<String> =
+        SEPARATOR.split(protectedText).map { restoreCompounds(it).trim() }
+            .filter { it.isNotBlank() }
+            .flatMap { splitOnSecondAmount(it) }
+            .flatMap { splitRunOnProduce(it) }
+
+    /**
+     * "two stalks of celery baby carrots": two foods with nothing between them, as
+     * speech recognition writes a list. Only produce is split this way, and never
+     * a dish named after its fruit ("carrot cake", "strawberry banana smoothie")
+     * or a food whose name is two produce words ("cherry tomatoes").
+     */
+    private fun splitRunOnProduce(fragment: String): List<String> {
+        val tokens = fragment.split(" ").filter { it.isNotBlank() }
+        if (tokens.size < 2) return listOf(fragment)
+        val stems = tokens.map { FoodQuery.stem(it) }
+        if (stems.last() in DISH_TAILS) return listOf(fragment)
+        for (i in 0 until tokens.size - 1) {
+            if (stems[i] !in PRODUCE) continue
+            val next = stems[i + 1]
+            if ("${stems[i]} $next" in JOINED_PRODUCE) continue
+            val startsProduce = next in PRODUCE ||
+                (next in PRODUCE_MODIFIERS && stems.drop(i + 2).take(2).any { it in PRODUCE })
+            if (!startsProduce || stems.drop(i + 1).any { it in DISH_TAILS }) continue
+            val left = tokens.subList(0, i + 1).joinToString(" ")
+            return listOf(left) + splitRunOnProduce(tokens.subList(i + 1, tokens.size).joinToString(" "))
+        }
+        return listOf(fragment)
+    }
+
+    private val PRODUCE = setOf(
+        "celery", "carrot", "cucumber", "pepper", "tomato", "broccoli", "cauliflower", "spinach", "lettuce", "kale",
+        "onion", "radish", "zucchini", "mushroom", "pea", "apple", "banana", "orange", "pear", "peach", "plum",
+        "grape", "strawberry", "blueberry", "raspberry", "blackberry", "kiwi", "mango", "pineapple", "cherry",
+        "avocado", "cantaloupe", "watermelon", "melon", "clementine", "tangerine", "jicama", "asparagus",
+    ).map { FoodQuery.stem(it) }.toSet()
+
+    private val PRODUCE_MODIFIERS = setOf("baby", "bell", "cherry", "grape", "sweet", "snap", "green", "red", "yellow",
+        "romaine", "iceberg", "mini", "fresh", "sliced", "cut", "frozen", "raw").map { FoodQuery.stem(it) }.toSet()
+
+    /** Two produce words that name one food. */
+    private val JOINED_PRODUCE = setOf("cherry tomato", "grape tomato", "banana pepper", "cherry pepper", "plum tomato",
+        "pear tomato", "kiwi berry", "apple pear", "pineapple orange", "orange pineapple", "mango pineapple",
+    ).map { it.split(" ").joinToString(" ") { w -> FoodQuery.stem(w) } }.toSet()
+
+    /** A last word that makes the produce before it part of a dish or a drink. */
+    private val DISH_TAILS = setOf("smoothie", "salad", "juice", "cake", "pie", "bread", "muffin", "yogurt", "soup",
+        "sauce", "jam", "jelly", "dip", "salsa", "chip", "crisp", "cobbler", "tart", "bar", "shake", "pudding",
+        "cereal", "oatmeal", "pancake", "waffle", "ice", "cream", "sorbet", "drink", "soda", "tea", "lemonade",
+        "stir", "fry", "roll", "wrap", "pizza", "pasta", "ring", "jack", "relish", "powder", "flavor", "flavored",
+        "syrup", "butter", "slaw", "casserole", "stick", "sticks").map { FoodQuery.stem(it) }.toSet()
+
+    private val CONTAINERS = setOf("bag", "bowl", "plate", "box", "lunch", "salad", "platter", "tray", "container").map { FoodQuery.stem(it) }.toSet()
+
+    /** Words that hedge the amount after them: "probably two", "about 3". */
+    private val HEDGE_WORDS = setOf("probably", "maybe", "about", "around", "roughly", "approximately", "like", "perhaps", "possibly")
+
     /**
      * "one pork chop a serving of rice": two foods with no "and" between them. A new
      * amount straight after a food word starts a new food. An amount with nothing
@@ -423,18 +583,28 @@ object ItemParser {
             // after a brand, a number is part of the product's name.
             if (tokens.subList(0, i).any { t -> FoodQuery.contentWords(t).any { brandCheck(it) } || t.contains("'s") && i < 4 }) break
             val tok = tokens[i]
-            val prev = tokens[i - 1]
+            // "half a cucumber probably three tomatoes": look past the hedge for the
+            // food, and cut before the hedge so it goes with the amount it hedges.
+            var p = i - 1
+            while (p > 0 && tokens[p] in HEDGE_WORDS) p--
+            val prev = tokens[p]
             val next = tokens.getOrNull(i + 1)
             val isNumber = tok.toDoubleOrNull() != null || (tok in NUMBER_WORDS && tok !in setOf("a", "an", "half"))
             val articleUnit = tok in setOf("a", "an") && next != null && UNITS.containsKey(next)
             val prevIsFood = prev !in NUMBER_WORDS && !UNITS.containsKey(prev) && prev !in setOf("of", "about", "maybe", "approximately", "around", "roughly", "had", "ate", "was", "and", "with", "than", "like", "i")
                 && prev.toDoubleOrNull() == null && FoodQuery.contentWords(prev).isNotEmpty()
-            if ((isNumber || articleUnit) && prevIsFood && next != null) cuts += i
+            // "an egg some spinach and some pulled pork": "some" starts a food the way
+            // a number does.
+            val some = tok == "some" && next != null && FoodQuery.contentWords(next).isNotEmpty()
+            if ((isNumber || articleUnit || some) && prevIsFood && next != null) cuts += p + 1
         }
         if (cuts.isEmpty()) return listOf(fragment)
         val out = mutableListOf<String>()
         var start = 0
-        for (c in cuts) { out += tokens.subList(start, c).joinToString(" "); start = c }
+        for (c in cuts.distinct().sorted()) {
+            if (c <= start) continue
+            out += tokens.subList(start, c).joinToString(" "); start = c
+        }
         out += tokens.subList(start, tokens.size).joinToString(" ")
         return out
     }
@@ -505,6 +675,7 @@ object ItemParser {
         // phrase comes out entirely, or "a" reads as one serving and "little" as small.
         val toppingPhrase = Regex("(?:^|\\s)(?:some|a (?:little|tiny)(?: bit)?(?: of)?|a bit of|a touch of|a dab of|a drizzle of|a splash of|a dash of|a smear of)\\s+")
         val topping = toppingPhrase.containsMatchIn(" $t")
+        val little = Regex("(?:^|\\s)(?:a (?:little|tiny|small)(?: bit)?(?: of)?|a bit of|a touch of|just a (?:little|bit)(?: of)?|a (?:dab|drizzle|splash|dash|smear) of)\\s+").containsMatchIn(" $t")
         t = toppingPhrase.replace(" $t", " ").trim()
 
         t = stripFiller(t)
@@ -562,6 +733,7 @@ object ItemParser {
             topping = topping && amount == null && isTopping(food),
             brand = brand,
             onTopOf = onTopOf,
+            little = little && amount == null && !isTopping(food),
         )
     }
 
@@ -606,12 +778,13 @@ object ItemParser {
             return NUMBER_WORDS[tok]
         }
 
-        // "8oz" -> "8 oz"
+        // "8oz" -> "8 oz"; "1.5c" -> "1.5 cup" (only glued to a number: "c" alone is vitamin C).
         for (i in tokens.indices.reversed()) {
             Regex("^(\\d+(?:\\.\\d+)?)([a-z]+)$").find(tokens[i])?.let { m ->
-                if (UNITS.containsKey(m.groupValues[2])) {
+                val u = if (m.groupValues[2] == "c") "cup" else m.groupValues[2]
+                if (UNITS.containsKey(u)) {
                     tokens[i] = m.groupValues[1]
-                    tokens.add(i + 1, m.groupValues[2])
+                    tokens.add(i + 1, u)
                 }
             }
         }
@@ -628,6 +801,10 @@ object ItemParser {
                 n += 0.5; j += 3
             }
             if (tokens.getOrNull(j) == "half" && (tokens[i] == "a" || tokens[i] == "an")) { n = 0.5; j++ }
+            // "one third of a bell pepper", "two thirds", "three quarters", "a third":
+            // the number counts the fraction. Read as 1, a third of a pepper was a whole
+            // pepper on the card, and correcting it to 0.33 shrank the portion again.
+            FRACTIONS[tokens.getOrNull(j)]?.let { f -> if (tokens[i] !in FRACTIONS) { n *= f; j++ } }
             if (tokens.getOrNull(j) in setOf("of", "a", "an") && tokens.getOrNull(j + 1)?.let { UNITS.containsKey(it) || numberAt(j + 1) != null } == true &&
                 tokens[i] != "a" && tokens[i] != "an") j++
             if (tokens.getOrNull(j) in setOf("a", "an") && tokens.getOrNull(j + 1)?.let { UNITS.containsKey(it) } == true) j++
@@ -682,6 +859,9 @@ object ItemParser {
     fun cleanFood(text: String): String {
         var t = " $text "
         t = Regex("\\b(?:brand|sized|size|of it|of them|itself|each|those|these|was|were|is|in|on|my|the|some|a|an|of|that|which|contained|contains|containing|had|have)\\b").replace(t, " ")
+        // Talk that survived into the food words and became saved foods of their own:
+        // "almost oat raisin", "could fit much spinach", "approximate bread butter".
+        t = Regex("\\b(?:almost|nearly|came|come|could|would|fit|much|addition|approximate|approximately|into|put|enough|just|also|then|got|as)\\b").replace(t, " ")
         t = Regex("[^a-z0-9&' -]").replace(t, " ")
         t = Regex("\\b(?:${SIZES.joinToString("|")})\\b").replace(t, " ")
         return Regex("\\s+").replace(t, " ").trim().trim('\'', '-').trim()
@@ -715,6 +895,27 @@ object ItemParser {
 
         if (prev != null) {
             val prevWords = FoodQuery.contentWords(prev.food)
+
+            // "typical chobani yogurt, the 20 gram protein zero sugar one": which one,
+            // said after it. Read as a food of its own it found a protein shake.
+            if (Regex("^(?:the|that|it's the|its the)\\b.*\\bones?$").matches(next.said.trim().trimEnd('.', ',', '!').lowercase())) {
+                val extra = next.food.split(" ").filter { w -> w !in setOf("one", "ones") && !(next.statedProteinG != null && w == "protein") }
+                    .joinToString(" ")
+                items[items.lastIndex] = prev.copy(
+                    food = "${prev.food} $extra".trim(),
+                    statedProteinG = prev.statedProteinG ?: next.statedProteinG,
+                )
+                return
+            }
+
+            // "oats, peanut butter, milk. overnight oats": the dish named after its
+            // parts, not another helping of one of them.
+            if (next.amount == null && words.isNotEmpty()) {
+                val core = words.filter { it !in DISH_STYLE }
+                if (core.size < words.size && core.isNotEmpty() &&
+                    items.any { i -> FoodQuery.contentWords(i.food).containsAll(core) }
+                ) return
+            }
 
             // "milk, two cups" — an amount with no food of its own. A weight wins over
             // a rougher amount: "half a block of tofu, about 200 g" is 200 g.
@@ -791,9 +992,12 @@ object ItemParser {
                 (prevWords.all { it in words } || words.all { it in prevWords })
             ) {
                 val longer = if (words.size >= prevWords.size) next.food else prev.food
+                // "probably about an egg, a little less than an egg": said again, the
+                // second amount is the correction.
+                val corrected = next.amount != null && prev.amount != null && next.unit == prev.unit
                 items[items.lastIndex] = prev.copy(
                     food = longer,
-                    amount = prev.amount ?: next.amount,
+                    amount = if (corrected) next.amount else prev.amount ?: next.amount,
                     unit = if (prev.amount != null) prev.unit else next.unit,
                     size = prev.size ?: next.size,
                     statedProteinG = prev.statedProteinG ?: next.statedProteinG,
@@ -821,6 +1025,9 @@ object ItemParser {
         }
         items += next
     }
+
+    /** How a dish was made, said as its name: "overnight oats", "soaked oats". */
+    private val DISH_STYLE = setOf("overnight", "soaked", "homemade", "leftover", "baked", "toasted").map { FoodQuery.stem(it) }.toSet()
 
     private val SIZE_STEMS = setOf("small", "medium", "large", "big", "regular", "smallish")
     private val WEIGHT_UNITS = setOf("g", "oz", "lb")

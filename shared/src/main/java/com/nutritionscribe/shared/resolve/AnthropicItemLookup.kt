@@ -22,7 +22,7 @@ import java.io.IOException
  */
 class AnthropicItemLookup(
     private val apiKey: String,
-    private val model: String = "claude-haiku-4-5",
+    private val model: String = DEFAULT_MODEL,
     private val transport: OpenAiItemLookup.Transport = OpenAiItemLookup.HttpTransport,
 ) : AiItemLookup {
 
@@ -34,7 +34,9 @@ class AnthropicItemLookup(
         val body = buildJsonObject {
             put("model", model)
             put("max_tokens", 3000)
-            put("temperature", 0)
+            // Haiku 5.5 refuses any temperature but the default (HTTP 400). The forced
+            // tool call below skips its thinking, so a lookup stays quick and cheap.
+            putJsonObject("output_config") { put("effort", "low") }
             put("system", OpenAiItemLookup.SYSTEM)
             putJsonArray("tools") {
                 add(buildJsonObject {
@@ -71,5 +73,10 @@ class AnthropicItemLookup(
             }
         }
         return shared.parse(envelope.toString(), items.size) ?: throw OpenAiItemLookup.Failure.Malformed()
+    }
+
+    companion object {
+        /** Claude Haiku 5.5: $0.10 / $0.50 per million tokens, a tenth of Haiku 4.5. */
+        const val DEFAULT_MODEL = "claude-haiku-5-5"
     }
 }

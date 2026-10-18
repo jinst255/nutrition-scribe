@@ -2,6 +2,7 @@ package com.nutritionscribe.shared.resolve
 
 import com.nutritionscribe.shared.food.FoodQuery
 import com.nutritionscribe.shared.model.Metric
+import kotlin.math.abs
 import kotlin.math.ln
 
 /**
@@ -55,12 +56,18 @@ class LabelPackSource(
 
         val rows = read(hits.map { it.first })
         val scored = rows.mapNotNull { (c, pop) ->
-            val brandWords = words("${c.brand.orEmpty()} ${c.owner.orEmpty()}").toSet()
-            if (needBrand.isNotEmpty() && !needBrand.all { it in brandWords }) return@mapNotNull null
+            // The parent company counts only when they named it: A&W Root Beer is
+            // owned by "Dr Pepper/Seven Up, Inc.", and "a Dr Pepper" came out as root
+            // beer because the owner's name earned the brand bonuses below.
+            val brandWords = words(c.brand.orEmpty()).toSet()
+            val ownerWords = words(c.owner.orEmpty()).toSet()
+            if (needBrand.isNotEmpty() && !needBrand.all { it in brandWords || it in ownerWords }) return@mapNotNull null
             val descWords = words(c.name).toSet()
-            val extra = (descWords - words.toSet() - brandWords).size
+            val extra = (descWords - words.toSet() - brandWords).filter { w -> w.none { it.isDigit() } }.size
             var score = (hitCount[c.id.removePrefix("label:").toLong()] ?: 0) * 10.0 - extra * 1.5
             if (brandWords.any { it in words }) score += 5
+            // What they said is in the product's own name, not only its maker's.
+            if (said.size >= 2 && said.all { it in descWords || it in brandWords } && said.any { it in descWords }) score += 3
             // Only the brand said ("3 oreos", "a built bar"): the product everyone
             // means is the one sold longest, under the most labels.
             if (said.isNotEmpty() && said.all { it in brandWords }) score += minOf(10.0, ln(1.0 + pop) * 2.0)
@@ -103,6 +110,75 @@ class LabelPackSource(
     }
 
     fun byId(id: Long): FoodCandidate? = read(listOf(id)).firstOrNull()?.first
+
+    /**
+     * Products whose label prints these numbers per serving, most popular first: a
+     * name for a scanned Nutrition Facts panel, which never says what it is. A
+     * photo of the panel alone left the name box empty every time. Calories and at
+     * least two of protein, carbs and fat must match (labels round, so within a
+     * gram), plus sodium and the serving weight when both are known.
+     */
+    fun byPanel(perServing: Map<String, Double>, servingGrams: Double?, limit: Int = 4): List<FoodCandidate> {
+        val kcal = perServing[Metric.CALORIES.key]?.takeIf { it >= 15 } ?: return emptyList()
+        val where = mutableListOf("kcal BETWEEN ? AND ?")
+        val args = mutableListOf(fmt10(kcal - maxOf(5.0, kcal * 0.03)), fmt10(kcal + maxOf(5.0, kcal * 0.03)))
+        var macros = 0
+        for ((key, column) in listOf(Metric.PROTEIN.key to "protein_g", Metric.CARBS.key to "carbs_g", Metric.FAT.key to "fat_g")) {
+            val v = perServing[key] ?: continue
+            where += "$column BETWEEN ? AND ?"; args += fmt10(v - 1.0); args += fmt10(v + 1.0); macros++
+        }
+        if (macros < 2) return emptyList()
+        perServing[Metric.SODIUM.key]?.let { s ->
+            where += "sodium_mg BETWEEN ? AND ?"; args += fmt10(s - maxOf(10.0, s * 0.1)); args += fmt10(s + maxOf(10.0, s * 0.1))
+        }
+        servingGrams?.takeIf { it > 0 }?.let { g ->
+            where += "serving_g BETWEEN ? AND ?"; args += (g * 0.85).toString(); args += (g * 1.15).toString()
+        }
+        val ids = runCatching {
+            sql.query("SELECT id FROM product WHERE ${where.joinToString(" AND ")} ORDER BY pop DESC LIMIT 40", args) { it.long(0) }
+        }.getOrDefault(emptyList())
+        return read(ids).sortedByDescending { it.second }.map { it.first }
+            .distinctBy { "${it.brand?.lowercase()}|${it.name.lowercase()}" }.take(limit)
+    }
+
+    private fun fmt10(v: Double) = Math.round(v * 10).toString()
+
+    /**
+     * The other kinds of this product, one label per kind: Life Original's
+     * Cinnamon and Vanilla, the vanilla yogurt's strawberry and blueberry. Same
+     * brand, the same product words (see [Kinds]); the version whose serving is
+     * nearest [c]'s, then the most popular, stands for each kind.
+     */
+    fun siblings(c: FoodCandidate, limit: Int = 6): List<FoodCandidate> {
+        val brand = c.brand?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val split = Kinds.of(c)
+        val brandWords = words(brand)
+        val need = (split.base + brandWords).distinct()
+        if (need.size < 2 || split.base.size <= brandWords.toSet().size) return emptyList()
+        val ids = runCatching {
+            sql.query(
+                "SELECT id FROM pword WHERE word IN (${need.joinToString(",") { "?" }}) GROUP BY id " +
+                    "HAVING COUNT(DISTINCT word) = ${need.size} LIMIT 400",
+                need,
+            ) { it.long(0) }
+        }.getOrDefault(emptyList())
+        val own = c.labelServingGrams ?: c.defaultGrams
+        val mine = split.kind.lowercase()
+        return read(ids)
+            .filter { (o, _) -> o.brand.equals(brand, ignoreCase = true) && Kinds.of(o).base == split.base }
+            .groupBy { (o, _) -> Kinds.label(o).lowercase() }
+            .filterKeys { it != mine }
+            .map { (_, versions) ->
+                versions.sortedWith(compareBy<Pair<FoodCandidate, Int>> { (o, _) ->
+                    val g = o.labelServingGrams ?: o.defaultGrams
+                    if (own != null && g != null) abs(g - own) / own else 1.0
+                }.thenByDescending { it.second }).first()
+            }
+            .sortedByDescending { it.second }
+            .take(limit)
+            .map { it.first }
+    }
+
 
     /** Does any label mention this word? A brand the USDA list has never heard of. */
     private val known = java.util.concurrent.ConcurrentHashMap<String, Boolean>()

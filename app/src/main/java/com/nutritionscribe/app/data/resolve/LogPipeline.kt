@@ -72,6 +72,14 @@ class LogPipeline(
         items
     }
 
+    /** "actually 2 slices", "remove the cheese": what a change to these lines means. */
+    suspend fun changes(text: String, lines: List<com.nutritionscribe.shared.resolve.Changes.Line>): List<com.nutritionscribe.shared.resolve.Changes.Change> =
+        withContext(Dispatchers.IO) {
+            val c = resolver().changes(text, lines)
+            events?.event("change_read", "text" to text, "lines" to lines.map { it.name }, "changes" to c.map { it.toString() })
+            c
+        }
+
     /** A silent hit: every part is the user's own, so it logs with no card. */
     suspend fun logNow(
         r: Resolver.Resolution,
@@ -86,6 +94,7 @@ class LogPipeline(
             val entry = entryFor(r.text, r.items.map { it.toConfirmed(unchanged = true) }, r.meal?.name, timestamp)
                 .copy(timeUnspecified = timeUnspecified)
             entryDao.upsert(entry.toRow(), entry.toNutrientRows())
+            entry.items.forEach { countKind(it.key, it.candidateId) }
             meter?.attach(tag, entry.id)
             events?.event("logged", "how" to "silent", "entry_id" to entry.id, "name" to entry.name, "text" to r.text,
                 "nutrients" to entry.nutrients, "items" to entry.items.map { it.name })
@@ -111,10 +120,119 @@ class LogPipeline(
         )
         entryDao.upsert(copy.toRow(), copy.toNutrientRows())
         val res = resolver()
-        copy.items.forEach { runCatching { res.touch(it.key) } }
+        copy.items.forEach { runCatching { res.touch(it.key) }; countKind(it.key, it.candidateId) }
         events?.event("logged", "how" to "again", "entry_id" to copy.id, "from" to original.id, "name" to copy.name,
             "nutrients" to copy.nutrients)
         copy
+    }
+
+    /** One kind of a logged food, with its numbers for the amount that was logged. */
+    data class KindOption(val label: String, val candidate: FoodCandidate, val nutrients: Map<String, Double>, val uses: Int)
+
+    /**
+     * The kinds a just-logged food comes in: [mine] are the ones they have had (the
+     * logged one first), [more] the label pack's others. Null when there is only
+     * the one kind, or the entry is more than one food.
+     */
+    data class KindChoice(
+        val now: String,
+        val mine: List<KindOption>,
+        val more: List<KindOption>,
+        val ask: String,
+        val differ: Boolean,
+        val spread: Double,
+        /** The product without its kind: "Chobani Blended Nonfat Greek Yogurt". */
+        val food: String,
+        val brand: String?,
+    )
+
+    suspend fun kindsFor(entry: Entry): KindChoice? = withContext(Dispatchers.IO) {
+        runCatching {
+            val item = entry.items.singleOrNull() ?: return@runCatching null
+            val food = personal.get(item.key)?.takeIf { !it.isMeal } ?: return@runCatching null
+            val all = food.allKinds
+            val current = all.firstOrNull { it.id == item.candidateId } ?: food.candidate ?: return@runCatching null
+            fun option(c: FoodCandidate): KindOption {
+                val label = com.nutritionscribe.shared.resolve.Kinds.label(c)
+                return KindOption(label, c, kindNumbers(c, item), food.kindUses[label] ?: 0)
+            }
+            val mine = (listOf(current) + all.filter { it.id != current.id }).map(::option).filter { it.nutrients.isNotEmpty() }
+            val pack = if (current.origin == Origin.LABEL && current.id.startsWith("label:")) labels.source()?.siblings(current).orEmpty() else emptyList()
+            val more = pack.map(::option).filter { o -> o.nutrients.isNotEmpty() && mine.none { it.label.equals(o.label, ignoreCase = true) } }
+            if (mine.size < 2 && more.isEmpty()) return@runCatching null
+            val numbers = mine.map { it.nutrients }
+            KindChoice(
+                now = mine.first().label, mine = mine, more = more, ask = food.askKind,
+                differ = com.nutritionscribe.shared.resolve.Kinds.differ(numbers),
+                spread = com.nutritionscribe.shared.resolve.Kinds.spread(numbers),
+                food = com.nutritionscribe.shared.resolve.Kinds.productName(current),
+                brand = current.brand,
+            )
+        }.getOrNull()
+    }
+
+    private fun kindNumbers(c: FoodCandidate, item: LoggedItem): Map<String, Double> {
+        val servings = when {
+            item.grams != null && c.labelServingGrams != null && c.labelServingGrams!! > 0 -> item.grams!! / c.labelServingGrams!!
+            else -> item.amount ?: 1.0
+        }
+        val n = com.nutritionscribe.shared.resolve.Kinds.nutrientsFor(c, item.grams, servings)
+        return com.nutritionscribe.shared.resolve.Sugars.withAddedSugar(n, c.name, c.origin)
+    }
+
+    /**
+     * "It was the strawberry one": the logged entry becomes that kind, in the same
+     * amount, and it is the kind logged next time. The one it was stays in their
+     * kinds, so going back is one tap too.
+     */
+    suspend fun swapKind(entry: Entry, kind: FoodCandidate, where: String): Entry = withContext(Dispatchers.IO) {
+        val item = entry.items.singleOrNull() ?: return@withContext entry
+        val n = kindNumbers(kind, item)
+        if (n.isEmpty()) return@withContext entry
+        val name = com.nutritionscribe.app.ui.confirm.ItemDraft.withBrand(kind, " — ")
+        val newItem = item.copy(name = name, candidateId = kind.id, origin = kind.origin.name, nutrients = n)
+        val updated = entry.copy(
+            name = if (entry.name == item.name) name else entry.name,
+            items = listOf(newItem),
+            nutrients = totalOf(listOf(newItem)),
+            source = kind.origin.name.lowercase(),
+        )
+        entryDao.upsert(updated.toRow(), updated.toNutrientRows())
+        personal.get(item.key)?.takeIf { !it.isMeal }?.let { food ->
+            val oldLabel = food.candidate?.let { com.nutritionscribe.shared.resolve.Kinds.label(it) }
+            val newLabel = com.nutritionscribe.shared.resolve.Kinds.label(kind)
+            val uses = food.kindUses.toMutableMap()
+            uses[newLabel] = (uses[newLabel] ?: 0) + 1
+            if (oldLabel != null && oldLabel != newLabel) uses[oldLabel] = ((uses[oldLabel] ?: 1) - 1).coerceAtLeast(0)
+            val grams = food.grams
+            val servings = if (grams != null && kind.labelServingGrams != null && kind.labelServingGrams!! > 0) grams / kind.labelServingGrams!! else food.amount ?: 1.0
+            personal.put(food.copy(
+                name = name,
+                candidate = kind,
+                nutrients = com.nutritionscribe.shared.resolve.Kinds.nutrientsFor(kind, grams, servings).ifEmpty { food.nutrients },
+                kinds = food.allKinds.filter { it.id != kind.id }.distinctBy { com.nutritionscribe.shared.resolve.Kinds.label(it).lowercase() },
+                kindUses = uses,
+                photo = com.nutritionscribe.app.ui.scan.ScanPhotos.take(kind.id) ?: food.photo.takeIf { kind.id == food.candidate?.id },
+                updatedAt = System.currentTimeMillis(),
+            ))
+        }
+        events?.event("kind_swapped", "where" to where, "entry_id" to entry.id, "from" to item.candidateId, "to" to kind.id,
+            "name" to name, "nutrients" to n)
+        updated
+    }
+
+    /** One more log of this kind of a food, for "Vanilla · 12 times" (a confirm card counts in [Resolver.learn]). */
+    private fun countKind(key: String, candidateId: String?) {
+        val food = personal.get(key)?.takeIf { !it.isMeal && it.allKinds.size > 1 } ?: return
+        val c = food.allKinds.firstOrNull { it.id == candidateId } ?: return
+        val label = com.nutritionscribe.shared.resolve.Kinds.label(c)
+        personal.put(food.copy(kindUses = food.kindUses + (label to (food.kindUses[label] ?: 0) + 1)))
+    }
+
+    /** How often a food asks which kind: see [com.nutritionscribe.shared.resolve.PersonalFood.askKind]. */
+    suspend fun setAskKind(key: String, ask: String) = withContext(Dispatchers.IO) {
+        personal.get(key)?.let { personal.put(it.copy(askKind = ask)) }
+        events?.event("kind_ask", "key" to key, "ask" to ask)
     }
 
     suspend fun delete(entry: Entry) = withContext(Dispatchers.IO) {
@@ -139,6 +257,17 @@ class LogPipeline(
         }
 
     /**
+     * The entry was reported wrong, or a remembered line removed from a card: what
+     * those words were taken to mean is forgotten (see [Resolver.forget]), so the
+     * same mistake is not logged silently again tomorrow.
+     */
+    suspend fun forget(text: String?, keys: Collection<String>, why: String): Int = withContext(Dispatchers.IO) {
+        val n = resolver().forget(text, keys)
+        events?.event("forgot", "why" to why, "text" to text, "keys" to keys.toList(), "removed" to n)
+        n
+    }
+
+    /**
      * Tapping Log on the confirm card, or saving a fix. Writes the entry (replacing
      * [replacing] when this is a correction) and teaches every item back.
      */
@@ -155,6 +284,11 @@ class LogPipeline(
     ): Entry = withContext(Dispatchers.IO) {
         val res = resolver()
         res.confirm(text, items)
+        // A label scanned for this entry: its photo goes with the food, for My labels.
+        for (c in items) {
+            val photo = com.nutritionscribe.app.ui.scan.ScanPhotos.take(c.candidate?.id) ?: continue
+            personal.get(c.key)?.let { f -> if (f.photo != photo) { com.nutritionscribe.app.ui.scan.ScanPhotos.delete(f.photo); personal.put(f.copy(photo = photo)) } }
+        }
         if (!saveAsMine.isNullOrBlank()) {
             res.saveMeal(text, saveAsMine, items.map { MealPart(it.name, it.item.said, it.grams, it.nutrients) }, asName = saveAsMine)
         }
@@ -180,6 +314,8 @@ class LogPipeline(
 
     private fun entryFor(text: String, items: List<Resolver.Confirmed>, name: String?, timestamp: Long): Entry {
         val logged = items.map { c ->
+            // Added sugar, where the label gave it or the kind of food settles it.
+            val n = com.nutritionscribe.shared.resolve.Sugars.withAddedSugar(c.nutrients, c.name, c.candidate?.origin)
             LoggedItem(
                 name = c.name,
                 said = c.item.said,
@@ -188,7 +324,7 @@ class LogPipeline(
                 grams = c.grams,
                 origin = (c.candidate?.origin ?: Origin.MANUAL).name,
                 candidateId = c.candidate?.id,
-                nutrients = c.nutrients,
+                nutrients = n,
                 amount = c.item.amount,
                 unit = c.item.unit,
             )
@@ -199,12 +335,25 @@ class LogPipeline(
             timestampEpochMillis = timestamp,
             rawText = text,
             name = name ?: logged.singleOrNull()?.name ?: logged.joinToString(", ") { it.name.substringBefore(",") }.take(80).ifBlank { text },
-            nutrients = sumNutrients(items.map { it.nutrients }),
+            nutrients = totalOf(logged),
             source = logged.map { it.origin.lowercase() }.distinct().joinToString("+").ifBlank { "manual" },
             confidence = if (stated && items.size == 1) Confidence.STATED else Confidence.ESTIMATED,
             needsDetail = items.isEmpty() || items.all { it.nutrients.isEmpty() },
             items = logged,
         )
+    }
+
+    /**
+     * The entry's totals. Added sugar is only a total when every item with sugar
+     * has a figure for it; a partial sum would pass for the whole day's added sugar
+     * and hide the rest as natural.
+     */
+    private fun totalOf(items: List<LoggedItem>): Map<String, Double> {
+        val total = sumNutrients(items.map { it.nutrients })
+        val added = com.nutritionscribe.shared.model.Metric.ADDED_SUGAR.key
+        val sugar = com.nutritionscribe.shared.model.Metric.SUGAR.key
+        val partial = items.any { (it.nutrients[sugar] ?: 0.0) > 0.0 && added !in it.nutrients }
+        return if (partial) total - added else total
     }
 
     private fun portionText(c: Resolver.Confirmed): String? {
@@ -217,6 +366,16 @@ class LogPipeline(
     /** The items of a logged entry, back as editable card lines. */
     fun toConfirmed(entry: Entry): List<Resolver.Confirmed> =
         entry.items.map { li ->
+            // The food's own measures (cup, slice, tbsp), so the steppers can switch
+            // to them. The numbers stay the entry's own, whatever was fixed by hand.
+            val measures = runCatching {
+                val id = li.candidateId.orEmpty()
+                when {
+                    id.startsWith("usda:") -> usda()?.byId(id.removePrefix("usda:").toLong())?.portions
+                    id.startsWith("label:") -> labels.source()?.byId(id.removePrefix("label:").toLong())?.portions
+                    else -> null
+                }
+            }.getOrNull().orEmpty()
             Resolver.Confirmed(
                 item = ItemParser.Item(said = li.said, food = li.said, amount = li.amount, unit = li.unit),
                 key = li.key,
@@ -227,6 +386,7 @@ class LogPipeline(
                     origin = runCatching { Origin.valueOf(li.origin) }.getOrDefault(Origin.MANUAL),
                     per100g = li.grams?.takeIf { it > 0 }?.let { g -> li.nutrients.mapValues { it.value * 100.0 / g } },
                     perServing = li.nutrients,
+                    portions = measures,
                 ),
                 grams = li.grams,
                 nutrients = li.nutrients,

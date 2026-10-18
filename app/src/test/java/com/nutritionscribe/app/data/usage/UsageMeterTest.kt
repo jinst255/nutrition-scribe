@@ -42,8 +42,8 @@ class UsageMeterTest {
         assertEquals(1000, row.inputTokens)
         assertEquals(600, row.cachedInputTokens)
         assertEquals(400, row.outputTokens)
-        // 400 uncached × $0.20 + 600 cached × $0.02 + 400 out × $0.75, per million.
-        assertEquals((400 * 0.20 + 600 * 0.02 + 400 * 0.75) / 1e6, row.costUsd, 1e-12)
+        // 400 uncached × $0.20 + 600 cached × $0.02 + 400 out × $1.20, per million.
+        assertEquals((400 * 0.20 + 600 * 0.02 + 400 * 1.20) / 1e6, row.costUsd, 1e-12)
     }
 
     @Test

@@ -219,17 +219,30 @@ private fun EntryReader(entry: Entry, onEdit: () -> Unit, onFix: () -> Unit, onL
         // recorded anyway, and this is the only place they can be seen.
         Text("Nutrition", style = MaterialTheme.typography.titleMedium)
         val knownMicros = Metric.MICROS.filter { it.key in entry.nutrients }
-        (Metric.MACROS + knownMicros).forEachIndexed { i, metric ->
-            if (i == Metric.MACROS.size) {
+        // Parts sit under their whole, as on a label: "17 g fat ... 6 g saturated ...
+        // 0.5 g trans" read as three separate fats when they were listed side by side.
+        val macroRows = listOf(
+            Metric.CALORIES to 0, Metric.PROTEIN to 0, Metric.CARBS to 0, Metric.FIBER to 1, Metric.SUGAR to 1,
+            Metric.ADDED_SUGAR to 2, Metric.FAT to 0, Metric.SATURATED_FAT to 1, Metric.TRANS_FAT to 1,
+            Metric.SODIUM to 0, Metric.CAFFEINE to 0,
+        ).filter { (m, depth) -> depth == 0 || m.partOf == null || m.key in entry.nutrients }
+        val rows = macroRows + knownMicros.map { it to 0 }
+        rows.forEachIndexed { i, (metric, depth) ->
+            if (i == macroRows.size) {
                 Text("Minerals & vitamins", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
             }
             val amount = entry.nutrients[metric.key]
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).padding(start = (depth * 16).dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    metric.label,
+                    if (depth > 0) when (metric) {
+                        Metric.SATURATED_FAT -> "of which saturated"
+                        Metric.TRANS_FAT -> "of which trans"
+                        Metric.ADDED_SUGAR -> "of which added"
+                        else -> metric.label
+                    } else metric.label,
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (amount == null) {
                         MaterialTheme.colorScheme.secondary
@@ -438,12 +451,14 @@ private fun format(value: Double): String =
  * stored, so the problem can be found by what it is about rather than by when.
  */
 @Composable
-private fun ReportProblem(entry: Entry) {
+internal fun ReportProblem(entry: Entry) {
     var open by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf("") }
     val context = androidx.compose.ui.platform.LocalContext.current
-    androidx.compose.material3.TextButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
-        Text("Something's wrong with this entry", color = MaterialTheme.colorScheme.secondary)
+    val reportScope = androidx.compose.runtime.rememberCoroutineScope()
+    // Outlined, not grey text: it went unnoticed for days as a text link.
+    androidx.compose.material3.OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
+        Text("Something's wrong with this entry? Tell us")
     }
     if (open) {
         androidx.compose.material3.AlertDialog(
@@ -472,7 +487,12 @@ private fun ReportProblem(entry: Entry) {
                         "suspect" to com.nutritionscribe.shared.model.NutrientSanity.codes(entry.nutrients),
                     )
                     open = false; note = ""
-                    android.widget.Toast.makeText(context, "Noted in the debug log", android.widget.Toast.LENGTH_SHORT).show()
+                    // Something in it is wrong: what these words were taken to mean is
+                    // forgotten, so the same wrong answer is not logged silently again.
+                    reportScope.launch {
+                        ServiceLocator.logPipeline.forget(entry.rawText, entry.items.map { it.key }, "user_report")
+                    }
+                    android.widget.Toast.makeText(context, "Noted. It will check these foods with you next time.", android.widget.Toast.LENGTH_LONG).show()
                 }) { Text("Save note") }
             },
             dismissButton = { androidx.compose.material3.TextButton(onClick = { open = false }) { Text("Cancel") } },

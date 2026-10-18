@@ -44,6 +44,7 @@ fun ExportImportScreen() {
         busy = true
         scope.launch {
             result = manager.exportTo(uri, format)
+            com.nutritionscribe.app.di.ServiceLocator.debugEvents.event("export", "result" to result.toString())
             busy = false
         }
     }
@@ -55,6 +56,8 @@ fun ExportImportScreen() {
         busy = true
         scope.launch {
             result = manager.importFrom(uri)
+            // An import that was never run looked, in the log, exactly like one that worked.
+            com.nutritionscribe.app.di.ServiceLocator.debugEvents.event("import", "result" to result.toString())
             busy = false
         }
     }

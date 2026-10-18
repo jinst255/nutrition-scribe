@@ -74,7 +74,7 @@ private fun summary(p: Profile): String {
         "$lb lb",
         p.activity.label,
         p.stage.takeIf { it != Profile.LifeStage.NONE }?.label,
-        p.diet.takeIf { it != Profile.Diet.ANY }?.label,
+        "no periods".takeIf { p.sex == TargetCalculator.Sex.FEMALE && p.stage == Profile.LifeStage.NONE && !p.hasPeriods },
         "plasma donor".takeIf { p.plasmaDonor },
     ).joinToString(" · ")
 }
@@ -90,9 +90,9 @@ private fun ProfileForm(profile: Profile?, onSave: (Profile) -> Unit, onUseForGo
     var activity by remember { mutableStateOf(profile?.activity ?: TargetCalculator.Activity.LIGHT) }
     var aim by remember { mutableStateOf(profile?.aim ?: TargetCalculator.Aim.MAINTAIN) }
     var stage by remember { mutableStateOf(profile?.stage ?: Profile.LifeStage.NONE) }
-    var diet by remember { mutableStateOf(profile?.diet ?: Profile.Diet.ANY) }
     var plasma by remember { mutableStateOf(profile?.plasmaDonor ?: false) }
-    val extrasSet = profile != null && (profile.stage != Profile.LifeStage.NONE || profile.diet != Profile.Diet.ANY || profile.plasmaDonor)
+    var periods by remember { mutableStateOf(profile?.periods) }
+    val extrasSet = profile != null && (profile.stage != Profile.LifeStage.NONE || profile.plasmaDonor)
     var extras by remember { mutableStateOf(extrasSet) }
 
     val built = run {
@@ -101,8 +101,10 @@ private fun ProfileForm(profile: Profile?, onSave: (Profile) -> Unit, onUseForGo
         val inch = inches.toDoubleOrNull() ?: 0.0
         val lb = pounds.toDoubleOrNull()?.takeIf { it in 60.0..700.0 } ?: return@run null
         val cm = TargetCalculator.feetInchesToCm(ft, inch).takeIf { it in 120.0..240.0 } ?: return@run null
+        val female = sex == TargetCalculator.Sex.FEMALE
         Profile(sex, a, cm, TargetCalculator.poundsToKg(lb), activity, aim,
-            stage = if (sex == TargetCalculator.Sex.FEMALE) stage else Profile.LifeStage.NONE, diet = diet, plasmaDonor = plasma)
+            stage = if (female) stage else Profile.LifeStage.NONE, plasmaDonor = plasma,
+            periods = if (female) periods ?: (a <= 50) else null)
     }
 
     Chips(TargetCalculator.Sex.entries, sex, { if (it == TargetCalculator.Sex.MALE) "Male" else "Female" }) { sex = it }
@@ -117,6 +119,14 @@ private fun ProfileForm(profile: Profile?, onSave: (Profile) -> Unit, onUseForGo
     Text(activity.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
     Text("What are you after?", style = MaterialTheme.typography.titleSmall)
     Chips(TargetCalculator.Aim.entries, aim, { it.label }) { aim = it }
+    if (sex == TargetCalculator.Sex.FEMALE && stage == Profile.LifeStage.NONE) {
+        // Most of why a woman's iron need is 18 mg and a man's 8.
+        Text("Do you have periods?", style = MaterialTheme.typography.titleSmall)
+        val shown = periods ?: ((age.toIntOrNull() ?: 30) <= 50)
+        Chips(listOf(true, false), shown, { if (it) "Yes" else "No" }) { periods = it }
+        Text(if (shown) "Iron: 18 mg a day, to replace what each period takes." else "Iron: 8 mg a day, the same as a man's.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+    }
 
     Row(Modifier.fillMaxWidth().clickable { extras = !extras }.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Anything else that changes your needs?", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
@@ -133,11 +143,6 @@ private fun ProfileForm(profile: Profile?, onSave: (Profile) -> Unit, onUseForGo
         }
         if (sex == TargetCalculator.Sex.FEMALE) {
             Chips(Profile.LifeStage.entries, stage, { it.label }) { stage = it }
-        }
-        Chips(Profile.Diet.entries, diet, { it.label }) { diet = it }
-        if (diet != Profile.Diet.ANY) {
-            Text("Iron and zinc from plants absorb less well, so you need more of both.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
     }
 

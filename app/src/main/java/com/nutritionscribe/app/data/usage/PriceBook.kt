@@ -3,25 +3,27 @@ package com.nutritionscribe.app.data.usage
 /**
  * List prices, in US dollars, as published by each provider.
  *
- * Checked 2026-09-25 against developers.openai.com/api/docs/pricing and
- * Anthropic's model table. Providers change these; the Spending screen says the
+ * Checked 2026-10-17 against OpenAI's GPT-6 Sol and Luna announcement and
+ * Anthropic's model table (Haiku 5.5's rate is for prompts up to 100K tokens,
+ * which every call here is). Providers change these; the Spending screen says the
  * figures are estimates and names this date. A model missing from the table is
  * costed at the most expensive rate the app uses, so an unknown model can make
  * the estimate too high but never quietly zero.
  */
 object PriceBook {
-    const val CHECKED = "September 2026"
+    const val CHECKED = "October 2026"
 
     /** Per million tokens. */
     data class TokenRate(val input: Double, val cachedInput: Double, val output: Double)
 
     private val tokenRates = mapOf(
-        "gpt-5.6-luna" to TokenRate(0.20, 0.02, 0.75),
+        "gpt-5.6-luna" to TokenRate(0.20, 0.02, 1.20),
         "gpt-6-luna" to TokenRate(0.10, 0.01, 0.50),
         "gpt-5.6-sol" to TokenRate(2.00, 0.20, 10.00),
         "gpt-5.6-terra" to TokenRate(2.00, 0.20, 12.00),
         "gpt-5.4-mini" to TokenRate(0.75, 0.075, 4.50),
         "gpt-5.4-nano" to TokenRate(0.20, 0.02, 1.25),
+        "claude-haiku-5-5" to TokenRate(0.10, 0.01, 0.50),
         "claude-haiku-4-5" to TokenRate(1.00, 0.10, 5.00),
     )
 
@@ -54,7 +56,7 @@ object PriceBook {
 
     /** The table as shown on the Spending screen. */
     fun rows(): List<Pair<String, String>> =
-        tokenRates.filterKeys { it == "gpt-5.6-luna" || it == "claude-haiku-4-5" }.map { (m, r) ->
+        tokenRates.filterKeys { it == "gpt-6-luna" || it == "claude-haiku-5-5" }.map { (m, r) ->
             m to "\$${fmt(r.input)} in · \$${fmt(r.output)} out per 1M tokens"
         } + ("gpt-4o-mini-transcribe" to "\$${fmt(perMinute.getValue("gpt-4o-mini-transcribe"))} per minute of speech")
 

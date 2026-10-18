@@ -76,7 +76,7 @@ data class OpenAiNutritionJson(
 )
 
 /**
- * GPT-5.6 Luna backend (Section 5). Uses Chat Completions with a JSON response format
+ * GPT-6 Luna backend (Section 5). Uses Chat Completions with a JSON response format
  * and a system prompt describing the exact structured-output contract.
  *
  * GPT-5-family reasoning models reject `max_tokens` (HTTP 400) and require
@@ -108,7 +108,7 @@ class OpenAiBackend(
 
         val bodyJson = """
             {
-              "model": "gpt-5.6-luna",
+              "model": "${com.nutritionscribe.shared.resolve.OpenAiItemLookup.DEFAULT_MODEL}",
               "max_completion_tokens": 2000,
               "response_format": { "type": "json_object" },
               "messages": [

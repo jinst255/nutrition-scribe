@@ -70,8 +70,10 @@ class AnthropicBackend(
         val stringAdapter = moshi.adapter(String::class.java)
         val bodyJson = """
             {
-              "model": "claude-haiku-4-5",
-              "max_tokens": 300,
+              "model": "${com.nutritionscribe.shared.resolve.AnthropicItemLookup.DEFAULT_MODEL}",
+              "max_tokens": 1000,
+              "thinking": {"type": "disabled"},
+              "output_config": {"effort": "low"},
               "system": ${stringAdapter.toJson(instructions)},
               "messages": [
                 {"role": "user", "content": ${stringAdapter.toJson(rawText)}}

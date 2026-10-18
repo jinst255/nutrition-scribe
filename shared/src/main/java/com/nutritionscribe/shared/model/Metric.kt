@@ -67,14 +67,45 @@ enum class Metric(
     FOLATE("folate", "Folate", "µg", GoalDirection.REACH, 400.0, MetricGroup.VITAMIN),
     OMEGA3("omega3", "Omega-3 (EPA + DHA)", "mg", GoalDirection.REACH, 250.0, MetricGroup.VITAMIN, shortLabel = "Omega-3"),
     // Not a mineral; it is filed with the micronutrients so it shows under "Stay under" there.
-    CHOLESTEROL("cholesterol", "Cholesterol", "mg", GoalDirection.LIMIT, 300.0, MetricGroup.MINERAL);
+    CHOLESTEROL("cholesterol", "Cholesterol", "mg", GoalDirection.LIMIT, 300.0, MetricGroup.MINERAL),
+
+    // Parts of sugar and fat. They are stored and read from labels like any other
+    // metric, but shown inside their whole (Sugar, Fat) rather than as goals of
+    // their own: see [partOf].
+    /** Under 10% of calories (Dietary Guidelines 2020-2025): the label's 50 g at 2,000 kcal. */
+    ADDED_SUGAR("added_sugar", "Added sugar", "g", GoalDirection.LIMIT, 50.0),
+    /** No safe amount is set; the WHO's "under 1% of calories" is about 2 g at 2,000 kcal. */
+    TRANS_FAT("trans_fat", "Trans fat", "g", GoalDirection.LIMIT, 2.0);
 
     val isMicro: Boolean get() = group != MetricGroup.MACRO
+
+    /** The name of it as a goal. A sugar limit is a limit on ADDED sugar (see Sugars). */
+    val goalLabel: String get() = if (this == SUGAR) "Added sugar" else label
+
+    /** What a goal on this metric is measured against: the sugar goal is an added-sugar limit. */
+    val goalMeasure: Metric get() = if (this == SUGAR) ADDED_SUGAR else this
+
+    /** The name a Nutrition Facts panel prints for it ("Total Sugars", "Incl. Added Sugars"). */
+    val panelLabel: String get() = when (this) {
+        SUGAR -> "Total sugars"
+        ADDED_SUGAR -> "Added sugars"
+        CARBS -> "Total carbohydrate"
+        FAT -> "Total fat"
+        else -> label
+    }
+
+    /** The metric this one is a part of, shown inside its row: added sugar is part of sugar. */
+    val partOf: Metric? get() = when (this) {
+        ADDED_SUGAR -> SUGAR
+        TRANS_FAT -> FAT
+        else -> null
+    }
 
     companion object {
         fun fromKey(key: String): Metric? = entries.firstOrNull { it.key == key }
 
-        val MACROS: List<Metric> = entries.filter { !it.isMicro }
+        /** The macros that can be goals. Parts of another metric ([partOf]) are shown inside it. */
+        val MACROS: List<Metric> = entries.filter { !it.isMicro && it.partOf == null }
         val MICROS: List<Metric> = entries.filter { it.isMicro }
     }
 }

@@ -7,12 +7,18 @@ class DebugPhrasesTest {
     @Test
     fun debug() {
         val phrases = (System.getProperty("phrases") ?: "").split("|").filter { it.isNotBlank() }.ifEmpty { return }
-        val r = Resolver(InMemoryPersonalStore(), TestDbs.usda, TestDbs.labels)
+        // -DpersonalFoods=<my_foods.jsonl from a debug export>: their saved foods, so
+        // brand memory and "your usual" are exercised. Never a file in the repo.
+        val store = InMemoryPersonalStore()
+        System.getProperty("personalFoods")?.takeIf { it.isNotBlank() }?.let { java.io.File(it) }?.takeIf { it.exists() }?.readLines()?.forEach { line ->
+            runCatching { store.put(kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(PersonalFood.serializer(), line)) }
+        }
+        val r = Resolver(store, TestDbs.usda, TestDbs.labels)
         val out = StringBuilder()
         for (p in phrases) {
             out.append("\n>> $p\n")
             val items = ItemParser.parse(p, { w -> TestDbs.usda.knowsWord(w) || TestDbs.labels?.knowsWord(w) == true }) { w -> TestDbs.labels?.isBrandWord(w) == true }
-            for (i in items) out.append("   item: food='${i.food}' amt=${i.amount} unit=${i.unit} size=${i.size} brand=${i.brand} sp=${i.statedProteinG} top=${i.topping} group=${i.group}\n")
+            for (i in items) out.append("   item: food='${i.food}' amt=${i.amount} unit=${i.unit} size=${i.size} brand=${i.brand} sp=${i.statedProteinG} top=${i.topping} little=${i.little} group=${i.group}\n")
             for (ri in r.resolve(p).items) {
                 out.append("   -> [${ri.status}${if (ri.weak) " weak" else ""}] ${ri.choice?.origin} ${ri.choice?.brand} | ${ri.choice?.name} | ${ri.grams?.toInt()} g (${ri.portionNote}) kcal ${ri.nutrients["calories"]?.toInt()} P ${ri.nutrients["protein"]}\n")
                 for (a in ri.alternates.take(4)) out.append("        alt ${a.origin} ${a.brand} | ${a.name} | ${a.labelServingText}\n")

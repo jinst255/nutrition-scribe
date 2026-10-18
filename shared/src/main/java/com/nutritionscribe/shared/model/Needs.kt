@@ -21,8 +21,9 @@ import kotlin.math.roundToInt
  *   - Vitamins and minerals: the National Academies' Dietary Reference Intakes,
  *     the RDA where there is one and the AI otherwise, by sex, age band and
  *     pregnancy or breastfeeding. Potassium is the 2019 revision (3,400 / 2,600 mg).
- *   - Vegetarian and vegan: iron x 1.8 and zinc x 1.5, the adjustments the same
- *     report gives, because plant iron and zinc absorb so much worse.
+ *   - Iron for women: the 18 mg RDA (15 for teens) assumes periods; without them
+ *     the need is the same as a man's. Asked as one yes/no in About you.
+ *   - Vegetarian and vegan (no longer asked): iron x 1.8 and zinc x 1.5.
  *   - Total sugars: 18% of energy, the UK/EU Reference Intake (90 g at 2,000 kcal).
  *     The US publishes no reference for total sugars at all.
  *   - Everything else: [TargetCalculator].
@@ -39,13 +40,17 @@ object Needs {
     /** A reference for every metric. */
     fun forProfile(profile: Profile?): Map<Metric, Double> {
         if (profile == null) return Metric.entries.associateWith { fallback(it) }
-        val macros = TargetCalculator.targetsFor(profile.body, profile.stage, profile.diet)
+        val macros = TargetCalculator.targetsFor(profile.body, profile.stage, profile.diet, profile.periods)
         val calories = macros.getValue(Metric.CALORIES)
         val micros = micros(profile)
         return Metric.entries.associateWith { m ->
             when {
                 m == Metric.SUGAR -> round5(calories * TOTAL_SUGAR_SHARE / 4.0)
-                m == Metric.CAFFEINE && profile.stage == Profile.LifeStage.PREGNANT -> 200.0
+                // Under 10% of calories from added sugars (Dietary Guidelines 2020-2025).
+                m == Metric.ADDED_SUGAR -> round5(calories * 0.10 / 4.0)
+                // As little as possible; the WHO's under-1%-of-calories line.
+                m == Metric.TRANS_FAT -> round1(calories * 0.01 / 9.0)
+                m == Metric.CAFFEINE -> macros[m] ?: m.defaultTarget
                 m.isMicro -> micros[m] ?: m.defaultTarget
                 else -> macros[m] ?: m.defaultTarget
             }
@@ -109,7 +114,13 @@ object Needs {
             )
             else -> mapOf(
                 Metric.CALCIUM to when { teen -> 1300.0; age <= 50 -> 1000.0; else -> 1200.0 },
-                Metric.IRON to when { teen -> 15.0; age <= 50 -> 18.0; else -> 8.0 },
+                // The RDA's 18 mg (15 for teens) is set for monthly losses; without
+                // periods a woman's need is a man's (11 as a teen, 8 after).
+                Metric.IRON to when {
+                    !profile.hasPeriods -> if (teen) 11.0 else 8.0
+                    teen -> 15.0
+                    else -> 18.0
+                },
                 Metric.POTASSIUM to if (teen) 2300.0 else 2600.0,
                 Metric.MAGNESIUM to when { teen -> 360.0; age <= 30 -> 310.0; else -> 320.0 },
                 Metric.ZINC to if (teen) 9.0 else 8.0,

@@ -63,6 +63,14 @@ object Portions {
         r("pasta", "bowl", 280.0, "two cups cooked"),
         r("salad", "bowl", 150.0, "large side salad"),
         r("ice cream", "bowl", 132.0, "one cup"),
+        // A plate of greens is a salad's worth: about 3 cups, not one leaf.
+        r("spinach", "plate", 85.0, "a plateful, about 3 cups"),
+        r("lettuce", "plate", 85.0, "a plateful, about 3 cups"),
+        r("green", "plate", 85.0, "a plateful, about 3 cups"),
+        r("kale", "plate", 67.0, "a plateful, about 3 cups"),
+        r("salad", "plate", 150.0, "a plate of salad"),
+        r("spinach", "bowl", 60.0, "a bowl, about 2 cups"),
+        r("lettuce", "bowl", 60.0, "a bowl, about 2 cups"),
         r("pasta", "plate", 280.0, "two cups cooked"),
         r("spaghetti", "plate", 280.0, "two cups cooked"),
         // Glasses, cans, bottles.
@@ -103,6 +111,8 @@ object Portions {
         r("yogurt", "serving", 170.0, "one container"),
         r("greek yogurt", "serving", 170.0, "one container"),
         r("peanut butter", "serving", 32.0, "two tablespoons"),
+        r("oat", "serving", 40.0, "half a cup, dry"),
+        r("rolled oat", "serving", 40.0, "half a cup, dry"),
         r("jam", "serving", 20.0, "one tablespoon"),
         r("jelly", "serving", 20.0, "one tablespoon"),
         r("preserve", "serving", 20.0, "one tablespoon"),
@@ -126,6 +136,12 @@ object Portions {
         r("cake", "serving", 80.0, "one slice"),
         r("pie", "serving", 125.0, "one slice"),
         r("cereal", "serving", 40.0, "one cup, dry"),
+        // A cup of cereal is light: Life is 42 g, flakes about 30. Read as water, 2.5
+        // cups of Life came to 591 g and 2,366 calories.
+        r("cereal", "cup", 36.0, "one cup, dry cereal"),
+        r("granola", "cup", 110.0, "one cup"),
+        r("spinach", "cup", 30.0, "one cup raw"),
+        r("lettuce", "cup", 36.0, "one cup shredded"),
         r("oatmeal", "serving", 234.0, "one cup cooked"),
         r("pancake", "serving", 114.0, "three pancakes"),
         r("protein pancake", "serving", 53.0, "half a cup of mix"),
@@ -172,9 +188,28 @@ object Portions {
         r("bagel", null, 105.0, "one medium bagel"),
         r("sandwich", null, 150.0, "one sandwich"),
         r("burrito", null, 250.0, "one burrito"),
+        // "some spinach", "some pulled pork": a serving as people eat it, not the
+        // database's 13 g "typical" spinach or a 249 g pulled-pork sandwich's worth.
+        r("spinach", null, 30.0, perEach = false, note = "about a cup"),
+        r("lettuce", null, 36.0, perEach = false, note = "about a cup"),
+        r("pulled pork", null, 85.0, perEach = false, note = "three ounces cooked"),
+        r("shredded chicken", null, 85.0, perEach = false, note = "three ounces cooked"),
         r("protein shake", null, 325.0, "one ready-to-drink bottle"),
         r("protein drink", null, 325.0, "one ready-to-drink bottle"),
         r("shake", null, 325.0, "one ready-to-drink bottle"),
+    )
+
+    /** Small things said in the plural with no number: a snack serving of them. */
+    private val PLURAL_SERVINGS = mapOf(
+        "baby carrots" to (85.0 to "a snack serving, about 8"),
+        "grapes" to (126.0 to "about 20 grapes"),
+        "cherry tomatoes" to (85.0 to "about 5"),
+        "grape tomatoes" to (85.0 to "about 8"),
+        "strawberries" to (144.0 to "about 8 medium"),
+        "blueberries" to (74.0 to "half a cup"),
+        "raspberries" to (62.0 to "half a cup"),
+        "almonds" to (28.0 to "about 23"),
+        "peanuts" to (28.0 to "about an ounce"),
     )
 
     /** Toppings: "some ketchup", "a little syrup" — a spoonful, not a serving. */
@@ -215,12 +250,53 @@ object Portions {
      */
     fun gramsFor(food: FoodCandidate, item: ItemParser.Item): Answer? {
         val count = (item.amount ?: 1.0)
+        // Inside a burrito or a sandwich, "some spinach" is a handful, not the bag's
+        // 85 g serving. Only when no measure was said: "a cup of spinach" is a cup.
+        filling(item)?.let { (grams, dish) ->
+            val f = if (item.little) LITTLE_IN_DISH else 1.0
+            return Answer(grams * count * item.scale * f, "${if (item.little) "a little " else ""}in a $dish")
+        }
         val per = gramsForOne(food, item) ?: return null
+        if (item.little) return Answer(per.grams * count * item.scale * LITTLE, "a little (about a third of ${per.how})")
         return Answer(per.grams * count * item.scale, per.how)
+    }
+
+    /** A cup of chopped vegetables or cooked rice is 120–160 g; dry cereal far less. */
+    private const val SOLID_G_PER_ML = 0.55
+
+    /** "a little bit of cheese": about a third of an ordinary portion. */
+    const val LITTLE = 0.35
+    /** …and inside a wrap, where the filling portion is already small. */
+    private const val LITTLE_IN_DISH = 0.6
+
+    /** Grams of a filling per ONE wrap, burrito, taco or sandwich. */
+    private val FILLINGS: List<Pair<Set<String>, Double>> = listOf(
+        "spinach" to 20.0, "lettuce" to 15.0, "kale" to 15.0, "green" to 15.0, "arugula" to 10.0,
+        "cheese" to 25.0, "pork" to 60.0, "chicken" to 60.0, "beef" to 60.0, "steak" to 60.0,
+        "turkey" to 50.0, "ham" to 50.0, "carnitas" to 60.0, "bean" to 60.0, "rice" to 60.0,
+        "tomato" to 20.0, "onion" to 15.0, "pepper" to 20.0, "salsa" to 30.0, "sour cream" to 15.0,
+        "guacamole" to 30.0, "pickle" to 15.0, "cucumber" to 20.0, "mushroom" to 20.0, "potato" to 60.0,
+    ).map { (w, g) -> w.split(" ").map { FoodQuery.stem(it) }.toSet() to g }
+
+    private val WRAPS = setOf("burrito", "wrap", "taco", "quesadilla", "sandwich", "sub", "pita", "tortilla").map { FoodQuery.stem(it) }.toSet()
+
+    /** A filling's grams per dish, and the dish, when [item] was said as part of one with no measure. */
+    fun filling(item: ItemParser.Item): Pair<Double, String>? {
+        if (item.unit != null || item.topping) return null
+        val dish = item.group?.let { g -> FoodQuery.contentWords(g).lastOrNull { it in WRAPS } } ?: return null
+        val words = FoodQuery.contentWords(item.food).toSet()
+        // Not the wrap itself, and not a food counted in pieces ("an egg in each").
+        if (words.any { it in WRAPS } || words.any { it in setOf("egg", "avocado") }) return null
+        val grams = FILLINGS.filter { (w, _) -> w.all { it in words } }.maxByOrNull { it.first.size }?.second ?: return null
+        return grams to dish
     }
 
     /** Grams for ONE of whatever unit the item names. */
     fun gramsForOne(food: FoodCandidate, item: ItemParser.Item): Answer? {
+        // "a 16 oz Dr Pepper": ounces of a drink are fluid ounces. As weight, a
+        // 16 oz soda came out 20 mL short.
+        val drink = item.unit == "oz" && com.nutritionscribe.shared.model.Liquids.isLiquid(food.name, food.labelServingText)
+        if (drink) return gramsForOne(food, item.copy(unit = "floz"))?.let { Answer(it.grams, "fluid ounces") }
         val unit = item.unit
         when (unit) {
             "g" -> return Answer(1.0, "grams")
@@ -275,7 +351,16 @@ object Portions {
             }
             val named = food.portions.filter { labelSays(it.label, unit) }
             if (named.isNotEmpty()) return Answer(plainest(named), "listed portion")
-            return Answer(ML.getValue(unit), "assumed water density")
+            // By the drink's own weight per mL, the same one used to show it back in
+            // mL: as water, 300 mL of milk came back as 291 mL.
+            if (com.nutritionscribe.shared.model.Liquids.isLiquid(food.name, food.labelServingText) ||
+                com.nutritionscribe.shared.model.Liquids.isLiquid(item.food)
+            ) {
+                return Answer(ML.getValue(unit) * com.nutritionscribe.shared.model.Liquids.density(food.name), "by volume")
+            }
+            // A solid measured by the cup with no cup on record: not as water (a cup
+            // of cereal is 36 g, not 240), but at a middling weight, and said so.
+            return Answer(ML.getValue(unit) * SOLID_G_PER_ML, "by volume, roughly — check the amount")
         }
 
         if (unit != null) {
@@ -292,6 +377,11 @@ object Portions {
             if (sized.isNotEmpty()) return Answer(plainest(sized), "$size portion")
         }
 
+        // "baby carrots", with no number: some of them, not one.
+        if (unit == null && item.amount == null) {
+            PLURAL_SERVINGS.entries.firstOrNull { (said, _) -> Regex("\\b$said$").containsMatchIn(item.food.lowercase()) }
+                ?.let { (_, rule) -> return Answer(rule.first, rule.second) }
+        }
         val default = food.defaultGrams ?: 100.0
         // A bare count means that many OF IT: "six pancakes" is six pancakes.
         // With a floor, so "1 chip" (2 g) can never stand in for "a bag of chips".

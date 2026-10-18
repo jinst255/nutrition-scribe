@@ -67,6 +67,12 @@ object Curated {
         usda("high protein greek yogurt", 2340805, "Yogurt, Greek, nonfat milk, plain"),
         usda("protein yogurt", 2340805, "Yogurt, Greek, nonfat milk, plain"),
         usda("milk", 171265, "Milk, whole, 3.25% milkfat"),
+        // Cereal sold by a one-word name the labels never print: the label pack
+        // lists Life as "Original Multigrain Cereal", and "life" found Food For Life.
+        usda("life cereal", 173891, "Cereals ready-to-eat, QUAKER, QUAKER OAT LIFE, plain"),
+        usda("quaker life cereal", 173891, "Cereals ready-to-eat, QUAKER, QUAKER OAT LIFE, plain"),
+        usda("cinnamon life cereal", 174620, "Cereals ready-to-eat, QUAKER, QUAKER OAT CINNAMON LIFE"),
+        usda("cinnamon life", 174620, "Cereals ready-to-eat, QUAKER, QUAKER OAT CINNAMON LIFE"),
         usda("whole milk", 171265, "Milk, whole, 3.25% milkfat"),
         usda("reduced fat milk", 171267, "Milk, reduced fat, fluid, 2% milkfat"),
         usda("lowfat milk", 170872, "Milk, lowfat, fluid, 1% milkfat"),
@@ -198,7 +204,31 @@ object Curated {
     }
 
     /** The curated answer for [food], resolved against [usda]; null if none applies. */
+    /**
+     * A soda-shop flavour shot ("raspberry flavoring"): not in USDA as people use
+     * it. Typical of the coffee-and-soda syrups (2 tbsp, 80 kcal, 20 g sugar), as
+     * one ½ fl oz shot.
+     */
+    private val FLAVOR_SYRUP = typical(
+        "flavored syrup", "Flavor syrup, one shot (typical label)", 15.0, "1 shot (½ fl oz, 15 mL)",
+        kcal = 40.0, protein = 0.0, carbs = 10.0, fat = 0.0, sugar = 10.0, sodium = 3.0,
+    ).custom!!
+
+    /**
+     * A curated phrase said with its brand ("life cereal", where "life" reads as a
+     * brand): only an exact entry, never the alias fallback.
+     */
+    fun exact(phrase: String, usda: UsdaFoodSource?): FoodCandidate? {
+        val e = entryFor(phrase) ?: return null
+        return e.custom ?: e.fdcId?.let { usda?.byId(it) }
+    }
+
     fun lookup(food: String, usda: UsdaFoodSource?): FoodCandidate? {
+        if (Regex("\\bflavou?red syrups?\\b").containsMatchIn(food)) {
+            val flavour = food.replace(Regex("\\bflavou?red syrups?\\b"), " ").trim().replace(Regex("\\s+"), " ")
+            return if (flavour.isBlank()) FLAVOR_SYRUP
+            else FLAVOR_SYRUP.copy(name = "${flavour.replaceFirstChar { it.uppercase() }} flavor syrup, one shot (typical label)")
+        }
         val e = entryFor(food)
         if (e != null) {
             e.custom?.let { return it }

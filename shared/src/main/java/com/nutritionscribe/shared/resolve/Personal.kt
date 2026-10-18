@@ -32,8 +32,28 @@ data class PersonalFood(
     val parts: List<MealPart> = emptyList(),
     val timesUsed: Int = 1,
     val updatedAt: Long = 0,
+    /**
+     * The other kinds of it they have had (the strawberry when [candidate] is the
+     * vanilla), so switching back is one tap. See [Kinds].
+     */
+    val kinds: List<FoodCandidate> = emptyList(),
+    /** Times each kind was logged, by its label ("Vanilla"). */
+    val kindUses: Map<String, Int> = emptyMap(),
+    /** When logging it asks which kind: [ASK_WHEN_DIFFERENT], [ASK_ALWAYS] or [ASK_NEVER]. */
+    val askKind: String = ASK_WHEN_DIFFERENT,
+    /** The photo of its label they scanned, a file name in the app's labels folder. */
+    val photo: String? = null,
 ) {
     val isMeal: Boolean get() = parts.isNotEmpty()
+
+    /** This kind and the others they have had, the one they have now first. */
+    val allKinds: List<FoodCandidate> get() = listOfNotNull(candidate) + kinds
+
+    companion object {
+        const val ASK_WHEN_DIFFERENT = "differ"
+        const val ASK_ALWAYS = "always"
+        const val ASK_NEVER = "never"
+    }
 }
 
 @Serializable

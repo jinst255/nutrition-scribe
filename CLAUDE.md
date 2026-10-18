@@ -8,8 +8,20 @@ Design spec: [nutrition-scribe-blueprint.md](nutrition-scribe-blueprint.md).
 ## Commands
 
 ```bash
-# JVM tests (seconds; no device). Expect shared 119 (2 skipped), app 42.
+# JVM tests (seconds; no device). Expect shared 206 (8 skipped), app 44.
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :shared:testDebugUnitTest :app:testDebugUnitTest
+# The label-pack test runs only when given an unzipped pack:
+#   gunzip -c app/src/main/assets-pack/labels.db.gz > /tmp/labels.db
+#   ./gradlew -DlabelPack=/tmp/labels.db :shared:testDebugUnitTest --tests '*MicronutrientSourcesTest*'
+
+# Accuracy benchmark: entries through the real Resolver + AI, then pair, judge and score.
+# The prompt, truth and result files hold food logs and live outside the repo. --rerun is
+# needed because Gradle caches the test task. One AI call per entry (~$0.06 per 300).
+OPENAI_API_KEY=$(cat ~/.config/nutrition-scribe/openai-key) ./gradlew -Dorg.gradle.jvmargs=-Xmx2g \
+  :shared:testDebugUnitTest --rerun --tests '*BenchRunTest*' -Dbench=P.jsonl -DbenchOut=R.jsonl \
+  -DlabelPack=/tmp/labels.db -DpersonalFoods=my_foods.jsonl
+python3 tools/bench_pairs.py --prompts P.jsonl --truth T.jsonl --run R.jsonl --out pairs.jsonl  # graders correct this
+python3 tools/bench_score.py --prompts P.jsonl --truth T.jsonl --judged judged.jsonl --run name=R.jsonl --out scores.json
 
 # Release APKs, signed when keystore.properties exists (unsigned otherwise)
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :app:assembleRelease :wear:assembleRelease
@@ -32,11 +44,10 @@ shell's own command line and the shell kills itself (exit 144).
 - **The repo is public.** Nothing personal or secret goes in files, test fixtures or commit messages.
   - No names, emails, device serials, body stats, food logs or keys.
   - No claude.ai session or artifact links.
-- **RAM:**
-  - Never build while the emulator is running.
-  - Keep Gradle at 2 GB or less.
-  - Start the emulator with `-memory 2048`, and shut it down (`adb emu kill`) between phases.
-  - The old laptop had 14 GB. Keep this rule on the new machine unless the owner says otherwise.
+- **RAM** (relaxed 2026-09-30 for this 31 GB desktop; the old laptop had 14 GB):
+  - Building while one emulator runs is fine.
+  - Keep Gradle at 4 GB or less and the emulator at `-memory 4096` or less.
+  - Don't leave emulators or Gradle and Kotlin daemons running once a batch of work is done.
 - **The owner's phone:** never run instrumented tests on it. Install over the existing app
   (`adb install -r`) so its data is kept.
 - **The OpenAI key** lives at `~/.config/nutrition-scribe/openai-key`.

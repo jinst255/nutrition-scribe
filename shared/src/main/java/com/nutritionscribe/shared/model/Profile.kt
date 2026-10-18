@@ -20,13 +20,23 @@ data class Profile(
     val diet: Diet = Diet.ANY,
     /** Shows the "Donated plasma today" button on Home. */
     val plasmaDonor: Boolean = false,
+    /**
+     * Women only: whether they have periods, which is most of why a woman's iron
+     * need (18 mg) is more than twice a man's. Null until asked: then it is taken
+     * as yes up to 50 and no after.
+     */
+    val periods: Boolean? = null,
 ) {
+    /** [periods] as answered, or what is usual for the age. */
+    val hasPeriods: Boolean get() = sex == TargetCalculator.Sex.FEMALE && (periods ?: (ageYears <= 50))
+
     val body: TargetCalculator.Body
         get() = TargetCalculator.Body(sex, ageYears, heightCm, weightKg, activity, aim)
 
     @Serializable
     enum class LifeStage(val label: String) { NONE("Neither"), PREGNANT("Pregnant"), BREASTFEEDING("Breastfeeding") }
 
+    /** No longer asked (2026-10); kept so profiles saved with it still load. */
     @Serializable
     enum class Diet(val label: String) { ANY("Eat meat"), VEGETARIAN("Vegetarian"), VEGAN("Vegan") }
 }

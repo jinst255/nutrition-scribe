@@ -248,7 +248,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                                 },
                             )
                             Column {
-                                Text(metric.label, style = MaterialTheme.typography.bodyLarge)
+                                Text(metric.goalLabel, style = MaterialTheme.typography.bodyLarge)
                                 Text(
                                     when (metric.direction) {
                                         GoalDirection.REACH -> "reach \u2022 ${metric.unit}"
@@ -318,7 +318,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 BodyCalculator(
                     onCalculated = { targets ->
                         for (metric in selectedMetrics) {
-                            val value = targets[metric] ?: continue
+                            val value = targets[metric.goalMeasure] ?: continue
                             targetText[metric] = formatTarget(value)
                             TargetCalculator.baselineFor(metric, value)?.let {
                                 baselineText[metric] = formatTarget(it)
@@ -385,7 +385,7 @@ private fun TargetFields(
     onBaseline: (String) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Text(metric.label, style = MaterialTheme.typography.titleSmall)
+        Text(metric.goalLabel, style = MaterialTheme.typography.titleSmall)
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = target,

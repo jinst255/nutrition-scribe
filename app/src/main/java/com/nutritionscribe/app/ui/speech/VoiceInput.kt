@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.speech
 
+import androidx.compose.foundation.verticalScroll
+
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -46,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.input.pointer.pointerInput
+import com.nutritionscribe.app.ui.feedback.holdFeedbackExempt
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -119,6 +122,7 @@ class VoiceController(
     fun start(mode: MicMode) {
         if (isActive || state is State.Transcribing) return
         this.mode = mode
+        com.nutritionscribe.app.ui.feedback.HoldFeedback.voiceBusy = true
         if (freshTagEachTime) tag = java.util.UUID.randomUUID().toString()
         startedAt = System.currentTimeMillis()
         val transcriber = ServiceLocator.cloudTranscriber()
@@ -127,6 +131,7 @@ class VoiceController(
     }
 
     fun stop(reason: String) {
+        com.nutritionscribe.app.ui.feedback.HoldFeedback.voiceBusy = false
         if (!isActive) return
         events.event("speech_stop", "reason" to reason, "held_ms" to System.currentTimeMillis() - startedAt)
         val s = state as State.Listening
@@ -287,6 +292,8 @@ fun MicButton(
                     true
                 }
             }
+            // Holding to talk is never "hold for feedback".
+            .holdFeedbackExempt()
             // Keyed on the mode only: restarting this while a finger is down (as a
             // key on "listening" would) cancels the hold the moment it begins.
             .pointerInput(mode) {
@@ -367,12 +374,17 @@ fun ListeningPanel(controller: VoiceController, mode: MicMode, modifier: Modifie
             delay(200)
         }
     }
+    // A fixed-height panel that scrolls to the newest words. Growing with the text,
+    // it pushed the hold button out from under the finger holding it, and letting go
+    // there cut the sentence short.
+    val scroll = androidx.compose.foundation.rememberScrollState()
+    LaunchedEffect(state) { scroll.animateScrollTo(scroll.maxValue) }
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = modifier.fillMaxWidth().heightIn(min = 120.dp),
+        modifier = modifier.fillMaxWidth().heightIn(min = 120.dp, max = 168.dp),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             when (state) {
                 is VoiceController.State.Listening -> {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -476,9 +488,10 @@ fun VoiceDialog(
         title = { Text(title) },
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ListeningPanel(voice, mode)
+                // The button first: the words below it can grow without moving it.
                 MicButton(voice, mode, size = 88.dp, onHint = { hint = it })
                 hint?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary) }
+                ListeningPanel(voice, mode)
             }
         },
     )

@@ -64,6 +64,16 @@ class LabelPack(private val context: Context) {
         }
     }
 
+    @Volatile private var front: com.nutritionscribe.shared.resolve.FrontMatcher? = null
+
+    /** What a product is from the front of its box, or null with no pack. */
+    fun frontMatcher(): com.nutritionscribe.shared.resolve.FrontMatcher? {
+        front?.let { return it }
+        val s = source() ?: return null
+        val d = db ?: return null
+        return com.nutritionscribe.shared.resolve.FrontMatcher(AndroidSql(d), s).also { front = it }
+    }
+
     suspend fun installFrom(uri: Uri): Status = withContext(Dispatchers.IO) {
         _status.value = Status.Working("Copying")
         val input = context.contentResolver.openInputStream(uri)
@@ -117,6 +127,7 @@ class LabelPack(private val context: Context) {
             db?.close()
             db = null
             source = null
+            front = null
             file.delete()
         }
         _status.value = Status.NotInstalled
@@ -153,6 +164,7 @@ class LabelPack(private val context: Context) {
                 db?.close()
                 db = null
                 source = null
+                front = null
                 if (!tmp.renameTo(file)) {
                     file.delete()
                     tmp.renameTo(file)
