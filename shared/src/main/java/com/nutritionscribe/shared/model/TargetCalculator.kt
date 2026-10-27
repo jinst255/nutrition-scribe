@@ -125,6 +125,8 @@ object TargetCalculator {
             Metric.SODIUM to if (body.ageYears <= 13) 1800.0 else 2300.0,
             // 400 mg is an adult's figure; for teens the paediatric advice is at most 100.
             Metric.CAFFEINE to when { pregnant -> 200.0; body.ageYears < 19 -> 100.0; else -> 400.0 },
+            // Up to 2 drinks a day for men, 1 for women, if any (Dietary Guidelines); 14 g each.
+            Metric.ALCOHOL to if (body.sex == Sex.MALE) 28.0 else 14.0,
         ) + Metric.MICROS.associateWith { it.defaultTarget } +
             Needs.micros(Profile(body.sex, body.ageYears, body.heightCm, body.weightKg, body.activity, body.aim, stage, diet, periods = periods))
     }

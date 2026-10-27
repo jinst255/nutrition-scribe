@@ -392,8 +392,11 @@ interface FixedFoodCacheDao {
         FixedFoodCacheRow::class,
         PersonalFoodRow::class,
         com.nutritionscribe.app.data.usage.AiUsageRow::class,
+        com.nutritionscribe.app.data.chat.ChatRow::class,
+        com.nutritionscribe.app.data.chat.ChatMessageRow::class,
+        com.nutritionscribe.app.data.chat.MealPlanRow::class,
     ],
-    version = 6,
+    version = 7,
 )
 abstract class NutritionScribeDatabase : RoomDatabase() {
     abstract fun entryDao(): EntryDao
@@ -402,6 +405,7 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
     abstract fun fixedFoodCacheDao(): FixedFoodCacheDao
     abstract fun personalFoodDao(): PersonalFoodDao
     abstract fun aiUsageDao(): com.nutritionscribe.app.data.usage.AiUsageDao
+    abstract fun chatDao(): com.nutritionscribe.app.data.chat.ChatDao
 
     companion object {
         @Volatile private var instance: NutritionScribeDatabase? = null
@@ -452,6 +456,27 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_usage_timestampEpochMillis` ON `ai_usage` (`timestampEpochMillis`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_usage_entryId` ON `ai_usage` (`entryId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_usage_tag` ON `ai_usage` (`tag`)")
+            }
+        }
+
+        /** Ask: chats, their messages, and meal plans. New tables only; no existing row is touched. */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `chat` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `chat_message` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `chatId` TEXT NOT NULL, " +
+                        "`role` TEXT NOT NULL, `text` TEXT NOT NULL, `at` INTEGER NOT NULL, `extraJson` TEXT)"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_chat_message_chatId` ON `chat_message` (`chatId`)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `meal_plan` (`id` TEXT NOT NULL, `chatId` TEXT, `name` TEXT NOT NULL, `itemsJson` TEXT NOT NULL, " +
+                        "`mealLabel` TEXT NOT NULL, `planFor` INTEGER NOT NULL, `status` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`answeredAt` INTEGER, `entryId` TEXT, PRIMARY KEY(`id`))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_meal_plan_planFor` ON `meal_plan` (`planFor`)")
             }
         }
 
@@ -534,7 +559,7 @@ abstract class NutritionScribeDatabase : RoomDatabase() {
                     // the user, but renaming it would leave every existing log stranded
                     // in a file nothing opens any more — a rebrand must not cost data.
                     "protein-scribe.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .build().also { instance = it }
             }
     }

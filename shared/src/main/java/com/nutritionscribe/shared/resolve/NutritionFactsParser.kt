@@ -142,6 +142,37 @@ object NutritionFactsParser {
         return parse(rows.joinToString("\n") { r -> r.sortedBy { it.left }.joinToString(" ") { it.text } })
     }
 
+    private val HEADER = Regex("\\b(?:nutrition|supplement)\\s*fac[tl]s?\\b")
+
+    /** A panel's lines in one photo of several, and the words printed above it ("Berry mix"). */
+    data class PanelLines(val lines: List<OcrLine>, val title: String?)
+
+    /**
+     * One package with several labels side by side (a variety pack, note S10): a
+     * group of lines per "Nutrition Facts" heading, split halfway between the
+     * headings. A photo with one heading comes back whole.
+     */
+    fun splitPanels(lines: List<OcrLine>): List<PanelLines> {
+        val heads = lines.filter { HEADER.containsMatchIn(it.text.lowercase()) }.sortedBy { it.left }
+        val cols = mutableListOf<OcrLine>()
+        for (h in heads) if (cols.isEmpty() || h.left > cols.last().right) cols += h
+        if (cols.size < 2) return listOf(PanelLines(lines, null))
+        val cuts = cols.zipWithNext { a, b -> (a.right + b.left) / 2.0 }
+        fun column(l: OcrLine): Int {
+            val cx = (l.left + l.right) / 2.0
+            return cuts.indexOfFirst { cx < it }.let { if (it < 0) cuts.size else it }
+        }
+        val groups = lines.groupBy(::column)
+        return cols.indices.mapNotNull { i ->
+            val g = groups[i].orEmpty()
+            if (g.size < 4) return@mapNotNull null
+            val head = cols[i]
+            val title = g.filter { it.bottom <= head.top + head.height / 2 && it.text.count(Char::isLetter) >= 3 && !HEADER.containsMatchIn(it.text.lowercase()) }
+                .maxByOrNull { it.bottom }?.text?.trim()?.take(40)
+            PanelLines(g.filter { it.top >= head.top - head.height }, title)
+        }.takeIf { it.size >= 2 } ?: listOf(PanelLines(lines, null))
+    }
+
     private val NUMBER = Regex("(\\d+(?:[.,]\\d+)?)(?!\\d)\\s*(mg|g|mcg|µg|ug|iu)?(?![a-z])")
     private val PERCENT = Regex("(\\d+(?:[.,]\\d+)?)\\s*%")
 

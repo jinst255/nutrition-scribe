@@ -8,6 +8,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -27,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -132,7 +134,13 @@ fun MyLabelsScreen() {
                     label = { Text("Needs a look · ${looks.size}") })
             }
         }
-        items(shown, key = { it.key }) { f -> LabelRow(f) { events.event("my_label_open", "key" to f.key); open = f } }
+        // Two to a row, each with its photo (note S8): a label with none says so and how to add one.
+        items(shown.chunked(2), key = { row -> row.joinToString { it.key } }) { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                row.forEach { f -> LabelCard(f, Modifier.weight(1f)) { events.event("my_label_open", "key" to f.key); open = f } }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
         item {
             Text("Tap a label to see the photo you took and its numbers, and to fix any of them.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
@@ -151,6 +159,36 @@ private fun needsLook(f: PersonalFood): String? {
 }
 
 @Composable
+private fun LabelCard(f: PersonalFood, modifier: Modifier, onClick: () -> Unit) {
+    val look = needsLook(f)
+    Column(modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.fillMaxWidth().height(120.dp)) {
+            if (f.photo != null) LabelPhoto(f.photo, Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)))
+            else Box(
+                Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(Icons.Outlined.CameraAlt, null, tint = MaterialTheme.colorScheme.secondary)
+                    Text(if (f.candidate?.id?.startsWith("label:") == true) "From the label list" else "No photo",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                    Text("Scan it to add one", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                }
+            }
+            if (look != null) Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.errorContainer,
+                modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
+                Text("Needs a look", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
+            }
+        }
+        Text(f.name, fontWeight = FontWeight.SemiBold, fontSize = 14.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(look ?: (summary(f) + " \u00B7 " + if (f.timesUsed == 1) "used once" else "used ${f.timesUsed}\u00D7"), fontSize = 12.sp,
+            color = if (look != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary, maxLines = 2)
+    }
+}
+
+@Composable
 private fun LabelRow(f: PersonalFood, onClick: () -> Unit) {
     val look = needsLook(f)
     Surface(
@@ -160,7 +198,7 @@ private fun LabelRow(f: PersonalFood, onClick: () -> Unit) {
         border = if (look != null) BorderStroke(2.dp, MaterialTheme.colorScheme.error) else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Row(Modifier.fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Photo(f.photo, Modifier.size(width = 44.dp, height = 56.dp))
+            LabelPhoto(f.photo, Modifier.size(width = 44.dp, height = 56.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(f.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(look ?: summary(f), fontSize = 13.sp,
@@ -180,7 +218,7 @@ private fun summary(f: PersonalFood): String {
 }
 
 @Composable
-private fun Photo(name: String?, modifier: Modifier) {
+internal fun LabelPhoto(name: String?, modifier: Modifier) {
     val bitmap by produceState<android.graphics.Bitmap?>(null, name) { value = withContext(Dispatchers.IO) { ScanPhotos.load(name) } }
     val b = bitmap
     Box(
@@ -198,7 +236,7 @@ private fun Photo(name: String?, modifier: Modifier) {
  * food, so the next log uses the fixed numbers; past entries are left as they were.
  */
 @Composable
-private fun LabelDetail(food: PersonalFood, onDone: () -> Unit) {
+internal fun LabelDetail(food: PersonalFood, onDone: () -> Unit) {
     val store = ServiceLocator.personalStore
     val events = ServiceLocator.debugEvents
     val scope = rememberCoroutineScope()
@@ -221,7 +259,7 @@ private fun LabelDetail(food: PersonalFood, onDone: () -> Unit) {
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Photo(food.photo, Modifier.size(width = 84.dp, height = 110.dp).border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(6.dp))
+            LabelPhoto(food.photo, Modifier.size(width = 84.dp, height = 110.dp).border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(6.dp))
                 .clickable(enabled = photo != null) { zoom = true })
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(if (food.timesUsed == 1) "Used once" else "Used ${food.timesUsed} times", fontWeight = FontWeight.SemiBold)

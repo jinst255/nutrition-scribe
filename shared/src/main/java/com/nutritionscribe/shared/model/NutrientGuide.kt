@@ -103,9 +103,13 @@ object NutrientGuide {
             if (v <= 0.0) null else f to v
         }
             .sortedByDescending { it.second }
-            // A tenth of the top food's amount at least: a list of trace sources helps nobody.
-            .let { list -> list.filter { it.second >= (list.firstOrNull()?.second ?: 0.0) * 0.1 } }
-            .take(n)
+            // A tenth of the top food's amount at least: a list of trace sources helps
+            // nobody. But never fewer than three (note S17: omega-3 was "just salmon").
+            .let { list ->
+                val strong = list.filter { it.second >= (list.firstOrNull()?.second ?: 0.0) * 0.1 }
+                if (strong.size >= 3) strong else list.take(3)
+            }
+            .take(maxOf(n, 3))
     }
 
     /** "8 g", "2,300 mg", "1.2 µg", rounded the way the rest of the app reads. */
@@ -365,6 +369,98 @@ object NutrientGuide {
                 p("Fish twice a week.", "About two servings of fatty fish a week, like salmon or sardines, gets most people there.", Icon.STEADY),
             ),
             source = ODS + " and " + DGA,
+        ),
+        // More to track.
+        Guide(
+            Metric.OMEGA3_ALA, "ALA is the omega-3 fat in plants.", ENOUGH,
+            listOf(
+                p("An essential fat.", "Your body can't make ALA, so it has to come from food.", Icon.LEAF),
+                p("Your heart.", "It may help your heart, most of all when it takes the place of saturated fat.", Icon.HEART),
+                p("Seeds and nuts.", "Flaxseed, chia seeds, walnuts and canola oil are rich in it.", Icon.STEADY),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.COPPER, "Copper helps your body make energy and use iron.", ENOUGH,
+            listOf(
+                p("Energy.", "It helps your body make energy from food.", Icon.ENERGY),
+                p("Healthy blood.", "It helps your body use iron to make red blood cells.", Icon.BLOOD),
+                p("Nerves and defences.", "It helps keep your nervous and immune systems working.", Icon.SHIELD),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.MANGANESE, "Manganese helps your body use the food you eat.", ENOUGH,
+            listOf(
+                p("Using your food.", "It helps your body break down carbohydrates, protein and fat.", Icon.ENERGY),
+                p("Bones.", "It helps build bone and the tissue that holds you together.", Icon.BONE),
+                p("A little goes far.", "Whole grains, nuts, beans, tea and leafy greens give most people plenty.", Icon.LEAF),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.PHOSPHORUS, "Phosphorus builds your bones and teeth, with calcium.", ENOUGH,
+            listOf(
+                p("Bones and teeth.", "Most of the phosphorus in your body is in your bones and teeth.", Icon.BONE),
+                p("Energy.", "Your cells use it to store and move energy.", Icon.ENERGY),
+                p("Easy to get.", "Dairy, meat, fish, beans and whole grains have plenty, and most people get enough.", Icon.LEAF),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.CHOLINE, "Choline helps your brain and liver do their work.", ENOUGH,
+            listOf(
+                p("Memory and mood.", "Your body uses it to make a messenger your brain needs for memory and mood.", Icon.BRAIN),
+                p("A healthy liver.", "It helps move fat out of your liver.", Icon.CELL),
+                p("Eggs lead.", "An egg has about a quarter of a day's need; meat, fish, soy and beans add more.", Icon.STEADY),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.THIAMIN, "Thiamin (vitamin B1) helps turn food into energy.", ENOUGH,
+            listOf(
+                p("Energy from food.", "It helps turn the carbohydrates you eat into energy.", Icon.ENERGY),
+                p("Healthy cells.", "Your cells need it to grow and work well.", Icon.CELL),
+                p("Grains and pork.", "Whole or enriched grains, pork, beans and seeds are good sources.", Icon.LEAF),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.RIBOFLAVIN, "Riboflavin (vitamin B2) helps turn food into energy.", ENOUGH,
+            listOf(
+                p("Energy from food.", "It helps turn the food you eat into energy.", Icon.ENERGY),
+                p("Healthy cells.", "Your cells need it to grow and work well.", Icon.CELL),
+                p("Dairy and eggs.", "Milk, yogurt, eggs, meat and fortified cereals are good sources.", Icon.LEAF),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.NIACIN, "Niacin (vitamin B3) helps turn food into energy.", ENOUGH,
+            listOf(
+                p("Energy from food.", "It helps turn the food you eat into energy.", Icon.ENERGY),
+                p("Skin, nerves and digestion.", "It helps keep them healthy.", Icon.SMILE),
+                p("Meat, fish and grains.", "Chicken, tuna, salmon, peanuts and enriched grains are good sources.", Icon.LEAF),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.VITAMIN_B6, "Vitamin B6 helps your body use protein.", ENOUGH,
+            listOf(
+                p("Using protein.", "It helps your body break down and use the protein you eat.", Icon.MUSCLE),
+                p("Brain and defences.", "It helps your brain and immune system work well.", Icon.BRAIN),
+                p("Easy to get.", "Fish, chicken, potatoes, chickpeas and bananas are good sources.", Icon.LEAF),
+            ),
+            source = ODS,
+        ),
+        Guide(
+            Metric.ALCOHOL, "Less alcohol is better for your health.", LOW,
+            listOf(
+                p("Drinking less is better.", "For health, drinking less is better than drinking more.", Icon.HEART),
+                p("A day's line.", "If you drink, up to 2 drinks a day for men and 1 for women. A drink is 14 g of alcohol.", Icon.STEADY),
+                p("Sometimes none.", "Not drinking at all is best when pregnant, and for anyone who shouldn't drink.", Icon.BABY),
+            ),
+            swaps = listOf("Water or sparkling water between drinks", "A smaller glass, or a lighter beer", "Alcohol-free beer or wine"),
+            source = DGA,
         ),
     ).associateBy { it.metric }
 }

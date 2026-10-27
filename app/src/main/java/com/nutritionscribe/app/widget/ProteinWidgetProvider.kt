@@ -21,8 +21,7 @@ import java.time.ZoneId
  */
 class ProteinWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val startOfDay = LocalDate.now(ZoneId.systemDefault())
-            .atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val startOfDay = com.nutritionscribe.shared.model.LogDays.start(com.nutritionscribe.shared.model.LogDays.today())
         val total = ServiceLocator.database.entryDao().observeMetricTotal(Metric.PROTEIN.key, startOfDay, Long.MAX_VALUE).first()
         val goal = ServiceLocator.settingsRepository.dailyGoalGrams.first()
 

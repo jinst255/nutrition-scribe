@@ -61,7 +61,7 @@ object IdeasSource {
         Ideas.build(
             entries = rows.map { it.toEntry() },
             needs = Needs.forProfile(profile),
-            today = LocalDate.now(),
+            today = com.nutritionscribe.shared.model.LogDays.today(),
             zone = ZoneId.systemDefault(),
             per100g = { id -> usdaCache[id] ?: usda?.byId(id)?.per100g?.also { usdaCache[id] = it } },
             dismissed = dismissed,

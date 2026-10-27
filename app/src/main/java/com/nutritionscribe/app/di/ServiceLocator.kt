@@ -8,6 +8,8 @@ import com.nutritionscribe.app.data.db.toEntry
 import com.nutritionscribe.app.data.db.toNutrientRows
 import com.nutritionscribe.app.data.db.toRow
 import com.nutritionscribe.app.data.repository.AiBackendKind
+import com.nutritionscribe.app.data.repository.AiJob
+import com.nutritionscribe.app.data.usage.AiModels
 import com.nutritionscribe.app.data.repository.EntryRepository
 import com.nutritionscribe.app.data.repository.GoalsRepository
 import com.nutritionscribe.app.data.repository.LookupSource
@@ -79,6 +81,10 @@ object ServiceLocator {
     /** The user's AI consent, warm for the same reason: every send checks it. */
     private val consentCache = MutableStateFlow<Set<String>>(emptySet())
     private val profileCache = MutableStateFlow<com.nutritionscribe.shared.model.Profile?>(null)
+    /** Advanced › AI models: null is the default for that job. */
+    private val modelLookupCache = MutableStateFlow<String?>(null)
+    private val modelAskCache = MutableStateFlow<String?>(null)
+    private val modelSpeechCache = MutableStateFlow<String?>(null)
 
     /** The body the user described, or null; for code that can't collect a flow. */
     fun profileNow(): com.nutritionscribe.shared.model.Profile? = profileCache.value
@@ -180,6 +186,9 @@ object ServiceLocator {
         backgroundScope.launch {
             settingsRepository.profile.collect { profileCache.value = it }
         }
+        backgroundScope.launch { settingsRepository.modelLookup.collect { modelLookupCache.value = it } }
+        backgroundScope.launch { settingsRepository.modelAsk.collect { modelAskCache.value = it } }
+        backgroundScope.launch { settingsRepository.modelSpeech.collect { modelSpeechCache.value = it } }
         backgroundScope.launch {
             settingsRepository.ensureInstalledAt(System.currentTimeMillis())
             settingsRepository.testerName.collect { debugEvents.testerName = it.ifBlank { null } }
@@ -205,8 +214,38 @@ object ServiceLocator {
         if (!aiAllowed(kind)) return null
         val key = settingsRepository.getApiKey(kind)?.takeIf { it.isNotBlank() } ?: return null
         return when (kind) {
-            AiBackendKind.OPENAI -> com.nutritionscribe.shared.resolve.OpenAiItemLookup(key, transport = usageMeter.transport())
-            AiBackendKind.ANTHROPIC -> com.nutritionscribe.shared.resolve.AnthropicItemLookup(key, transport = usageMeter.transport())
+            AiBackendKind.OPENAI -> com.nutritionscribe.shared.resolve.OpenAiItemLookup(
+                key, model = AiModels.pick(AiJob.LOOKUP, kind, modelLookupCache.value), transport = usageMeter.transport())
+            AiBackendKind.ANTHROPIC -> com.nutritionscribe.shared.resolve.AnthropicItemLookup(
+                key, model = AiModels.pick(AiJob.LOOKUP, kind, modelLookupCache.value), transport = usageMeter.transport())
+        }
+    }
+
+    /**
+     * Ask's client, or null without a key or the person's agreement. Ask runs
+     * whenever there is a key, even with lookups set to on-phone only: it is a
+     * separate thing the person chooses to use, and says what it sends first.
+     */
+    fun askClient(): com.nutritionscribe.shared.resolve.AskClient? {
+        val kind = backendCache.value
+        if (!aiAllowed(kind)) return null
+        val key = settingsRepository.getApiKey(kind)?.takeIf { it.isNotBlank() } ?: return null
+        return com.nutritionscribe.shared.resolve.AskClient(
+            key,
+            if (kind == AiBackendKind.OPENAI) com.nutritionscribe.shared.resolve.AskClient.Provider.OPENAI else com.nutritionscribe.shared.resolve.AskClient.Provider.ANTHROPIC,
+            AiModels.pick(AiJob.ASK, kind, modelAskCache.value),
+            usageMeter.transport(com.nutritionscribe.app.data.usage.UsageKind.ASK),
+        )
+    }
+
+    /** Why Ask can't run, for its screen, or null when it can. */
+    fun askBlocked(): String? {
+        val kind = backendCache.value
+        val key = settingsRepository.getApiKey(kind)
+        return when {
+            key.isNullOrBlank() -> "Ask needs an AI key. Add one in Settings › Advanced › Provider and key."
+            !aiAllowed(kind) -> "Ask sends your question to ${if (kind == AiBackendKind.OPENAI) "OpenAI" else "Anthropic"}, which you haven't agreed to. You can in Settings › AI."
+            else -> null
         }
     }
 
@@ -215,7 +254,7 @@ object ServiceLocator {
         if (lookupSourceCache.value != LookupSource.AI) return null
         if (!aiAllowed(AiBackendKind.OPENAI)) return null
         val key = settingsRepository.openAiKey() ?: return null
-        return com.nutritionscribe.app.data.speech.OpenAiTranscriber(key, usageMeter)
+        return com.nutritionscribe.app.data.speech.OpenAiTranscriber(key, usageMeter, AiModels.pick(AiJob.SPEECH, AiBackendKind.OPENAI, modelSpeechCache.value))
     }
 
     /** Who and what, at the top of a debug log: enough to reproduce a problem. */

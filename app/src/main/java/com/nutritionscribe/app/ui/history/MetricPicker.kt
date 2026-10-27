@@ -50,7 +50,7 @@ fun MetricPicker(
     val scope = rememberCoroutineScope()
     val enabled = goals.filter { it.enabled }.sortedBy { it.sortOrder }.map { it.metric }
     fun pageMetrics(page: Int): List<Metric> {
-        val pool = if (page == 0) Metric.MACROS else Metric.MICROS
+        val pool = com.nutritionscribe.shared.model.Extras.shown(if (page == 0) Metric.MACROS else Metric.MICROS)
         return enabled.filter { it in pool } + pool.filter { it !in enabled }
     }
     // Swiping to the other page picks from it, so the chart follows the page.

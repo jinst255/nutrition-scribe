@@ -112,7 +112,17 @@ data class ItemDraft(
                 (c.labelServingText?.trim()?.trimStart(':', ' ')?.takeIf { it.isNotBlank() }?.let { " ($it each)" } ?: "")
             return copy(item = newItem, grams = null, portionNote = note, computed = n, untouched = false)
         }
-        val portion = Portions.gramsFor(c, newItem)
+        var portion = Portions.gramsFor(c, newItem)
+        // A food rebuilt from a logged entry can have no portion for its own unit
+        // ("2 eggs" with no egg on record): the weight came back unchanged, and "1 egg"
+        // still counted 100 g. Same unit, new amount: the weight follows the amount.
+        val oldAmount = item.amount ?: 1.0
+        val newAmount = newItem.amount ?: 1.0
+        if (grams != null && grams > 0 && newItem.unit == item.unit && newAmount != oldAmount && oldAmount > 0 &&
+            (portion == null || kotlin.math.abs(portion.grams - grams) < 0.01)) {
+            val g = grams * newAmount / oldAmount
+            portion = Portions.Answer(g, amountText(g))
+        }
         val n = when {
             c.per100g != null && portion != null -> c.nutrientsFor(portion.grams)
             // A weightless answer (AI, typed by hand) scales with the amount.

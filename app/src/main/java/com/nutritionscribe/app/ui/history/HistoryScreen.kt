@@ -13,6 +13,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -108,7 +115,7 @@ internal fun chartGoal(
 }
 
 internal fun dayLabel(date: LocalDate): String {
-    val today = LocalDate.now()
+    val today = com.nutritionscribe.shared.model.LogDays.today()
     return when (date) {
         today -> "Today"
         today.minusDays(1) -> "Yesterday"
@@ -125,8 +132,13 @@ private sealed interface HistoryListItem {
     data class EntryItem(val entry: Entry) : HistoryListItem
 }
 
-/** How many days the cards summarise. A month: long enough to be a trend, short enough to be current. */
-private const val CARD_DAYS = 30
+/** History's filters (note S30): each with a one-line meaning under the chips. */
+private enum class HistoryFilter(val label: String, val meaning: String) {
+    ALL("All", "Everything you track"),
+    OFF("Off target", "What had days past a line or off target"),
+    LIMITS("Limits", "What you keep under"),
+    GOALS("Goals", "Only your goals"),
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -147,13 +159,19 @@ fun HistoryScreen(
     val selecting = selectedIds.isNotEmpty()
 
     val zone = remember { ZoneId.systemDefault() }
-    val today = LocalDate.now(zone)
+    val today = com.nutritionscribe.shared.model.LogDays.today(zone)
+    var range by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(14) }
+    var filter by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(HistoryFilter.ALL) }
+    val counted by ServiceLocator.settingsRepository.historyCounted.collectAsState(initial = emptySet())
+    val calTarget = allGoals.firstOrNull { it.metric == Metric.CALORIES && it.enabled }?.target
+        ?: com.nutritionscribe.shared.model.Needs.forProfile(ServiceLocator.profileNow()).getValue(Metric.CALORIES)
+    val full = remember(allEntries, counted, calTarget) { MetricHistory.fullDays(allEntries, zone, today, calTarget, counted) }
     // The number shown beside each entry: whatever the user tracks first. It
     // used to be protein regardless, even for someone who only tracks sugar.
     val lead = goals.firstOrNull()?.metric ?: Metric.PROTEIN
 
     val listItems = remember(entries) {
-        val grouped = entries.groupBy { Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zone).toLocalDate() }
+        val grouped = entries.groupBy { com.nutritionscribe.shared.model.LogDays.dayOf(it.timestampEpochMillis, zone) }
         buildList {
             grouped.forEach { (date, dayEntries) ->
                 add(HistoryListItem.Header(date, dayEntries.size))
@@ -170,13 +188,22 @@ fun HistoryScreen(
     val shownMetrics = remember(goals, showAll, allEntries) {
         val mine = goals.map { it.metric }
         val main = listOf(Metric.CALORIES, Metric.PROTEIN, Metric.CARBS, Metric.FAT, Metric.FIBER, Metric.SUGAR, Metric.SODIUM)
-        val logged = (Metric.MACROS + Metric.MICROS).filter { m -> allEntries.any { m.key in it.nutrients } }
+        val logged = com.nutritionscribe.shared.model.Extras.shown(Metric.MACROS + Metric.MICROS).filter { m -> allEntries.any { m.key in it.nutrients } }
         val first = (mine + main).distinct()
         if (showAll) (first + logged).distinct() else first.take(maxOf(6, mine.size))
     }
-    val cards = remember(allEntries, allGoals, shownMetrics) {
-        shownMetrics.map { m -> chartGoal(m, allGoals) to MetricHistory.lastDays(MetricHistory.daily(allEntries, m, zone, today), CARD_DAYS) }
+    val allCards = remember(allEntries, allGoals, shownMetrics, range) {
+        shownMetrics.map { m -> chartGoal(m, allGoals) to MetricHistory.lastDays(MetricHistory.daily(allEntries, m, zone, today), range) }
     }
+    val cards = allCards.filter { (g, days) ->
+        when (filter) {
+            HistoryFilter.ALL -> true
+            HistoryFilter.GOALS -> g.enabled
+            HistoryFilter.LIMITS -> g.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT && (g.enabled || g.ceilingValue != null)
+            HistoryFilter.OFF -> days.any { d -> d.epochDay in full && d.value?.let { MetricHistory.standing(g, it) }.let { it == Standing.OVER || it == Standing.PAST || it == Standing.LOW } }
+        }
+    }
+    val fullInRange = (1..range).count { today.minusDays(it.toLong()).toEpochDay() in full }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         if (selecting) {
@@ -217,6 +244,42 @@ fun HistoryScreen(
             // with four metrics they are half a screen, and the list below is
             // what most visits are for.
             if (query.isBlank()) {
+                item(key = "filters") {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            var rangeMenu by remember { mutableStateOf(false) }
+                            androidx.compose.foundation.layout.Box {
+                                FilterChip(
+                                    selected = true, onClick = { rangeMenu = true },
+                                    label = { Text("$range days") },
+                                    leadingIcon = { Icon(Icons.Filled.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                )
+                                androidx.compose.material3.DropdownMenu(expanded = rangeMenu, onDismissRequest = { rangeMenu = false }) {
+                                    listOf(7, 14, 30, 90).forEach { n ->
+                                        androidx.compose.material3.DropdownMenuItem(text = { Text("$n days") }, onClick = {
+                                            rangeMenu = false; range = n
+                                            ServiceLocator.debugEvents.event("history_range", "days" to n)
+                                        })
+                                    }
+                                }
+                            }
+                            HistoryFilter.entries.forEach { f ->
+                                FilterChip(selected = filter == f, onClick = {
+                                    filter = f
+                                    ServiceLocator.debugEvents.event("history_filter", "filter" to f.name)
+                                }, label = { Text(f.label) })
+                            }
+                        }
+                        Text(filter.meaning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                        HistoryLegend()
+                    }
+                }
+                if (cards.isEmpty()) item(key = "nocards") {
+                    Text(
+                        if (filter == HistoryFilter.OFF) "Nothing was off target in the last $range days." else "Nothing to show here yet.",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                }
                 cards.chunked(2).forEachIndexed { row, pair ->
                     item(key = "cards_$row") {
                         Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -224,6 +287,8 @@ fun HistoryScreen(
                                 MetricCard(
                                     goal = goal,
                                     days = days,
+                                    full = full,
+                                    today = today.toEpochDay(),
                                     compact = true,
                                     onClick = {
                                         ServiceLocator.debugEvents.event("history_metric", "metric" to goal.metric.key)
@@ -237,10 +302,16 @@ fun HistoryScreen(
                     }
                 }
                 item(key = "all") {
-                    androidx.compose.material3.TextButton(onClick = {
-                        showAll = !showAll
-                        ServiceLocator.debugEvents.event("history_show_all", "open" to showAll)
-                    }) { Text(if (showAll) "Show fewer" else "Show all nutrients") }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${if (fullInRange == 1) "1 full day" else "$fullInRange full days"} · today is left out until it's over",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.weight(1f),
+                        )
+                        androidx.compose.material3.TextButton(onClick = {
+                            showAll = !showAll
+                            ServiceLocator.debugEvents.event("history_show_all", "open" to showAll)
+                        }) { Text(if (showAll) "Show fewer" else "Show all") }
+                    }
                 }
             }
             // Below the charts: the charts are what History opens for, the search is
@@ -313,29 +384,44 @@ fun HistoryScreen(
 
 }
 
+/** The key for every card: ▼ and ▲ so it isn't colour alone. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun HistoryLegend() {
+    val c = standingColors()
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        listOf(c.low to "▼ Too low", c.inRange to "In range", c.over to "Over target", c.past to "▲ Past your line", c.none to "No line set").forEach { (col, t) ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.foundation.layout.Box(Modifier.padding(end = 5.dp).size(10.dp).background(col, RoundedCornerShape(2.dp)))
+                Text(t, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
+            }
+        }
+    }
+}
+
 /**
- * One tracked metric: its month average, how that average stands against the
- * goal, and the month as a sparkline. Tapping opens the full chart.
+ * One tracked metric over the range: its average over full days, a sentence on how
+ * those days did, and each day as a small bar in its own colour (note S29, S31:
+ * one colour for a whole card hid the good days). Tapping opens the same bars, big.
  */
 @Composable
 private fun MetricCard(
     goal: MetricGoal,
     days: List<DayValue>,
+    full: Set<Long>,
+    today: Long,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     /** Half-width, two to a row: the number, the line, and a few words. */
     compact: Boolean = false,
 ) {
-    val average = MetricHistory.average(days)
-    val standing = average?.let { MetricHistory.standing(goal, it) } ?: Standing.NO_GOAL
-    val colors = standingColors()
-
+    val average = MetricHistory.averageFull(days, full)
     Card(
         onClick = onClick,
         modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        Column(modifier = Modifier.padding(start = if (compact) 10.dp else 14.dp, end = if (compact) 10.dp else 14.dp, top = if (compact) 8.dp else 12.dp, bottom = if (compact) 8.dp else 10.dp)) {
+        Column(modifier = Modifier.padding(horizontal = if (compact) 12.dp else 14.dp, vertical = if (compact) 10.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 if (goal.metric == Metric.SUGAR) "Added sugar" else if (compact) goal.metric.shortLabel else goal.metric.label,
                 style = MaterialTheme.typography.labelLarge,
@@ -346,54 +432,46 @@ private fun MetricCard(
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     average?.let { formatAmount(it, goal.metric, withUnit = false) } ?: "–",
-                    style = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
+                    style = com.nutritionscribe.app.ui.theme.NumberStyle.copy(fontSize = 22.sp),
                 )
-                Text(
-                    " ${goal.metric.unit}/day" + if (!compact && goal.metric.isMicro && average != null && goal.target != null)
-                        " · ${Math.round(average / goal.target!! * 100)}% of ${if (goal.enabled) "your goal" else if (goal.metric.direction == com.nutritionscribe.shared.model.GoalDirection.LIMIT) "the limit" else if (ServiceLocator.profileNow() != null) "what you need" else "the Daily Value"}" else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
+                Text(" ${goal.metric.unit}/day", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.padding(bottom = 3.dp))
             }
             Text(
-                standingPhrase(standing, goal),
-                style = MaterialTheme.typography.labelSmall,
-                color = colors.of(standing),
-                maxLines = 1,
+                cardStatus(goal, days, full),
+                style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp),
+                color = MaterialTheme.colorScheme.secondary,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Sparkline(
-                days = days,
-                goal = goal,
-                color = colors.of(standing),
-                modifier = Modifier.fillMaxWidth().height(if (compact) 28.dp else 34.dp).padding(top = 6.dp),
-            )
+            DayStrip(days, goal, full, today, Modifier.fillMaxWidth().height(30.dp).padding(top = 4.dp))
         }
     }
 }
 
-/** A short verdict for the month, in the goal's own direction. */
-internal fun standingPhrase(standing: Standing, goal: MetricGoal): String {
-    val target = goal.target?.let { formatAmount(it, goal.metric) }
-    if (!goal.enabled) return when (standing) {
-        Standing.MISSED -> "past your line"
-        Standing.NO_GOAL -> "30-day average"
-        else -> "within your lines"
-    }
-    return when (standing) {
-        Standing.MET -> "on target · $target"
-        Standing.SHORT -> if (goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT) {
-            "a little over · $target"
-        } else {
-            "under · $target"
-        }
-        Standing.MISSED -> if (goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT) {
-            "over · $target"
-        } else {
-            "well under · $target"
-        }
-        Standing.NO_GOAL -> "30-day average"
+/** "8 of 13 days at 100 g or more", "6 under 2,300 · 4 over · 3 past 3,000", or how to judge it. */
+internal fun cardStatus(goal: MetricGoal, days: List<DayValue>, full: Set<Long>): String {
+    val m = goal.metric
+    fun f(v: Double) = formatAmount(v, m, withUnit = m.unit == "g")
+    val judged = days.filter { it.epochDay in full }.mapNotNull { d -> d.value?.let { MetricHistory.standing(goal, it) } }
+    val n = judged.size
+    if (n == 0) return "No full days yet"
+    val target = goal.target?.takeIf { goal.enabled }
+    val line = goal.ceilingValue
+    val floor = goal.floorValue
+    if (target == null && line == null && floor == null) return "No line set · set one in Goals"
+    val inRange = judged.count { it == Standing.IN_RANGE }
+    val over = judged.count { it == Standing.OVER }
+    val past = judged.count { it == Standing.PAST }
+    val low = judged.count { it == Standing.LOW }
+    return when {
+        target != null && goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT && line != null ->
+            listOfNotNull("$inRange under ${f(target)}", over.takeIf { it > 0 }?.let { "$it over" }, past.takeIf { it > 0 }?.let { "$it past ${f(line)}" },
+                low.takeIf { it > 0 }?.let { "$it too low" }).joinToString(" · ")
+        target != null && goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT -> "$inRange of $n under ${f(target)}"
+        target != null -> "${inRange + over} of $n days at ${f(target)} or more" + (past.takeIf { it > 0 }?.let { " · $it past your line" } ?: "")
+        line != null -> "${n - past} of $n under your ${f(line)} line"
+        else -> "${n - low} of $n above your ${f(floor!!)} line"
     }
 }
 
@@ -452,25 +530,24 @@ private fun EntryRow(
                 if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background,
             )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+            .heightIn(min = 48.dp)
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (selecting) {
             Checkbox(checked = selected, onCheckedChange = { onClick() })
         }
-        Column(modifier = Modifier.padding(start = if (selecting) 0.dp else 4.dp).weight(1f)) {
-            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(
-                entry.timeLabel(zone),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-        }
+        Text(
+            entry.timeLabel(zone),
+            style = com.nutritionscribe.app.ui.theme.NumberStyle.copy(fontSize = 12.5.sp),
+            color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.padding(start = if (selecting) 0.dp else 4.dp).width(70.dp),
+        )
+        Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         Text(
             entry.amountOf(lead)?.let { formatAmount(it, lead) } ?: "–",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.secondary,
+            style = com.nutritionscribe.app.ui.theme.NumberStyle,
             modifier = Modifier.padding(start = 12.dp, end = 4.dp),
         )
     }

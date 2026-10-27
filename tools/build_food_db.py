@@ -50,11 +50,24 @@ NUTRIENTS = {
     1190: "folate_ug", 435: "folate_ug",
     1103: "selenium_ug", 317: "selenium_ug",
     1253: "cholesterol_mg", 601: "cholesterol_mg",
+    # --- More to track (asset version 7; tools/add_extras_food_db.py adds the same in place) ---
+    1098: "copper_mg", 312: "copper_mg",
+    1101: "manganese_mg", 315: "manganese_mg",
+    1091: "phosphorus_mg", 305: "phosphorus_mg",
+    1180: "choline_mg", 421: "choline_mg",
+    1165: "thiamin_mg", 404: "thiamin_mg",
+    1166: "riboflavin_mg", 405: "riboflavin_mg",
+    1167: "niacin_mg", 406: "niacin_mg",
+    1175: "vitamin_b6_mg", 415: "vitamin_b6_mg",
+    1018: "alcohol_g", 221: "alcohol_g",
+    1404: "ala_g", 851: "ala_g",
 }
 
 # Read but not stored as-is: vitamin D in IU fills in when the µg value is
 # missing (40 IU = 1 µg), and EPA + DHA (grams) add up to omega3_mg.
-EXTRA = {1110: "vit_d_iu", 324: "vit_d_iu", 1278: "epa_g", 629: "epa_g", 1272: "dha_g", 621: "dha_g"}
+EXTRA = {1110: "vit_d_iu", 324: "vit_d_iu", 1278: "epa_g", 629: "epa_g", 1272: "dha_g", 621: "dha_g",
+         # All 18:3, for ALA where the n-3 isomer itself wasn't measured (nearly all of it is ALA).
+         1270: "pufa183_g", 619: "pufa183_g"}
 
 # Units are NOT uniform: sodium and caffeine are milligrams, everything else is
 # grams or kcal. Storing them in one "amount" column without this in mind is how
@@ -64,7 +77,10 @@ COLUMNS = ["kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g",
            # Micronutrients. The order is what UsdaFoodSource.NUTRIENT_COLUMNS reads.
            "calcium_mg", "iron_mg", "potassium_mg", "magnesium_mg", "zinc_mg",
            "vitamin_a_ug", "vitamin_c_mg", "vitamin_d_ug", "vitamin_e_mg", "vitamin_k_ug",
-           "vitamin_b12_ug", "folate_ug", "selenium_ug", "omega3_mg", "cholesterol_mg"]
+           "vitamin_b12_ug", "folate_ug", "selenium_ug", "omega3_mg", "cholesterol_mg",
+           # More to track.
+           "copper_mg", "manganese_mg", "phosphorus_mg", "choline_mg", "thiamin_mg", "riboflavin_mg",
+           "niacin_mg", "vitamin_b6_mg", "ala_g", "alcohol_g"]
 
 
 def csv_dirs(base):
@@ -156,6 +172,9 @@ def build(base, out):
         # is absent rather than unknown, often enough that this is fair.
         if epa is not None or dha is not None:
             v["omega3_mg"] = ((epa or 0.0) + (dha or 0.0)) * 1000.0
+        all183 = v.pop("pufa183_g", None)
+        if "ala_g" not in v and all183 is not None:
+            v["ala_g"] = all183
 
     db.executemany(
         f"INSERT INTO food (fdc_id, description, source, {', '.join(COLUMNS)})"

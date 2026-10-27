@@ -22,8 +22,11 @@ object LogDay {
 
     fun today() { date = null; time = null }
 
+    /** A time for today's entry (from Log food's "Now ▾"); null is now. */
+    fun setTodayTime(t: LocalTime?) { if (date == null) time = t }
+
     fun set(d: LocalDate?) {
-        date = d?.takeIf { it != LocalDate.now() }
+        date = d?.takeIf { it != com.nutritionscribe.shared.model.LogDays.today() }
         time = null
     }
 
@@ -31,10 +34,13 @@ object LogDay {
 
     /** The timestamp to store, and whether it is a placeholder rather than a reported time. */
     fun stamp(zone: ZoneId = ZoneId.systemDefault()): Pair<Long, Boolean> {
-        val d = date ?: return System.currentTimeMillis() to false
+        // Today with a time picked on Log food ("Now ▾" set to 12:40): that time today.
+        val d = date ?: time?.let { com.nutritionscribe.shared.model.LogDays.today() } ?: return System.currentTimeMillis() to false
         val t = time
         return if (t == null) d.atTime(LocalTime.NOON).atZone(zone).toInstant().toEpochMilli() to true
-        else d.atTime(t).atZone(zone).toInstant().toEpochMilli() to false
+        // 1 AM on a day that ends at 3 AM is the early hours after it, not before it.
+        else (if (t.hour < com.nutritionscribe.shared.model.LogDays.endHour) d.plusDays(1) else d)
+            .atTime(t).atZone(zone).toInstant().toEpochMilli() to false
     }
 
     /** "Tuesday, Sep 23" */

@@ -61,7 +61,7 @@ object HoldFeedback {
 }
 
 @Composable
-fun HoldToFeedback(screen: () -> String, content: @Composable () -> Unit) {
+fun HoldToFeedback(screen: () -> String, modifier: Modifier = Modifier.fillMaxSize(), content: @Composable () -> Unit) {
     val debug by ServiceLocator.settingsRepository.debugMode.collectAsState(initial = false)
     val haptic = LocalHapticFeedback.current
     var spot by remember { mutableStateOf<Offset?>(null) }
@@ -72,7 +72,7 @@ fun HoldToFeedback(screen: () -> String, content: @Composable () -> Unit) {
     var shot by remember { mutableStateOf<String?>(null) }
 
     Box(
-        Modifier.fillMaxSize().then(
+        modifier.then(
             if (!debug) Modifier else Modifier.pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -128,7 +128,7 @@ fun HoldToFeedback(screen: () -> String, content: @Composable () -> Unit) {
         content()
         ring?.let { at ->
             val color = MaterialTheme.colorScheme.primary
-            Canvas(Modifier.fillMaxSize()) {
+            Canvas(Modifier.matchParentSize()) {
                 drawArc(color, -90f, 360f * progress, useCenter = false,
                     topLeft = Offset(at.x - 70f, at.y - 70f), size = androidx.compose.ui.geometry.Size(140f, 140f), style = Stroke(width = 10f))
             }
@@ -139,6 +139,14 @@ fun HoldToFeedback(screen: () -> String, content: @Composable () -> Unit) {
         SpotDialog(screen(), at, shot = { shot }, onDone = { spot = null })
     }
 }
+
+/**
+ * Hold-to-report inside a bottom sheet (note S32). A sheet is its own window, so
+ * the hold watcher around the screen never sees a press on it.
+ */
+@Composable
+fun SheetFeedback(name: String, content: @Composable () -> Unit) =
+    HoldToFeedback(screen = { "$name (sheet)" }, modifier = Modifier.fillMaxWidth(), content = content)
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
@@ -190,5 +198,19 @@ fun Modifier.holdFeedbackExempt(): Modifier = pointerInput(Unit) {
         } finally {
             HoldFeedback.exemptPress = false
         }
+    }
+}
+
+/** A bottom sheet that takes hold-to-report like any screen (note S32). */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+fun ReportableSheet(
+    name: String,
+    onDismissRequest: () -> Unit,
+    sheetState: androidx.compose.material3.SheetState = androidx.compose.material3.rememberModalBottomSheetState(),
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismissRequest, sheetState = sheetState) {
+        SheetFeedback(name) { Column(Modifier.fillMaxWidth()) { content() } }
     }
 }

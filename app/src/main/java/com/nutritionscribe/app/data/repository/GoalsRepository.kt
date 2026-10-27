@@ -130,6 +130,12 @@ class GoalsRepository(
         return cleared
     }
 
+    /** Writes whole goals at once: Fill in for me, and its undo. */
+    suspend fun putAll(goals: List<MetricGoal>) {
+        dao.upsertAll(goals.map { it.toRow() })
+        goals.firstOrNull { it.metric == Metric.PROTEIN }?.let { mirrorProteinToLegacySettings(Metric.PROTEIN, it.target, it.floorValue) }
+    }
+
     suspend fun setFloor(metric: Metric, floor: Double?) {
         val existing = find(metric) ?: MetricGoal.default(metric)
         dao.upsert(existing.copy(floorValue = floor).toRow())

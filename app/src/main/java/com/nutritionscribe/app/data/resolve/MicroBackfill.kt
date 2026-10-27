@@ -66,7 +66,7 @@ class MicroBackfill(
     }
 
     companion object {
-        /** 2: foods the AI answered, which version 1 could not fill. 3: labels, whose five micros stopped the rest being borrowed. */
-        const val VERSION = 3
+        /** 2: foods the AI answered, which version 1 could not fill. 3: labels, whose five micros stopped the rest being borrowed. 4: More to track. */
+        const val VERSION = 4
     }
 }

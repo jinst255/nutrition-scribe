@@ -54,7 +54,7 @@ fun DayScreen(
     val all by remember { ServiceLocator.database.entryDao().observeAll().map { rows -> rows.map { it.toEntry() } } }
         .collectAsState(initial = emptyList())
     val entries = remember(all, date) {
-        all.filter { Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zone).toLocalDate() == date }.sortedBy { it.timestampEpochMillis }
+        all.filter { com.nutritionscribe.shared.model.LogDays.dayOf(it.timestampEpochMillis, zone) == date }.sortedBy { it.timestampEpochMillis }
     }
     val goals by ServiceLocator.goalsRepository.goals.collectAsState(initial = emptyList())
     val profile by ServiceLocator.settingsRepository.profile.collectAsState(initial = null)
@@ -126,6 +126,16 @@ fun DayScreen(
         }
     }
 
+    val naturalOpen by NaturalSugar.open.collectAsState()
+    if (naturalOpen) NaturalSheet(
+        entries,
+        onAboutAdded = {
+            val sp = com.nutritionscribe.shared.resolve.Sugars.split(entries)
+            onOpenNutrient(Metric.SUGAR, sp.added + sp.unknown, refs.getValue(Metric.SUGAR))
+        },
+        onOpenEntry = onOpenEntry,
+        onDismiss = { NaturalSugar.open.value = false },
+    )
     detail?.let { m ->
         NutrientSheet(
             metric = m,
@@ -138,6 +148,7 @@ fun DayScreen(
             onToggleGoal = { on -> scope.launch { ServiceLocator.goalsRepository.setEnabled(m, on) } },
             onOpenGoals = { detail = null; onOpenGoals() },
             onLearnMore = { have, target -> detail = null; onOpenNutrient(m, have, target) },
+            onOpenEntry = { id -> detail = null; onOpenEntry(id) },
             onDismiss = { detail = null },
         )
     }

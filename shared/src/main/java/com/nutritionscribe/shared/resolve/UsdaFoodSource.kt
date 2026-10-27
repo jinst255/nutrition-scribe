@@ -169,6 +169,17 @@ class UsdaFoodSource(private val sql: SqlReader) {
             "selenium_ug" to Metric.SELENIUM,
             "omega3_mg" to Metric.OMEGA3,
             "cholesterol_mg" to Metric.CHOLESTEROL,
+            // More to track (food.db since asset version 7, tools/add_extras_food_db.py).
+            "copper_mg" to Metric.COPPER,
+            "manganese_mg" to Metric.MANGANESE,
+            "phosphorus_mg" to Metric.PHOSPHORUS,
+            "choline_mg" to Metric.CHOLINE,
+            "thiamin_mg" to Metric.THIAMIN,
+            "riboflavin_mg" to Metric.RIBOFLAVIN,
+            "niacin_mg" to Metric.NIACIN,
+            "vitamin_b6_mg" to Metric.VITAMIN_B6,
+            "ala_g" to Metric.OMEGA3_ALA,
+            "alcohol_g" to Metric.ALCOHOL,
         )
 
         private val COLUMNS = "f.fdc_id, f.description, f.source, " +

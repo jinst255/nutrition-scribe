@@ -312,6 +312,21 @@ class LogPipeline(
         entry
     }
 
+    /**
+     * Saved to My foods without logging (My foods › Add a food): the words learn
+     * these foods, exactly as a confirmed card would, and no entry is written.
+     */
+    suspend fun remember(text: String, items: List<Resolver.Confirmed>, how: String) = withContext(Dispatchers.IO) {
+        if (items.isEmpty()) return@withContext
+        resolver().confirm(text, items)
+        for (c in items) {
+            val photo = com.nutritionscribe.app.ui.scan.ScanPhotos.take(c.candidate?.id) ?: continue
+            personal.get(c.key)?.let { f -> if (f.photo != photo) personal.put(f.copy(photo = photo)) }
+        }
+        events?.event("food_saved", "how" to how, "text" to text,
+            "items" to items.map { mapOf("name" to it.name, "grams" to it.grams, "origin" to it.candidate?.origin, "nutrients" to it.nutrients) })
+    }
+
     private fun entryFor(text: String, items: List<Resolver.Confirmed>, name: String?, timestamp: Long): Entry {
         val logged = items.map { c ->
             // Added sugar, where the label gave it or the kind of food settles it.

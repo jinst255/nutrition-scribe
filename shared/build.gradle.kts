@@ -33,6 +33,7 @@ android {
             it.systemProperty("phrases", System.getProperty("phrases") ?: "")
             it.systemProperty("personalFoods", System.getProperty("personalFoods") ?: "")
             it.systemProperty("scanEvents", System.getProperty("scanEvents") ?: "")
+            it.systemProperty("askLive", System.getProperty("askLive") ?: "")
             // The accuracy benchmark (BenchRunTest): paths outside the repo, never logged.
             for (p in listOf("bench", "benchOut", "benchModel", "benchOnly")) it.systemProperty(p, System.getProperty(p) ?: "")
             // Only for the opt-in AI replay; absent, those tests skip. Never logged.

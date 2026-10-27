@@ -218,4 +218,32 @@ class MigrationTest {
         }
         db.close()
     }
+
+    @Test
+    fun migrate6To7_keepsEverythingAndAddsEmptyAskTables() {
+        helper.createDatabase(dbName, 6).use { db ->
+            db.execSQL(
+                "INSERT INTO entries (id, timestampEpochMillis, rawText, name, isFixedFood, source, confidence," +
+                    " detailCompacted, timeUnspecified, needsDetail, foodDbId, itemsJson, needsConfirm)" +
+                    " VALUES ('e6', 1789797747092, 'an apple', 'Apple', 0, 'usda', 'ESTIMATED', 0, 0, 0, NULL, '[]', 0)"
+            )
+            db.execSQL("INSERT INTO entry_nutrient (entryId, metric, amount) VALUES ('e6', 'calories', 95.0)")
+        }
+        val db = helper.runMigrationsAndValidate(dbName, 7, true, NutritionScribeDatabase.MIGRATION_6_7)
+        db.query("SELECT name FROM entries WHERE id = 'e6'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("Apple", it.getString(0))
+        }
+        db.query("SELECT amount FROM entry_nutrient WHERE entryId = 'e6'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(95.0, it.getDouble(0), 0.0001)
+        }
+        listOf("chat", "chat_message", "meal_plan").forEach { t ->
+            db.query("SELECT COUNT(*) FROM $t").use {
+                assertTrue(it.moveToFirst())
+                assertEquals(0, it.getInt(0))
+            }
+        }
+        db.close()
+    }
 }

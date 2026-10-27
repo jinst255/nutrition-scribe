@@ -56,6 +56,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -119,6 +121,18 @@ private const val FRONT_MS = 5000L
 /** How often a camera frame is read for words: the front's big print, or a panel coming into view. */
 private const val READ_EVERY_MS = 700L
 
+/** With the label in view and nothing new read for this long, it reads what it has (notes S7, SCAN-4). */
+private const val STILL_MS = 8000L
+
+/** What the camera looks for (note S9): everything at once, or the one thing chosen. */
+private enum class ScanMode(val label: String) { AUTO("Auto"), BARCODE("Barcode"), FRONT("Front"), LABEL("Label") }
+
+/** The lines every US label must print, the progress count: the serving, then 15 nutrients. */
+private val REQUIRED: List<String> = listOf("serving") + listOf(
+    Metric.CALORIES, Metric.FAT, Metric.SATURATED_FAT, Metric.TRANS_FAT, Metric.CHOLESTEROL, Metric.SODIUM, Metric.CARBS,
+    Metric.FIBER, Metric.SUGAR, Metric.ADDED_SUGAR, Metric.PROTEIN, Metric.VITAMIN_D, Metric.CALCIUM, Metric.IRON, Metric.POTASSIUM,
+).map { it.key }
+
 /**
  * The packaged-food assist, offered on a confirm card and on Home.
  *
@@ -180,15 +194,33 @@ fun ScanScreen(
     // are what this label should roughly say.
     var expected by remember { mutableStateOf<FoodCandidate?>(null) }
     val guide by settings.scanGuide.collectAsState(initial = true)
+    var mode by remember { mutableStateOf(if (kindOf != null) ScanMode.LABEL else ScanMode.AUTO) }
+    // Every number read off the panel while it was in view, by how often it was read:
+    // a photo that misses a line takes it from here when two frames agreed on it.
+    val votes = remember { mutableMapOf<String, MutableMap<Double, Int>>() }
+    var liveServing by remember { mutableStateOf<Double?>(null) }
+    var lastNewAt by remember { mutableStateOf(0L) }
+    var autoRead by remember { mutableStateOf(false) }
+    // Where the panel sits in the picture, so the box follows it (note S20).
+    var panelBox by remember { mutableStateOf<android.graphics.Rect?>(null) }
+    var frameSize by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var panelBoxAt by remember { mutableStateOf(0L) }
+    LaunchedEffect(panelBoxAt) { delay(1500); if (System.currentTimeMillis() - panelBoxAt >= 1400) panelBox = null }
+    // One photo with several labels (a variety pack, note S10): which one was eaten.
+    var choices by remember { mutableStateOf<List<Pair<String?, NutritionFactsParser.Panel>>>(emptyList()) }
+    var pickedTitle by remember { mutableStateOf<String?>(null) }
+    var capture by remember { mutableStateOf<ImageCapture?>(null) }
+    var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
+    var torch by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         events.startFlow("scan", onlyIfIdle = true)
         events.event("scan_open", "label_pack" to pack.status.value.toString(), "camera_granted" to granted,
             "kind_of" to kindOf?.id, "kind" to kindName)
     }
-    LaunchedEffect(granted) {
-        if (!granted) return@LaunchedEffect
-        delay(FRONT_MS)
+    LaunchedEffect(granted, mode) {
+        if (!granted || (mode != ScanMode.AUTO && mode != ScanMode.FRONT)) return@LaunchedEffect
+        delay(if (mode == ScanMode.FRONT) FRONT_MS * 2 else FRONT_MS)
         if (sheet == null && panel == null && !done && !panelSeen && !frontDone) {
             gaveUp = true
             events.event("scan_front_gave_up", "ms" to System.currentTimeMillis() - openedAt, "front_seen" to frontSeen,
@@ -218,7 +250,8 @@ fun ScanScreen(
     }
 
     panel?.let { p ->
-        val hint = newKindOf?.let { base -> newKindName?.let { k -> ItemDraft.withBrand(base.copy(name = Kinds.nameFor(base, k)), " ") } } ?: nameHint
+        val hint = newKindOf?.let { base -> newKindName?.let { k -> ItemDraft.withBrand(base.copy(name = Kinds.nameFor(base, k)), " ") } }
+            ?: listOfNotNull(nameHint, pickedTitle).joinToString(" ").ifBlank { null }
         PanelForm(
             panel = p, photo = panelPhoto, nameHint = hint, fromFront = newKindOf != null,
             brand = newKindOf?.brand, expected = expected,
@@ -226,13 +259,17 @@ fun ScanScreen(
                 panelPhoto?.let { b -> scope.launch { withContext(Dispatchers.IO) { ScanPhotos.save(b) }?.let { ScanPhotos.remember(c.id, it) } } }
                 deliver(c, if (newKindOf != null) "label_new_kind" else "label")
             },
-            onRetake = { events.event("scan_retake"); panel = null; panelPhoto = null; reading = false },
+            onRetake = {
+                events.event("scan_retake"); panel = null; panelPhoto = null; reading = false
+                autoRead = false; votes.clear(); seen = emptySet(); liveServing = null; pickedTitle = null; lastNewAt = System.currentTimeMillis()
+            },
         )
         return
     }
 
     fun onBarcode(code: String) {
-        if (done || reading || !tried.add(code)) return
+        // Reading their own label means their label, not the product list's.
+        if (done || reading || mode == ScanMode.LABEL || newKindOf != null || !tried.add(code)) return
         val t0 = System.currentTimeMillis()
         val inPack = pack.source()?.byBarcode(code)
         if (inPack != null) {
@@ -256,16 +293,23 @@ fun ScanScreen(
 
     /** A frame's words: a panel coming into view, or the front of the box. */
     fun onText(lines: List<NutritionFactsParser.OcrLine>, frame: Bitmap?) {
-        if (done || reading || sheet != null) return
+        if (done || reading || sheet != null || choices.isNotEmpty() || mode == ScanMode.BARCODE) return
         val text = lines.joinToString("\n") { it.text }
-        if (looksLikePanel(text)) {
+        if (mode != ScanMode.FRONT && looksLikePanel(text)) {
             if (!panelSeen) events.event("scan_panel_in_view", "ms" to System.currentTimeMillis() - openedAt)
             panelSeen = true
+            panelBoxOf(lines)?.let { panelBox = it; panelBoxAt = System.currentTimeMillis() }
+            frame?.let { frameSize = it.width to it.height }
             val p = runCatching { NutritionFactsParser.parse(lines) }.getOrNull()
-            if (p != null) seen = p.perServing.keys + listOfNotNull(if (p.servingText != null || p.servingGrams != null) "serving" else null)
+            if (p != null) {
+                p.perServing.forEach { (k, v) -> votes.getOrPut(k) { mutableMapOf() }.merge(v, 1, Int::plus) }
+                p.servingGrams?.let { liveServing = it }
+                val now = p.perServing.keys + listOfNotNull(if (p.servingText != null || p.servingGrams != null) "serving" else null)
+                if (!seen.containsAll(now)) { seen = seen + now; lastNewAt = System.currentTimeMillis() }
+            }
             return
         }
-        if (frontDone || matching) return
+        if (frontDone || matching || mode == ScanMode.LABEL || newKindOf != null) return
         val big = lines.filter { it.text.count(Char::isLetter) >= 3 }
         if (big.isEmpty()) return
         frontSeen = true
@@ -274,7 +318,8 @@ fun ScanScreen(
             val found = withContext(Dispatchers.IO) { frontAnswer(big.map { it.text to it.height }) }
             matching = false
             if (found == null || done || sheet != null || frontDone) return@launch
-            guesses = listOf(found.candidate) + found.others
+            // Only a strong match is offered at all (notes S22, S34): a wrong question costs more than none.
+            if (found.sure || found.yours) guesses = listOf(found.candidate) + found.others.take(2)
             if (found.sure || found.newKind != null || found.yours) {
                 events.event("scan_front", "sure" to found.sure, "yours" to found.yours, "new_kind" to found.newKind,
                     "candidate" to describe(found.candidate), "words" to found.words, "kinds" to found.kinds.map { Kinds.label(it) },
@@ -285,7 +330,138 @@ fun ScanScreen(
         }
     }
 
-    val labelMode = panelSeen || gaveUp || newKindOf != null
+    val labelMode = newKindOf != null || mode == ScanMode.LABEL || (mode == ScanMode.AUTO && (panelSeen || gaveUp))
+
+    /** A capture that missed a line takes it from the live frames, when two of them agreed. */
+    fun withLive(p: NutritionFactsParser.Panel): NutritionFactsParser.Panel {
+        val extra = votes.mapNotNull { (k, vs) ->
+            if (k in p.perServing) null else vs.maxByOrNull { it.value }?.takeIf { it.value >= 2 }?.let { k to it.key }
+        }.toMap()
+        if (extra.isEmpty()) return p
+        events.event("scan_live_filled", "keys" to extra)
+        return p.copy(perServing = p.perServing + extra, servingGrams = p.servingGrams ?: liveServing)
+    }
+
+    /** Takes the photo and reads it: the button, or by itself once the label has been held still. */
+    fun readLabel(trigger: String) {
+        val c = capture ?: return
+        if (reading || done) return
+        reading = true
+        message = null
+        val t0 = System.currentTimeMillis()
+        events.event("scan_capture", "torch" to torch, "panel_in_view" to panelSeen, "trigger" to trigger, "mode" to mode.name,
+            "live_lines" to seen.size)
+        c.takePicture(ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageCapturedCallback() {
+            @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
+            override fun onCaptureSuccess(image: ImageProxy) {
+                val media = image.image
+                if (media == null) {
+                    events.event("scan_failed", "stage" to "capture", "reason" to "no image")
+                    reading = false
+                    image.close(); return
+                }
+                val rotation = image.imageInfo.rotationDegrees
+                // The photo the text was read from: shown on the check screen
+                // and kept with the label, so a number can be checked against it.
+                val bitmap = runCatching { rotated(image.toBitmap(), rotation) }.getOrNull()
+                val photo = if (events.enabled) bitmap?.let { b -> Executors.newSingleThreadExecutor().submit<String?> { events.saveScan(b) } } else null
+                fun photoName() = runCatching { photo?.get(5, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull()
+                val size = "${image.width}x${image.height}"
+                // A reader that never answers would leave "Reading…" up for good.
+                var answered = false
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    if (!answered) {
+                        events.event("scan_failed", "stage" to "ocr_timeout", "after_ms" to 20_000, "photo" to photoName())
+                        message = "Still reading. If this keeps happening, the phone may be downloading its text reader; try again in a minute."
+                    }
+                }, 20_000)
+                val input = InputImage.fromMediaImage(media, rotation)
+                val tOcr = System.currentTimeMillis()
+                TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).process(input)
+                    .addOnSuccessListener { text ->
+                        answered = true
+                        // With each line's box, so a two-column Supplement Facts panel
+                        // pairs every name with the amount on its row.
+                        val boxed = text.textBlocks.flatMap { b -> b.lines.mapNotNull { l ->
+                            l.boundingBox?.let { r -> NutritionFactsParser.OcrLine(l.text, r.left, r.top, r.right, r.bottom) }
+                        } }
+                        val p = if (boxed.isNotEmpty()) NutritionFactsParser.parse(boxed) else NutritionFactsParser.parse(text.text)
+                        events.event(
+                            "scan_ocr",
+                            "photo" to photoName(),
+                            "size" to size, "rotation" to rotation,
+                            "capture_ms" to tOcr - t0, "ocr_ms" to System.currentTimeMillis() - tOcr,
+                            "text" to text.text,
+                            // Where each line sat in the picture: a curved jar or a
+                            // skewed shot shows up as lines out of order or split.
+                            "lines" to text.textBlocks.flatMap { b -> b.lines.map { l ->
+                                mapOf("text" to l.text, "box" to l.boundingBox?.flattenToString(),
+                                    "angle" to l.angle, "confidence" to l.confidence)
+                            } },
+                        )
+                        events.event(
+                            "scan_parsed",
+                            "serving_text" to p.servingText, "serving_grams" to p.servingGrams,
+                            "per_serving" to p.perServing, "complete" to p.looksComplete,
+                            "reads" to p.reads.map { r -> mapOf("metric" to r.metric, "line" to r.line, "raw" to r.raw,
+                                "value" to r.value, "fix" to r.fix, "as_read" to r.asRead) },
+                            "missing" to REQUIRED.filter { it != "serving" && it !in p.perServing },
+                            "suspect" to p.issues.map { it.code },
+                        )
+                        if (p.issues.isNotEmpty()) events.event("suspect", "where" to "scan", "issues" to p.issues.map { it.code },
+                            "per_serving" to p.perServing, "serving_grams" to p.servingGrams)
+                        // Several labels in the one photo: which mix was it?
+                        val several = if (boxed.isNotEmpty()) NutritionFactsParser.splitPanels(boxed).takeIf { it.size >= 2 }
+                            ?.map { it.title to NutritionFactsParser.parse(it.lines) }?.filter { it.second.perServing.size >= 3 }.orEmpty() else emptyList()
+                        if (several.size >= 2) {
+                            events.event("scan_several_labels", "n" to several.size, "titles" to several.map { it.first },
+                                "calories" to several.map { it.second.perServing[Metric.CALORIES.key] })
+                            reading = false; panelPhoto = bitmap; choices = several
+                            return@addOnSuccessListener
+                        }
+                        if (p.perServing.size < 3) {
+                            reading = false
+                            if (mode == ScanMode.AUTO) gaveUp = true
+                            message = "Couldn't read a Nutrition Facts panel. Try closer, with the whole panel in the box. Tap the picture to focus."
+                            // A photo of the front, not the panel: what its big words say.
+                            if (!frontDone && boxed.isNotEmpty() && mode != ScanMode.LABEL) scope.launch {
+                                val found = withContext(Dispatchers.IO) { frontAnswer(boxed.map { it.text to it.height }) }
+                                events.event("scan_front_matches", "from" to "photo", "candidate" to found?.candidate?.let { describe(it) },
+                                    "sure" to found?.sure)
+                                if (found != null && (found.sure || found.yours)) {
+                                    guesses = listOf(found.candidate) + found.others.take(2)
+                                    sheet = FrontSheet.Found(found, bitmap?.let(::centerCrop))
+                                }
+                            }
+                        } else { message = null; panelPhoto = bitmap; panel = withLive(p) }
+                    }
+                    .addOnFailureListener { e ->
+                        answered = true
+                        reading = false
+                        events.event("scan_failed", "stage" to "ocr", "error" to e, "photo" to photoName(),
+                            "ms" to System.currentTimeMillis() - tOcr)
+                        message = if (e.message.orEmpty().contains("download", ignoreCase = true))
+                            "The phone is still downloading its text reader. Try again in a minute."
+                        else "Couldn't read that. Try again."
+                    }
+                    .addOnCompleteListener { image.close() }
+            }
+
+            override fun onError(exception: ImageCaptureException) {
+                reading = false
+                events.event("scan_failed", "stage" to "capture", "error" to exception, "code" to exception.imageCaptureError)
+                message = "The camera didn't take the picture. Try again."
+            }
+        })
+    }
+
+    // Held still with nothing new for a while, or every line read: it reads what it has.
+    LaunchedEffect(labelMode, panelSeen, lastNewAt, reading, autoRead, capture) {
+        if (!labelMode || !panelSeen || reading || done || autoRead || capture == null || choices.isNotEmpty()) return@LaunchedEffect
+        val all = REQUIRED.all { it in seen }
+        delay(if (all) 1200 else STILL_MS)
+        if (!reading && !done && choices.isEmpty()) { autoRead = true; readLabel(if (all) "auto_all_lines" else "auto_still") }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         val base = newKindOf
         if (base != null && newKindName != null) {
@@ -297,14 +473,34 @@ fun ScanScreen(
                 }
             }
         } else {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                ScanMode.entries.forEachIndexed { i, m ->
+                    SegmentedButton(
+                        selected = mode == m,
+                        onClick = {
+                            if (mode != m) {
+                                events.event("scan_mode", "from" to mode.name, "to" to m.name)
+                                mode = m
+                                if (m == ScanMode.LABEL) frontDone = true
+                                if (m != ScanMode.AUTO) gaveUp = false
+                            }
+                        },
+                        shape = androidx.compose.material3.SegmentedButtonDefaults.itemShape(i, ScanMode.entries.size),
+                        icon = {},
+                        modifier = Modifier.heightIn(min = 44.dp),
+                    ) { Text(m.label, maxLines = 1) }
+                }
+            }
             Text(
-                "Point at the package. The Nutrition Facts always work; the front or barcode works for many brands.",
-                style = MaterialTheme.typography.bodyMedium,
+                when (mode) {
+                    ScanMode.AUTO -> "Auto picks for you: a barcode, the front, or the Nutrition Facts."
+                    ScanMode.BARCODE -> "Only the barcode. Hold it flat in the middle."
+                    ScanMode.FRONT -> "Only the front. Hold the product's name in view."
+                    ScanMode.LABEL -> "Only the Nutrition Facts. Fill the frame with the panel."
+                },
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
             )
         }
-        var capture by remember { mutableStateOf<ImageCapture?>(null) }
-        var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
-        var torch by remember { mutableStateOf(false) }
         var focusAt by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
         LaunchedEffect(focusAt) { if (focusAt != null) { delay(900); focusAt = null } }
         Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(16.dp))) {
@@ -315,8 +511,11 @@ fun ScanScreen(
                 onFocus = { at -> focusAt = at; events.event("scan_focus") },
             )
             focusAt?.let { at -> FocusRing(at) }
-            if (guide && labelMode) GuideBox()
-            Marks(
+            val box = panelBox
+            val frameAt = frameSize
+            if (labelMode && box != null && frameAt != null) LiveBox(box, frameAt)
+            else if (guide && labelMode) GuideBox()
+            if (mode == ScanMode.AUTO) Marks(
                 barcode = !done,
                 front = !frontDone && !gaveUp && !panelSeen,
                 frontOff = gaveUp || frontDone,
@@ -356,10 +555,13 @@ fun ScanScreen(
                 Text(
                     status ?: when {
                         reading -> "Reading the label…"
-                        panelSeen -> "Hold still · reading"
+                        panelSeen && labelMode -> "Hold still · reading"
+                        mode == ScanMode.LABEL || newKindOf != null -> "Fill the frame with the Nutrition Facts"
+                        mode == ScanMode.BARCODE -> "Looking for a barcode · tap to focus"
                         gaveUp && newKindOf == null -> "Couldn't tell from the front"
                         frontSeen && !frontDone -> "Reading the front…"
-                        else -> "Looking for a barcode · tap to focus"
+                        mode == ScanMode.FRONT -> "Looking for the product's name"
+                        else -> "Looking for a barcode, the front or the label"
                     },
                     style = MaterialTheme.typography.labelMedium,
                     color = Color(0xFF1C1C1A),
@@ -367,15 +569,30 @@ fun ScanScreen(
                 )
             }
         }
-        if (panelSeen || (labelMode && newKindOf != null)) {
-            Checklist(seen)
-            Text("Fill the frame with the panel. Tilt away from glare.", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary)
+        if (labelMode && (panelSeen || mode == ScanMode.LABEL || newKindOf != null)) {
+            LabelProgress(
+                seen = seen,
+                value = { k -> if (k == "serving") liveServing else votes[k]?.maxByOrNull { it.value }?.key },
+                started = panelSeen,
+                reading = reading,
+                ready = capture != null,
+                onRead = { readLabel("read_now") },
+                onAll = { readLabel("thats_all") },
+            )
+        } else if (gaveUp && mode == ScanMode.FRONT) {
+            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Couldn't tell from the front", fontWeight = FontWeight.SemiBold)
+                    Text("Hold the product's name in view, or read its Nutrition Facts instead.", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.secondary)
+                    OutlinedButton(onClick = { mode = ScanMode.LABEL; frontDone = true; gaveUp = false }) { Text("Read the label instead") }
+                }
+            }
         } else if (gaveUp) {
             Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Turn it to the Nutrition Facts", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    Text("Fill the frame with the panel and tap Read label. About 10 seconds, once per product. After that, just say its name.",
+                    Text("Fill the frame with the panel. It reads every line it can find, about 10 seconds, once per product. After that, just say its name.",
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
             }
@@ -390,112 +607,14 @@ fun ScanScreen(
                     }
                 }
             }
-        } else {
+        } else if (mode == ScanMode.AUTO) {
             Text("If it can't tell from the front in about 5 seconds, it will ask for the label.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
         message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(enabled = !reading && capture != null, onClick = {
-                val c = capture ?: return@Button
-                reading = true
-                message = null
-                val t0 = System.currentTimeMillis()
-                events.event("scan_capture", "torch" to torch, "panel_in_view" to panelSeen)
-                c.takePicture(ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageCapturedCallback() {
-                    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-                    override fun onCaptureSuccess(image: ImageProxy) {
-                        val media = image.image
-                        if (media == null) {
-                            events.event("scan_failed", "stage" to "capture", "reason" to "no image")
-                            reading = false
-                            image.close(); return
-                        }
-                        val rotation = image.imageInfo.rotationDegrees
-                        // The photo the text was read from: shown on the check screen
-                        // and kept with the label, so a number can be checked against it.
-                        val bitmap = runCatching { rotated(image.toBitmap(), rotation) }.getOrNull()
-                        val photo = if (events.enabled) bitmap?.let { b -> Executors.newSingleThreadExecutor().submit<String?> { events.saveScan(b) } } else null
-                        fun photoName() = runCatching { photo?.get(5, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull()
-                        val size = "${image.width}x${image.height}"
-                        // A reader that never answers would leave "Reading…" up for good.
-                        var answered = false
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            if (!answered) {
-                                events.event("scan_failed", "stage" to "ocr_timeout", "after_ms" to 20_000, "photo" to photoName())
-                                message = "Still reading. If this keeps happening, the phone may be downloading its text reader; try again in a minute."
-                            }
-                        }, 20_000)
-                        val input = InputImage.fromMediaImage(media, rotation)
-                        val tOcr = System.currentTimeMillis()
-                        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).process(input)
-                            .addOnSuccessListener { text ->
-                                answered = true
-                                // With each line's box, so a two-column Supplement Facts panel
-                                // pairs every name with the amount on its row.
-                                val boxed = text.textBlocks.flatMap { b -> b.lines.mapNotNull { l ->
-                                    l.boundingBox?.let { r -> NutritionFactsParser.OcrLine(l.text, r.left, r.top, r.right, r.bottom) }
-                                } }
-                                val p = if (boxed.isNotEmpty()) NutritionFactsParser.parse(boxed) else NutritionFactsParser.parse(text.text)
-                                events.event(
-                                    "scan_ocr",
-                                    "photo" to photoName(),
-                                    "size" to size, "rotation" to rotation,
-                                    "capture_ms" to tOcr - t0, "ocr_ms" to System.currentTimeMillis() - tOcr,
-                                    "text" to text.text,
-                                    // Where each line sat in the picture: a curved jar or a
-                                    // skewed shot shows up as lines out of order or split.
-                                    "lines" to text.textBlocks.flatMap { b -> b.lines.map { l ->
-                                        mapOf("text" to l.text, "box" to l.boundingBox?.flattenToString(),
-                                            "angle" to l.angle, "confidence" to l.confidence)
-                                    } },
-                                )
-                                events.event(
-                                    "scan_parsed",
-                                    "serving_text" to p.servingText, "serving_grams" to p.servingGrams,
-                                    "per_serving" to p.perServing, "complete" to p.looksComplete,
-                                    "reads" to p.reads.map { r -> mapOf("metric" to r.metric, "line" to r.line, "raw" to r.raw,
-                                        "value" to r.value, "fix" to r.fix, "as_read" to r.asRead) },
-                                    "missing" to (Metric.MACROS + LABEL_MICROS).map { it.key }.filter { it !in p.perServing },
-                                    "suspect" to p.issues.map { it.code },
-                                )
-                                if (p.issues.isNotEmpty()) events.event("suspect", "where" to "scan", "issues" to p.issues.map { it.code },
-                                    "per_serving" to p.perServing, "serving_grams" to p.servingGrams)
-                                if (p.perServing.size < 3) {
-                                    reading = false
-                                    gaveUp = true
-                                    message = "Couldn't read a Nutrition Facts panel. Try closer, with the whole panel in the box. Tap the picture to focus."
-                                    // A photo of the front, not the panel: what its big words say.
-                                    if (!frontDone && boxed.isNotEmpty()) scope.launch {
-                                        val found = withContext(Dispatchers.IO) { frontAnswer(boxed.map { it.text to it.height }) }
-                                        events.event("scan_front_matches", "from" to "photo", "candidate" to found?.candidate?.let { describe(it) },
-                                            "sure" to found?.sure)
-                                        if (found != null) {
-                                            guesses = listOf(found.candidate) + found.others
-                                            if (found.sure || found.yours) sheet = FrontSheet.Found(found, bitmap?.let(::centerCrop))
-                                        }
-                                    }
-                                } else { message = null; panelPhoto = bitmap; panel = p }
-                            }
-                            .addOnFailureListener { e ->
-                                answered = true
-                                reading = false
-                                events.event("scan_failed", "stage" to "ocr", "error" to e, "photo" to photoName(),
-                                    "ms" to System.currentTimeMillis() - tOcr)
-                                message = if (e.message.orEmpty().contains("download", ignoreCase = true))
-                                    "The phone is still downloading its text reader. Try again in a minute."
-                                else "Couldn't read that. Try again."
-                            }
-                            .addOnCompleteListener { image.close() }
-                    }
-
-                    override fun onError(exception: ImageCaptureException) {
-                        reading = false
-                        events.event("scan_failed", "stage" to "capture", "error" to exception, "code" to exception.imageCaptureError)
-                        message = "The camera didn't take the picture. Try again."
-                    }
-                })
-            }) { Text("Read label") }
+            val progressShown = labelMode && (panelSeen || mode == ScanMode.LABEL || newKindOf != null)
+            if (!progressShown && mode != ScanMode.BARCODE) Button(enabled = !reading && capture != null, onClick = { readLabel("button") }) { Text("Read label") }
             OutlinedButton(onClick = { events.event("scan_cancel", "ms" to System.currentTimeMillis() - openedAt); onCancel() }) { Text("Cancel") }
         }
         if (newKindOf == null) {
@@ -552,6 +671,162 @@ fun ScanScreen(
             onDismiss = { sheet = null; frontDone = true },
         )
         null -> Unit
+    }
+    if (choices.isNotEmpty()) SeveralLabelsSheet(
+        choices,
+        onPick = { title, p ->
+            events.event("scan_several_pick", "title" to title, "calories" to p.perServing[Metric.CALORIES.key])
+            pickedTitle = title; choices = emptyList(); panel = p
+        },
+        onDismiss = { choices = emptyList() },
+    )
+}
+
+/** The panel's outline in the frame: the lines that name a nutrient, padded a little. */
+private fun panelBoxOf(lines: List<NutritionFactsParser.OcrLine>): android.graphics.Rect? {
+    val words = listOf("nutrition", "serving", "calories", "fat", "cholest", "sodium", "carbo", "fiber", "sugar", "protein",
+        "vitamin", "calcium", "iron", "potass", "daily value")
+    val hits = lines.filter { l -> val t = l.text.lowercase(); words.any { it in t } }
+    if (hits.size < 3) return null
+    val r = android.graphics.Rect(hits.minOf { it.left }, hits.minOf { it.top }, hits.maxOf { it.right }, hits.maxOf { it.bottom })
+    val px = (r.width() * 0.06).toInt(); val py = (r.height() * 0.04).toInt()
+    return android.graphics.Rect(r.left - px, r.top - py, r.right + px, r.bottom + py)
+}
+
+/** The box around the label, moving with it as the camera sees it (note S20). */
+@Composable
+private fun LiveBox(box: android.graphics.Rect, frame: Pair<Int, Int>) {
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+        val vw = constraints.maxWidth.toFloat(); val vh = constraints.maxHeight.toFloat()
+        val (fw, fh) = frame
+        // The preview fills the view and crops the rest, centred.
+        val scale = maxOf(vw / fw, vh / fh)
+        val dx = (vw - fw * scale) / 2f; val dy = (vh - fh * scale) / 2f
+        val spec = androidx.compose.animation.core.tween<Float>(260)
+        val l by androidx.compose.animation.core.animateFloatAsState((box.left * scale + dx).coerceIn(0f, vw), spec, label = "l")
+        val t by androidx.compose.animation.core.animateFloatAsState((box.top * scale + dy).coerceIn(0f, vh), spec, label = "t")
+        val r by androidx.compose.animation.core.animateFloatAsState((box.right * scale + dx).coerceIn(0f, vw), spec, label = "r")
+        val b by androidx.compose.animation.core.animateFloatAsState((box.bottom * scale + dy).coerceIn(0f, vh), spec, label = "b")
+        val stroke = with(androidx.compose.ui.platform.LocalDensity.current) { 2.5.dp.toPx() }
+        val radius = with(androidx.compose.ui.platform.LocalDensity.current) { 10.dp.toPx() }
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            drawRoundRect(
+                Color(0xFF7FD3A4), topLeft = androidx.compose.ui.geometry.Offset(l, t),
+                size = androidx.compose.ui.geometry.Size((r - l).coerceAtLeast(1f), (b - t).coerceAtLeast(1f)),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(stroke),
+            )
+        }
+    }
+}
+
+/**
+ * "13 of 16 lines": what has been read off the label so far, and what it is still
+ * looking for (note S7). It reads by itself once it has every line, or once the
+ * label has been held still with nothing new for [STILL_MS].
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LabelProgress(
+    seen: Set<String>,
+    value: (String) -> Double?,
+    started: Boolean,
+    reading: Boolean,
+    ready: Boolean,
+    onRead: () -> Unit,
+    onAll: () -> Unit,
+) {
+    val got = REQUIRED.filter { it in seen }
+    val missing = REQUIRED - got.toSet()
+    val also = seen.filter { it !in REQUIRED }.mapNotNull { Metric.fromKey(it) }
+    val amber = com.nutritionscribe.app.ui.theme.limitColors().over
+    fun label(k: String): String {
+        val v = value(k)
+        if (k == "serving") return "Serving" + (v?.let { " ${fmt(it)} g" } ?: "")
+        val m = Metric.fromKey(k) ?: return k
+        return m.shortLabel + (v?.let { " ${fmt(it)} ${if (m == Metric.CALORIES) "" else m.unit}".trimEnd() } ?: "")
+    }
+    Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (reading) "Reading the photo…" else if (started) "Reading the label" else "Waiting for the label",
+                    fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text("${got.size} of ${REQUIRED.size} lines", style = NumberStyle, color = MaterialTheme.colorScheme.primary)
+            }
+            androidx.compose.material3.LinearProgressIndicator(
+                progress = { got.size / REQUIRED.size.toFloat() }, modifier = Modifier.fillMaxWidth().heightIn(min = 6.dp),
+            )
+            if (got.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                (got.map { label(it) } + also.map { label(it.key) }).forEach { t ->
+                    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+                        Row(Modifier.padding(horizontal = 9.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Icon(Icons.Filled.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(13.dp))
+                            Text(t, fontSize = 12.5.sp)
+                        }
+                    }
+                }
+            }
+            if (missing.isNotEmpty()) {
+                SectionLabel(if (started) "Still looking for" else "Looking for")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    missing.forEach { k ->
+                        Surface(shape = RoundedCornerShape(14.dp), color = Color.Transparent, border = BorderStroke(1.dp, amber)) {
+                            Text(if (k == "serving") "Serving" else Metric.fromKey(k)?.shortLabel ?: k, fontSize = 12.5.sp, color = amber,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp))
+                        }
+                    }
+                }
+            }
+            Text(
+                if (missing.isEmpty()) "Every line found. Reading it now."
+                else "Hold steady. If nothing new turns up for 8 s, it moves on and you can type the rest. Not every label prints every line.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onRead, enabled = ready && !reading, modifier = Modifier.heightIn(min = 44.dp)) { Text("Read now") }
+                OutlinedButton(onClick = onAll, enabled = ready && !reading && started, modifier = Modifier.heightIn(min = 44.dp)) { Text("That's all it lists") }
+            }
+        }
+    }
+}
+
+/** "This package has 3 labels": each a different mix, so which one was it. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SeveralLabelsSheet(
+    choices: List<Pair<String?, NutritionFactsParser.Panel>>,
+    onPick: (String?, NutritionFactsParser.Panel) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    com.nutritionscribe.app.ui.feedback.ReportableSheet("Several labels", onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("This package has ${choices.size} labels", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text("Each is a different mix. Which did you eat?", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+            choices.forEachIndexed { i, (title, p) ->
+                Surface(
+                    onClick = { onPick(title, p) }, shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Box(Modifier.size(28.dp).background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape), contentAlignment = Alignment.Center) {
+                            Text("${i + 1}", fontWeight = FontWeight.Bold)
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(title ?: "Label ${i + 1}", fontWeight = FontWeight.SemiBold)
+                            Text(listOfNotNull(p.servingText?.trim(), p.perServing[Metric.CALORIES.key]?.let { "${fmt(it)} kcal" },
+                                p.perServing[Metric.PROTEIN.key]?.let { "${fmt(it)} g protein" }).joinToString(" \u00B7 "),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                        }
+                    }
+                }
+            }
+            Text("The one you pick is checked next, with its name filled in from the label.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary)
+        }
     }
 }
 
@@ -633,7 +908,7 @@ private fun FoundSheet(
     onDismiss: () -> Unit,
 ) {
     val a = s.answer
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    com.nutritionscribe.app.ui.feedback.ReportableSheet("Found from the front", onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             SectionLabel("Found from the front")
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -681,7 +956,7 @@ private fun FoundSheet(
 private fun NewKindSheet(s: FrontSheet.NewKind, onScan: (String) -> Unit, onUseBase: (String) -> Unit, onDismiss: () -> Unit) {
     var kind by remember { mutableStateOf(s.kind) }
     val product = shortName(s.base).let { n -> n.replace(Regex("\\b${Regex.escape(Kinds.label(s.base))}\\b", RegexOption.IGNORE_CASE), "").replace(Regex("\\s+"), " ").trim() }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    com.nutritionscribe.app.ui.feedback.ReportableSheet("Found from the front (kind)", onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             SectionLabel("Found from the front")
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -770,23 +1045,6 @@ private fun GuideBox() {
         Surface(color = Color(0x99141615), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)) {
             Text("Nutrition Facts here", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Checklist(seen: Set<String>) {
-    val items = listOf("serving" to "Serving size", Metric.CALORIES.key to "Calories", Metric.FAT.key to "Fat",
-        Metric.CARBS.key to "Carbs", Metric.PROTEIN.key to "Protein", Metric.SUGAR.key to "Sugars")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        items.forEach { (k, label) ->
-            val got = k in seen
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (got) Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                Text((if (got) "" else "… ") + label, fontSize = 14.sp,
-                    color = if (got) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.secondary)
-            }
         }
     }
 }
@@ -962,6 +1220,10 @@ private fun PanelForm(
     // second tap uses them as they are (labels do sometimes break the arithmetic).
     var warned by remember { mutableStateOf(false) }
     var showAll by remember { mutableStateOf(false) }
+    // A mineral typed as the label's % Daily Value (notes S13, S15), kept as the amount.
+    val pctText = remember { mutableStateMapOf<Metric, String>() }
+    // Lines the reader didn't offer a box for, added by hand (omega-3 on a trail mix, note S14).
+    var added by remember { mutableStateOf<List<Metric>>(emptyList()) }
     LaunchedEffect(issues.isEmpty()) { if (issues.isEmpty()) warned = false }
     val liquid = Liquids.isLiquid(name, panel.servingText)
 
@@ -998,13 +1260,22 @@ private fun PanelForm(
         val fix = fixes[m.key]?.takeIf { f -> values[m]?.toDoubleOrNull() == f.value }
         val likely = suggested[m.key]
         val other = apart[m.key]?.takeIf { m.key !in dismissed }
+        val dv = m.defaultTarget.takeIf { m.isMicro && it > 0 }
+        val inPct = dv != null && m in pctText
         Column {
             OutlinedTextField(
-                value = values[m].orEmpty(),
-                onValueChange = { values[m] = it },
-                label = { Text("${m.panelLabel} (${m.unit})") },
+                value = if (inPct) pctText[m].orEmpty() else values[m].orEmpty(),
+                onValueChange = { t ->
+                    if (inPct && dv != null) {
+                        pctText[m] = t
+                        val pc = t.trim().removeSuffix("%").toDoubleOrNull()
+                        if (pc != null) values[m] = fmt(Math.round(pc / 100.0 * dv * 100) / 100.0) else values.remove(m)
+                    } else values[m] = t
+                },
+                label = { Text("${m.panelLabel} (${if (inPct) "% DV" else m.unit})") },
                 isError = issue != null,
                 supportingText = when {
+                    inPct -> ({ Text(values[m]?.let { "${pctText[m]}% DV = $it ${m.unit} (the label's Daily Value, not your need)" } ?: "Type the % the label prints") })
                     issue != null && likely != null -> ({ Text("${fmt(values[m]?.toDoubleOrNull() ?: 0.0)} → ${fmt(likely)}? ${issue.message}") })
                     issue != null -> ({ Text(issue.message) })
                     other != null -> ({ Text("The label list says ${fmt(Math.round(other * 10) / 10.0)} for this. Worth a look.") })
@@ -1017,8 +1288,15 @@ private fun PanelForm(
                 trailingIcon = if (issue != null && likely != null) ({
                     TextButton(onClick = {
                         events.event("scan_suggestion_used", "metric" to m.key, "from" to values[m], "to" to likely, "where" to "box")
+                        pctText.remove(m)
                         values[m] = fmt(likely)
                     }) { Text("Use ${fmt(likely)}") }
+                }) else if (dv != null) ({
+                    TextButton(onClick = {
+                        events.event("scan_unit_toggle", "metric" to m.key, "to" to if (inPct) "amount" else "percent")
+                        if (inPct) pctText.remove(m)
+                        else pctText[m] = values[m]?.toDoubleOrNull()?.let { fmt(Math.round(it / dv * 100).toDouble()) }.orEmpty()
+                    }) { Text(if (inPct) "%DV \u21C4 ${m.unit}" else "${m.unit} \u21C4 %DV", fontSize = 12.sp) }
                 }) else null,
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -1048,9 +1326,11 @@ private fun PanelForm(
                 else Icon(Icons.Outlined.ReceiptLong, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                val wanted = (Metric.MACROS + LABEL_MICROS).size + 1
-                val got = panel.perServing.keys.count { k -> (Metric.MACROS + LABEL_MICROS).any { it.key == k } } + (if (panel.servingText != null) 1 else 0)
-                Text("Read $got of $wanted lines", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                val got = REQUIRED.count { k -> if (k == "serving") panel.servingText != null || panel.servingGrams != null else k in panel.perServing }
+                Text("Read $got of ${REQUIRED.size} lines", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                val missing = REQUIRED.filter { k -> k != "serving" && k !in panel.perServing }.mapNotNull { Metric.fromKey(it)?.shortLabel }
+                if (missing.isNotEmpty()) Text("Not read: ${missing.joinToString(", ")}. Type them, or leave them if the label doesn't list them.",
+                    style = MaterialTheme.typography.bodySmall, color = com.nutritionscribe.app.ui.theme.limitColors().over)
                 if (photo != null) Text("Tap the photo to check a number against it", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary)
                 Text("Retake the photo", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium, fontSize = 14.sp,
@@ -1122,6 +1402,19 @@ private fun PanelForm(
                 if (showAll) events.event("scan_details_open", "boxes" to rest.size)
             }) { Text(if (showAll) "Hide the other nutrients" else "All nutrients (${rest.size} more)") }
             if (showAll) rest.forEach { box(it) }
+        }
+        added.forEach { box(it) }
+        var addOpen by remember { mutableStateOf(false) }
+        Box {
+            TextButton(onClick = { addOpen = true }) { Text("+ Add a line the label lists") }
+            androidx.compose.material3.DropdownMenu(expanded = addOpen, onDismissRequest = { addOpen = false }) {
+                Metric.entries.filter { it !in all && it !in added }.forEach { m ->
+                    androidx.compose.material3.DropdownMenuItem(text = { Text(m.label) }, onClick = {
+                        events.event("scan_line_added", "metric" to m.key)
+                        added = added + m; addOpen = false
+                    })
+                }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = ::use, enabled = values.isNotEmpty() && name.isNotBlank()) { Text(if (warned) "Use anyway" else "Use these") }

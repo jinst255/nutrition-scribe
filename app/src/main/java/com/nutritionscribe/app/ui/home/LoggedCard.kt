@@ -391,7 +391,7 @@ fun KindSheet(
     onDismiss: () -> Unit,
 ) {
     var more by remember { mutableStateOf(choice.mine.size < 2) }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    com.nutritionscribe.app.ui.feedback.ReportableSheet("Logged card", onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(
             Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(6.dp),

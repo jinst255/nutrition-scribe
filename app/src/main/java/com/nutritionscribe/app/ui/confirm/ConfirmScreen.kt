@@ -73,6 +73,8 @@ object LogSession {
     var timestamp: Long? = null
     /** A scan finished: which line it was for, and what it found. */
     var scanned: Pair<Int, FoodCandidate>? = null
+    /** The entry page a scan was started from, which takes [scanned] when it comes back. */
+    var scanEntry: String? = null
     /** The name of the line a scan was started from, to fill the scan form's name. */
     var scanHint: String? = null
     /** Lines to start from when there was no sentence: a scan from the Log screen. */
@@ -104,7 +106,7 @@ object LogSession {
     }
 
     fun clear() {
-        resolution = null; editing = null; timestamp = null; startDrafts = null; tag = null; how = "typed"
+        resolution = null; editing = null; timestamp = null; startDrafts = null; tag = null; how = "typed"; scanEntry = null
     }
 }
 
@@ -164,6 +166,14 @@ class ConfirmViewModel : ViewModel() {
     }
 
     fun note(action: String, vararg detail: Pair<String, Any?>) = events.event("confirm_$action", *detail)
+
+    /** Lines whose fix is for this entry only: "Use these numbers next time too" was off. */
+    private val oneOff = mutableSetOf<String>()
+
+    fun setLearn(key: String, learn: Boolean) {
+        events.event("confirm_learn", "key" to key, "learn" to learn)
+        if (learn) oneOff -= key else oneOff += key
+    }
 
     /**
      * New words — edited by hand or said again — and the lines are worked out from
@@ -244,26 +254,10 @@ class ConfirmViewModel : ViewModel() {
         handEdited = true
         events.event("confirm_add", "how" to how, "text" to said)
         viewModelScope.launch {
-            val lines = drafts.map { com.nutritionscribe.shared.resolve.Changes.Line(it.name, it.item.food.ifBlank { it.name }, it.item.unit) }
-            val changes = pipeline.changes(said, lines)
-            val notes = mutableListOf<String>()
-            fun short(n: String) = n.substringAfter(" — ").substringBefore(",").take(28)
-            for (c in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.SetAmount>()) {
-                val d = drafts.getOrNull(c.line) ?: continue
-                val nd = if (c.unitSaid && c.unit != d.item.unit) d.withAmountIn(c.amount, c.unit) else d.withAmount(c.amount)
-                drafts[c.line] = nd
-                notes += "${short(nd.name)}: ${com.nutritionscribe.shared.resolve.Units.format(nd.amount)} ${nd.unitLabel}"
-            }
-            for (i in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Remove>().map { it.line }.distinct().sortedDescending()) {
-                drafts.getOrNull(i)?.let { notes += "removed ${short(it.name)}"; drafts.removeAt(i) }
-            }
-            for (a in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Add>()) {
-                val found = pipeline.resolveItem(a.text, tag = tag, why = "add").map { ItemDraft.from(it) }
-                drafts.addAll(found)
-                found.forEach { notes += "added ${short(it.name)}" }
-            }
-            lastChange = if (notes.isEmpty()) "Nothing changed. Try \"2 slices\", \"remove the cheese\" or \"add a cup of milk\"."
-            else notes.joinToString(" · ").replaceFirstChar { it.uppercase() }
+            val (lines, note) = applyChangeTo(drafts.toList(), said, tag)
+            drafts.clear()
+            drafts.addAll(lines)
+            lastChange = note
             busy = false
         }
     }
@@ -290,7 +284,7 @@ class ConfirmViewModel : ViewModel() {
             (forgetKeys - keep).takeIf { it.isNotEmpty() }?.let { pipeline.forget(null, it, "removed_from_card") }
             pipeline.confirm(
                 text = text,
-                items = drafts.map { it.toConfirmed() },
+                items = drafts.map { d -> d.toConfirmed().let { if (d.key in oneOff) it.copy(unchangedMemory = true) else it } },
                 timestamp = stamp,
                 timeUnspecified = unspecified,
                 replacing = editing,
@@ -305,6 +299,37 @@ class ConfirmViewModel : ViewModel() {
             onDone()
         }
     }
+}
+
+/**
+ * "actually 2 slices", "remove the cheese", "add a tablespoon of honey" applied to
+ * [drafts]: the new lines, and what changed in words. Shared by Check it once and
+ * the entry page's change box.
+ */
+internal suspend fun applyChangeTo(drafts: List<ItemDraft>, said: String, tag: String?): Pair<List<ItemDraft>, String> {
+    val pipeline = ServiceLocator.logPipeline
+    val out = drafts.toMutableList()
+    val lines = out.map { com.nutritionscribe.shared.resolve.Changes.Line(it.name, it.item.food.ifBlank { it.name }, it.item.unit) }
+    val changes = pipeline.changes(said, lines)
+    val notes = mutableListOf<String>()
+    fun short(n: String) = n.substringAfter(" — ").substringBefore(",").take(28)
+    for (c in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.SetAmount>()) {
+        val d = out.getOrNull(c.line) ?: continue
+        val nd = if (c.unitSaid && c.unit != d.item.unit) d.withAmountIn(c.amount, c.unit) else d.withAmount(c.amount)
+        out[c.line] = nd
+        notes += "${short(nd.name)}: ${com.nutritionscribe.shared.resolve.Units.format(nd.amount)} ${nd.unitLabel}"
+    }
+    for (i in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Remove>().map { it.line }.distinct().sortedDescending()) {
+        out.getOrNull(i)?.let { notes += "removed ${short(it.name)}"; out.removeAt(i) }
+    }
+    for (a in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Add>()) {
+        val found = pipeline.resolveItem(a.text, tag = tag, why = "add").map { ItemDraft.from(it) }
+        out.addAll(found)
+        found.forEach { notes += "added ${short(it.name)}" }
+    }
+    val note = if (notes.isEmpty()) "Nothing changed. Try \"2 slices\", \"remove the cheese\" or \"add a cup of milk\"."
+    else notes.joinToString(" · ").replaceFirstChar { it.uppercase() }
+    return out to note
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -325,8 +350,8 @@ fun ConfirmScreen(
     fun requestRebuild(newText: String, why: String) {
         if (viewModel.handEdited) pendingRebuild = newText to why else viewModel.rebuild(newText, why)
     }
-    // A scan that came back while we were away.
-    remember(LogSession.scanned) { viewModel.applyScan(); 0 }
+    // A scan that came back while we were away (one for an entry page is that page's).
+    remember(LogSession.scanned) { if (LogSession.scanEntry == null) viewModel.applyScan(); 0 }
 
     val drafts = viewModel.drafts
     val fresh = drafts.count { it.status != Resolver.Status.REMEMBERED }
@@ -371,6 +396,7 @@ fun ConfirmScreen(
                 onChange = { editingIndex = i },
                 onRemove = { viewModel.remove(i) },
                 onScan = {
+                    LogSession.scanEntry = null
                     // What they called it, so the scan form starts with a name.
                     LogSession.scanHint = (d.item.brand?.let { "$it " }.orEmpty() + d.item.food).trim().takeIf { it.isNotBlank() }
                     onScan(i)
@@ -389,7 +415,7 @@ fun ConfirmScreen(
                 onSubmit = { viewModel.applyChange(it, "typed") },
                 onSay = { addingByVoice = true },
             )
-            TextButton(onClick = { onScan(-1) }) { Text("+ Scan a package") }
+            TextButton(onClick = { LogSession.scanEntry = null; onScan(-1) }) { Text("+ Scan another package") }
         }
         item {
             HorizontalDivider()
@@ -431,11 +457,13 @@ fun ConfirmScreen(
 
     editingIndex?.let { i ->
         drafts.getOrNull(i)?.let { d ->
-            ItemEditor(
+            FoodEditor(
                 draft = d,
-                tracked = tracked,
+                partOf = viewModel.editing?.name?.takeIf { drafts.size > 1 },
                 search = viewModel::search,
-                onDone = { viewModel.update(i, it); editingIndex = null },
+                saveLabel = "Done",
+                learnDefault = true,
+                onSave = { nd, learn -> viewModel.update(i, nd); viewModel.setLearn(nd.key, learn); editingIndex = null },
                 onDismiss = { editingIndex = null },
             )
         }
@@ -629,7 +657,7 @@ private fun DraftCard(
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AssistChip(onClick = onChange, label = { Text(if (unknown) "Pick it" else "Change") })
-                if (draft.offerScan || unknown) AssistChip(onClick = onScan, label = { Text("Scan the package") })
+                AssistChip(onClick = onScan, label = { Text("Scan its label") })
                 if (draft.offerBreakdown) AssistChip(onClick = onBreakdown, label = { Text("Break it down") })
             }
         }
@@ -681,110 +709,6 @@ private fun KindChips(draft: ItemDraft, onPick: (FoodCandidate) -> Unit, onOther
             androidx.compose.material3.FilterChip(selected = false, onClick = onOther, label = { Text("+ Other", color = MaterialTheme.colorScheme.primary) })
         }
     }
-}
-
-/** A portion adjuster and a short list of other matches — the whole "fix" surface. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ItemEditor(
-    draft: ItemDraft,
-    tracked: List<Metric>,
-    search: suspend (String) -> List<FoodCandidate>,
-    onDone: (ItemDraft) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var d by remember { mutableStateOf(draft) }
-    var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf(draft.alternates) }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = { onDone(d) }) { Text("Done") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text(d.name, style = MaterialTheme.typography.titleMedium) },
-        text = {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item {
-                    Text("How much", style = MaterialTheme.typography.labelLarge)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = { d = d.withAmount(com.nutritionscribe.shared.resolve.Units.bump(d.item.unit, d.amount, -1)) }) { Text("−") }
-                        // Counted in the food's own pieces where the label says what one is.
-                        val piece = d.candidate?.portions?.firstOrNull { it.label != "1 serving" && !it.label.startsWith("1 cup") &&
-                            !it.label.startsWith("1 tbsp") && !it.label.startsWith("1 tsp") }?.label?.removePrefix("1 ")
-                        val unitWord = d.item.unit ?: piece ?: "serving"
-                        Text(
-                            "${fmt(d.amount)} ${if (d.amount == 1.0 || unitWord.endsWith("s")) unitWord else unitWord + "s"}",
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                        )
-                        OutlinedButton(onClick = { d = d.withAmount(com.nutritionscribe.shared.resolve.Units.bump(d.item.unit, d.amount, +1)) }) { Text("+") }
-                    }
-                    val portions = d.candidate?.portions.orEmpty().take(6)
-                    if (portions.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            portions.forEach { p ->
-                                AssistChip(onClick = { d = d.withGrams(p.grams) }, label = { Text("${p.label} (${d.amountText(p.grams)})") })
-                            }
-                        }
-                    }
-                    // A drink is typed in mL and stored in grams.
-                    val liquid = d.liquid
-                    val foodName = d.candidate?.name ?: d.item.food
-                    var gramsText by remember(d.grams, liquid) {
-                        mutableStateOf(d.grams?.let { g -> Math.round(if (liquid) Liquids.ml(g, foodName) else g).toString() }.orEmpty())
-                    }
-                    OutlinedTextField(
-                        value = gramsText,
-                        onValueChange = {
-                            gramsText = it
-                            it.toDoubleOrNull()?.let { v -> if (v > 0) d = d.withGrams(if (liquid) Liquids.grams(v, foodName) else v) }
-                        },
-                        label = { Text(if (liquid) "mL" else "Grams") },
-                        supportingText = if (liquid) ({ Text("1 cup is about 240 mL, 1 fl oz about 30 mL") }) else null,
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                item {
-                    Text("Numbers", style = MaterialTheme.typography.labelLarge)
-                    tracked.forEach { m ->
-                        var t by remember(d.candidate?.id, d.grams) { mutableStateOf(d.nutrients[m.key]?.let { fmt(it) }.orEmpty()) }
-                        OutlinedTextField(
-                            value = t,
-                            onValueChange = { t = it; d = d.withNutrient(m.key, it.toDoubleOrNull()) },
-                            label = { Text("${m.label} (${m.unit})") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-                item {
-                    Text("Not this? Pick another", style = MaterialTheme.typography.labelLarge)
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        label = { Text("Search foods") },
-                        singleLine = true,
-                        trailingIcon = {
-                            TextButton(onClick = { scope.launch { results = search(query) } }) { Text("Go") }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                itemsIndexed(results.take(8)) { _, c ->
-                    Column(
-                        Modifier.fillMaxWidth().clickable { d = d.withCandidate(c) }.padding(vertical = 6.dp),
-                    ) {
-                        Text(listOfNotNull(c.brand, c.name).distinct().joinToString(" — "), style = MaterialTheme.typography.bodyMedium)
-                        Text(ItemDraft.label(c.origin) + (c.labelServingText?.let { " · $it" } ?: ""),
-                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
-                    }
-                }
-            }
-        },
-    )
 }
 
 /**

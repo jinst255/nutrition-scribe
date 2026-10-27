@@ -134,6 +134,19 @@ class Round7ProblemsTest {
     }
 
     @Test
+    fun `typically my usual, said the way it is already saved, is the saved meal`() {
+        // Note S40: the saved shake was the one made with milk, and "typically" missed it.
+        val store = InMemoryPersonalStore()
+        store.put(PersonalFood(key = "instead milk powder protein shake used water", phrase = "my typical protein shake, but instead of water I used milk",
+            name = "Whole milk, protein powder", nutrients = mapOf("calories" to 300.0), updatedAt = 5,
+            parts = listOf(MealPart("Protein powder", "protein powder", 40.0, mapOf("calories" to 150.0)),
+                MealPart("Whole milk", "milk", 240.0, mapOf("calories" to 150.0)))))
+        val r = fresh(store).resolve("typically protein shake, but with milk instead of water")
+        assertTrue(r.items.toString(), r.items.isNotEmpty() && r.items.all { it.status == Resolver.Status.REMEMBERED })
+        assertEquals(300.0, r.total["calories"]!!, 1.0)
+    }
+
+    @Test
     fun `a supplement is never a protein powder or a milk`() {
         val r = fresh().resolve("vitamin d supplements").items.single()
         val name = r.choice?.name.orEmpty().lowercase()

@@ -109,12 +109,14 @@ class GoalsRepositoryTest {
     }
 
     @Test
-    fun aLimitMetricKeepsItsCeilingInStepWithItsTarget() = runBlocking {
+    fun aLimitsTargetNeverDrawsARedLineByItself() = runBlocking {
         repo.ensureSeeded(null, null)
         repo.setTarget(Metric.SODIUM, 1500.0)
-        val sodium = repo.find(Metric.SODIUM)!!
-        // A stale ceiling would colour the chart against a number the user replaced.
-        assertEquals(1500.0, sodium.ceilingValue!!, 0.0001)
+        // Red lines are only ever typed (round 4): a target alone leaves the line where the user put it.
+        assertNull(repo.find(Metric.SODIUM)!!.ceilingValue)
+        repo.setCeiling(Metric.SODIUM, 3000.0)
+        repo.setTarget(Metric.SODIUM, 1800.0)
+        assertEquals(3000.0, repo.find(Metric.SODIUM)!!.ceilingValue!!, 0.0001)
     }
 
     @Test

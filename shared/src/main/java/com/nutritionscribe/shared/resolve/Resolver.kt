@@ -176,6 +176,13 @@ class Resolver(
         return Resolution(text, resolved, usedAi = true)
     }
 
+    /** One part of a saved meal, as a remembered line. */
+    private fun partItem(p: MealPart): ResolvedItem = ResolvedItem(
+        item = ItemParser.Item(said = p.said, food = p.name.lowercase()), status = Status.REMEMBERED,
+        choice = FoodCandidate(id = "mine:${PersonalKeys.of(p.name)}", name = p.name, origin = Origin.PERSONAL),
+        grams = p.grams, portionNote = "your usual", nutrients = p.nutrients, key = PersonalKeys.of(p.name),
+    )
+
     /**
      * "my typical protein shake, except that instead of milk I used water": their
      * saved meal, with one part swapped. Logged as a new food it came to 0 kcal,
@@ -184,7 +191,8 @@ class Resolver(
      */
     private fun usualWithSwap(text: String): Resolution? {
         val low = ItemParser.normaliseText(text)
-        val m = Regex("\\b(?:typical|usual|normal|regular|standard|same)\\s+([a-z' ]+?)\\s*,?\\s+(?:except|but|only)\\b(.*)$").find(low) ?: return null
+        // "typically", "usually" too: "typically protein shake, but with milk…" missed their shake.
+        val m = Regex("\\b(?:typical(?:ly)?|usual(?:ly)?|normal(?:ly)?|regular|standard|same)\\s+(?:my\\s+)?([a-z' ]+?)\\s*,?\\s+(?:except|but|only)\\b(.*)$").find(low) ?: return null
         val tail = m.groupValues[2]
         val swap = Regex("instead of (?:the |my )?([a-z' ]+?)\\s*,?\\s+(?:that )?(?:i |we )?(?:used|had|put|with|it was|went with|use|added)\\s+(?:some |a |an )?([a-z0-9' .]+)").find(tail)
             ?.let { it.groupValues[1] to it.groupValues[2] }
@@ -205,19 +213,22 @@ class Resolver(
         if (out.isEmpty()) return null
         // The one that HAS the part being swapped ("instead of milk": a shake made
         // with milk), the plainest such, the latest.
-        val meal = personal.all().filter { it.isMeal && covers(it) && it.parts.any { p -> FoodQuery.contentWords(p.name).any { w -> w in out } } }
+        val meals = personal.all().filter { it.isMeal && covers(it) }
+        fun hasPart(f: PersonalFood, words: Set<String>) = f.parts.any { p -> FoodQuery.contentWords(p.name).any { w -> w in words } }
+        val meal = meals.filter { hasPart(it, out) }
             .sortedWith(compareBy<PersonalFood> { it.parts.size }.thenByDescending { it.updatedAt })
-            .firstOrNull() ?: return null
+            .firstOrNull()
+        if (meal == null) {
+            // Their usual is already made that way ("…with milk instead of water", and the
+            // saved shake IS the one with milk): it is the saved meal as it is.
+            val inWords = FoodQuery.contentWords(swap.second).toSet()
+            val same = meals.filter { inWords.isNotEmpty() && hasPart(it, inWords) }
+                .sortedWith(compareBy<PersonalFood> { it.parts.size }.thenByDescending { it.updatedAt }).firstOrNull() ?: return null
+            return Resolution(text, same.parts.map { partItem(it) })
+        }
         val kept = meal.parts.filterNot { p -> FoodQuery.contentWords(p.name).any { it in out } }
         if (kept.size == meal.parts.size) return null
-        val items = kept.map { p ->
-            val item = ItemParser.Item(said = p.said, food = p.name.lowercase())
-            ResolvedItem(
-                item = item, status = Status.REMEMBERED,
-                choice = FoodCandidate(id = "mine:${PersonalKeys.of(p.name)}", name = p.name, origin = Origin.PERSONAL),
-                grams = p.grams, portionNote = "your usual", nutrients = p.nutrients, key = PersonalKeys.of(p.name),
-            )
-        }
+        val items = kept.map { partItem(it) }
         val added = swap.second.trim().takeIf { FoodQuery.contentWords(it).isNotEmpty() }
             ?.let { ItemParser.parse(it, ::isFoodWord) { w -> labels?.isBrandWord(w) == true } }.orEmpty()
             .map { resolveLocal(it) }

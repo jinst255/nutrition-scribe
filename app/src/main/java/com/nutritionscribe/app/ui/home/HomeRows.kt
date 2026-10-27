@@ -1,8 +1,11 @@
 package com.nutritionscribe.app.ui.home
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import com.nutritionscribe.app.ui.common.timeLabel
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -27,6 +30,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.nutritionscribe.app.ui.theme.limitColors
+import com.nutritionscribe.shared.model.Limits
 import com.nutritionscribe.app.data.repository.HomeSort
 import com.nutritionscribe.app.ui.history.formatAmount
 import com.nutritionscribe.app.ui.theme.NumberStyle
@@ -129,21 +135,22 @@ internal fun SortSwitch(sort: HomeSort, onSort: (HomeSort) -> Unit, modifier: Mo
 
 /**
  * One line: name, a thin bar, the number. Shared by every row on Home so the bars
- * start and end in the same place.
+ * start and end in the same place. Values stay plain text: the bar carries the
+ * colour, so nothing on the row shouts.
  */
 @Composable
 internal fun BarRow(
     label: String,
     bold: Boolean,
-    fraction: Float,
+    bar: Limits.Bar,
     fill: Color,
     unknown: Boolean,
     value: String,
-    over: Boolean,
     valueWidth: Dp,
     description: String,
     onClick: () -> Unit,
     indent: Boolean = false,
+    sub: String? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     Row(
@@ -156,19 +163,21 @@ internal fun BarRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (indent) scheme.secondary else scheme.onBackground,
-            maxLines = 1,
-            modifier = Modifier.width(88.dp).padding(start = if (indent) 8.dp else 0.dp),
-        )
-        HomeBar(fraction, fill, unknown, Modifier.weight(1f))
+        Column(Modifier.width(100.dp).padding(start = if (indent) 10.dp else 0.dp)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (indent) scheme.secondary else scheme.onBackground,
+                maxLines = 1,
+            )
+            sub?.let { Text(it, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp, fontSize = 11.sp), color = scheme.secondary, maxLines = 2) }
+        }
+        HomeBar(bar.fraction, fill, unknown, Modifier.weight(1f), bar.targetTick, bar.lineTick)
         Text(
             value,
             style = NumberStyle,
-            color = if (over) scheme.error else scheme.onBackground,
+            color = scheme.onBackground,
             maxLines = 1,
             textAlign = androidx.compose.ui.text.style.TextAlign.End,
             modifier = Modifier.width(valueWidth),
@@ -176,60 +185,117 @@ internal fun BarRow(
     }
 }
 
+private fun plain(amount: Double, scale: Double) = Limits.Bar(if (scale > 0) (amount / scale).toFloat() else 0f, null, null)
+
 /** Added sugar against its limit, natural sugar for information. */
 @Composable
 internal fun SugarRows(split: Sugars.Split, goals: Map<Metric, MetricGoal>, refs: Map<Metric, Double>, valueWidth: Dp, onOpen: (Metric) -> Unit) {
-    val scheme = MaterialTheme.colorScheme
+    val colors = limitColors()
     val goal = goals[Metric.SUGAR]?.takeIf { it.enabled } ?: goals[Metric.ADDED_SUGAR]?.takeIf { it.enabled }
+    val lines = goals[Metric.SUGAR]?.takeIf { it.ceilingValue != null || it.floorValue != null }
     val limit = sugarLimit(goals, refs)
     // Sugar no label or food kind split is counted as added: most of it comes from
     // packaged food, and the limit is the side to err on.
     val added = split.added + split.unknown
-    val over = goal != null && added > limit
+    val judgedBy = (goal ?: lines)?.copy(target = goal?.let { limit }, direction = GoalDirection.LIMIT)
+    val state = Limits.judge(added, judgedBy, dayOver = false)
     BarRow(
-        label = "Added sugar", bold = goal != null, fraction = (added / limit).toFloat(),
-        fill = if (over) scheme.error else scheme.primary, unknown = false,
+        label = "Added sugar", bold = goal != null,
+        bar = if (judgedBy != null) Limits.bar(added, limit, judgedBy.ceilingValue) else plain(added, limit),
+        fill = colors.of(state), unknown = false,
         value = "${if (split.unknown > 0.5) "≈" else ""}${formatAmount(added, Metric.ADDED_SUGAR, withUnit = false)} / ≤${formatAmount(limit, Metric.ADDED_SUGAR)}",
-        over = over, valueWidth = valueWidth,
+        valueWidth = valueWidth, sub = limitSub(state, judgedBy, Metric.ADDED_SUGAR),
         description = "Added sugar: ${Math.round(added)} of ${Math.round(limit)} grams",
         onClick = { onOpen(Metric.SUGAR) },
     )
     // No limit applies; the bar is scaled to a typical day's natural sugar so it reads.
     val scale = ((refs[Metric.SUGAR] ?: 90.0) - limit).coerceAtLeast(20.0)
     BarRow(
-        label = "Natural", bold = false, fraction = (split.natural / scale).toFloat(),
-        fill = scheme.secondary.copy(alpha = 0.55f), unknown = false,
+        label = "Natural", bold = false, bar = plain(split.natural, scale),
+        fill = colors.none, unknown = false,
         value = "${Math.round(split.natural)} g · no limit",
-        over = false, valueWidth = valueWidth, indent = true,
+        valueWidth = valueWidth, indent = true,
         description = "Natural sugar: ${Math.round(split.natural)} grams, no limit",
-        onClick = { onOpen(Metric.SUGAR) },
+        // Its own sheet (note S11): it opened the added-sugar one.
+        onClick = { NaturalSugar.open.value = true },
     )
 }
 
 /** Saturated + trans fat against the limit, unsaturated fat for information. */
 @Composable
 internal fun FatRows(split: Fats.Split, goals: Map<Metric, MetricGoal>, refs: Map<Metric, Double>, valueWidth: Dp, onOpen: (Metric) -> Unit) {
-    val scheme = MaterialTheme.colorScheme
-    val goal = goals[Metric.SATURATED_FAT]?.takeIf { it.enabled }
+    val colors = limitColors()
+    val g = goals[Metric.SATURATED_FAT]
+    val goal = g?.takeIf { it.enabled }
     val limit = fatLimit(goals, refs)
-    val over = goal != null && split.saturatedAndTrans > limit
+    val judgedBy = g?.takeIf { it.enabled || it.ceilingValue != null }?.copy(target = goal?.let { limit }, direction = GoalDirection.LIMIT)
+    val state = Limits.judge(split.saturatedAndTrans, judgedBy, dayOver = false)
     BarRow(
-        label = "Sat. + trans fat", bold = goal != null, fraction = (split.saturatedAndTrans / limit).toFloat(),
-        fill = if (over) scheme.error else scheme.primary, unknown = false,
+        label = "Sat. + trans", bold = goal != null,
+        bar = if (judgedBy != null) Limits.bar(split.saturatedAndTrans, limit, judgedBy.ceilingValue) else plain(split.saturatedAndTrans, limit),
+        fill = colors.of(state), unknown = false,
         value = "${formatAmount(split.saturatedAndTrans, Metric.SATURATED_FAT, withUnit = false)} / ≤${formatAmount(limit, Metric.SATURATED_FAT)}",
-        over = over, valueWidth = valueWidth,
+        valueWidth = valueWidth, sub = limitSub(state, judgedBy, Metric.SATURATED_FAT),
         description = "Saturated and trans fat: ${Math.round(split.saturatedAndTrans)} of ${Math.round(limit)} grams",
         onClick = { onOpen(Metric.SATURATED_FAT) },
     )
-    val fatGoal = goals[Metric.FAT]?.takeIf { it.enabled }
+    val fg = goals[Metric.FAT]
+    val fatGoal = fg?.takeIf { it.enabled }
     val fatTarget = fatGoal?.target ?: refs[Metric.FAT] ?: Metric.FAT.defaultTarget
+    val fatState = Limits.judge(split.total, fg, dayOver = false)
     BarRow(
-        label = "Unsat. fat", bold = fatGoal != null, fraction = (split.unsaturated / (fatTarget - limit).coerceAtLeast(10.0)).toFloat(),
-        fill = scheme.secondary.copy(alpha = 0.55f), unknown = false,
+        label = "Unsat. fat", bold = fatGoal != null,
+        bar = if (fatGoal != null) Limits.bar(split.total, fatTarget, fg.ceilingValue) else plain(split.unsaturated, (fatTarget - limit).coerceAtLeast(10.0)),
+        fill = if (fatGoal != null) colors.of(fatState) else colors.none, unknown = false,
         value = if (fatGoal != null) "${formatAmount(split.total, Metric.FAT, withUnit = false)} / ${formatAmount(fatTarget, Metric.FAT)} total"
         else "${Math.round(split.unsaturated)} g · no limit",
-        over = false, valueWidth = valueWidth, indent = true,
+        valueWidth = valueWidth, indent = true, sub = if (fatGoal != null) limitSub(fatState, fg, Metric.FAT) else null,
         description = "Unsaturated fat: ${Math.round(split.unsaturated)} grams; total fat ${Math.round(split.total)} grams",
         onClick = { onOpen(Metric.FAT) },
     )
+}
+
+
+/** Natural sugar's own sheet, opened from its row on Home or a day's page (note S11). */
+object NaturalSugar {
+    val open = kotlinx.coroutines.flow.MutableStateFlow(false)
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+internal fun NaturalSheet(entries: List<com.nutritionscribe.shared.model.Entry>, onAboutAdded: () -> Unit, onOpenEntry: (String) -> Unit, onDismiss: () -> Unit) {
+    val split = androidx.compose.runtime.remember(entries) { Sugars.split(entries) }
+    val sources = androidx.compose.runtime.remember(entries) { Sugars.naturalSources(entries).take(6) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { com.nutritionscribe.app.di.ServiceLocator.debugEvents.event("natural_sugar_open", "grams" to split.natural) }
+    com.nutritionscribe.app.ui.feedback.ReportableSheet("Natural sugar", onDismissRequest = onDismiss) {
+        androidx.compose.foundation.layout.Column(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
+        ) {
+            androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.Bottom) {
+                Text("Natural sugar", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("${Math.round(split.natural)} g \u00B7 no limit", style = com.nutritionscribe.app.ui.theme.NumberStyle)
+            }
+            Text("Sugar that comes with fruit and plain milk. It doesn't count toward your added-sugar limit.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+            if (sources.isNotEmpty()) {
+                SectionLabel("Today it came from")
+                sources.forEach { (name, g) ->
+                    val from = entries.lastOrNull { e -> e.items.any { it.name == name } || (e.items.isEmpty() && e.name == name) }
+                    androidx.compose.foundation.layout.Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = from != null) { onDismiss(); from?.let { onOpenEntry(it.id) } },
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
+                            Text(name, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                            from?.let { e -> Text(e.timeLabel(), style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary) }
+                        }
+                        Text("${Math.round(g)} g", style = com.nutritionscribe.app.ui.theme.NumberStyle)
+                    }
+                }
+            } else Text("None logged today.", style = MaterialTheme.typography.bodyMedium)
+            androidx.compose.material3.TextButton(onClick = { onDismiss(); onAboutAdded() }) { Text("About added sugar \u203A") }
+        }
+    }
 }

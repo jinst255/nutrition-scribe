@@ -131,6 +131,20 @@ class SettingsRepository(
         val LOG_SNOOZE_UNTIL = androidx.datastore.preferences.core.longPreferencesKey("log_snooze_until")
         val SCAN_GUIDE = booleanPreferencesKey("scan_guide")
         val BETA_NOTES = stringPreferencesKey("beta_notes_v1")
+        val GOALS_TIP_CLOSED = booleanPreferencesKey("goals_tip_closed")
+        val MICROS_PERCENT = booleanPreferencesKey("micros_percent")
+        val STREAK_SHOW = booleanPreferencesKey("streak_show")
+        val STREAK_RULE = stringPreferencesKey("streak_rule")
+        val STREAK_REST = intPreferencesKey("streak_rest_days")
+        val DAY_END_HOUR = intPreferencesKey("day_end_hour")
+        val IDEA_HIDDEN = stringPreferencesKey("idea_hidden")
+        val NAME_CONFIRMED_VERSION = intPreferencesKey("tester_name_confirmed_version")
+        val EXTRAS = stringSetPreferencesKey("extras_tracked")
+        val MODEL_LOOKUP = stringPreferencesKey("model_lookup")
+        val MODEL_ASK = stringPreferencesKey("model_ask")
+        val MODEL_SPEECH = stringPreferencesKey("model_speech")
+        val ASK_CONSENT = booleanPreferencesKey("ask_consent_v1")
+        val HISTORY_COUNTED = stringSetPreferencesKey("history_counted_days")
     }
 
     private val encryptedPrefs by lazy {
@@ -433,8 +447,9 @@ class SettingsRepository(
         p[Keys.BETA_NOTES]?.let { runCatching { notesJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(BetaNote.serializer()), it) }.getOrNull() }.orEmpty()
     }
 
-    suspend fun addBetaNote(note: BetaNote) {
+    suspend fun addBetaNote(note0: BetaNote) {
         store.edit { p ->
+            val note = if (note0.who.isBlank()) note0.copy(who = p[Keys.TESTER_NAME].orEmpty()) else note0
             val old = p[Keys.BETA_NOTES]?.let { runCatching { notesJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(BetaNote.serializer()), it) }.getOrNull() }.orEmpty()
             p[Keys.BETA_NOTES] = notesJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(BetaNote.serializer()), (listOf(note) + old).take(100))
         }
@@ -448,7 +463,94 @@ class SettingsRepository(
     suspend fun setNutrientRepairVersion(v: Int) {
         store.edit { it[Keys.NUTRIENT_REPAIR] = v }
     }
+
+    /** Goals' one-line tip, closed with its ×. ⓘ in the top bar says the rest. */
+    val goalsTipClosed: Flow<Boolean> = store.data.map { it[Keys.GOALS_TIP_CLOSED] ?: false }
+
+    suspend fun closeGoalsTip() {
+        store.edit { it[Keys.GOALS_TIP_CLOSED] = true }
+    }
+
+    /** The Minerals tab's Amount | % switch: % of this person's own need. */
+    val microsAsPercent: Flow<Boolean> = store.data.map { it[Keys.MICROS_PERCENT] ?: false }
+
+    suspend fun setMicrosAsPercent(on: Boolean) {
+        store.edit { it[Keys.MICROS_PERCENT] = on }
+    }
+
+    data class StreakSettings(val show: Boolean, val rule: com.nutritionscribe.shared.model.Streak.Rule, val restDays: Int, val dayEndHour: Int)
+
+    val streak: Flow<StreakSettings> = store.data.map {
+        StreakSettings(
+            show = it[Keys.STREAK_SHOW] ?: true,
+            rule = com.nutritionscribe.shared.model.Streak.Rule.fromKey(it[Keys.STREAK_RULE]),
+            restDays = it[Keys.STREAK_REST] ?: 1,
+            dayEndHour = it[Keys.DAY_END_HOUR] ?: 3,
+        )
+    }
+
+    suspend fun setStreak(s: StreakSettings) {
+        store.edit {
+            it[Keys.STREAK_SHOW] = s.show
+            it[Keys.STREAK_RULE] = s.rule.key
+            it[Keys.STREAK_REST] = s.restDays.coerceIn(0, 3)
+            it[Keys.DAY_END_HOUR] = s.dayEndHour
+        }
+        com.nutritionscribe.shared.model.LogDays.endHour = s.dayEndHour
+    }
+
+    /** The headline of the Ideas card closed on Home; a new headline shows again. */
+    val ideaHidden: Flow<String?> = store.data.map { it[Keys.IDEA_HIDDEN] }
+
+    suspend fun setIdeaHidden(headline: String?) {
+        store.edit { if (headline == null) it.remove(Keys.IDEA_HIDDEN) else it[Keys.IDEA_HIDDEN] = headline }
+    }
+
+    /** The versionCode the tester last confirmed their name on; asked again after an update. */
+    val nameConfirmedVersion: Flow<Int> = store.data.map { it[Keys.NAME_CONFIRMED_VERSION] ?: 0 }
+
+    suspend fun confirmName(name: String, versionCode: Int) {
+        setTesterName(name)
+        store.edit { it[Keys.NAME_CONFIRMED_VERSION] = versionCode }
+    }
+
+    /** Goals › More to track: extras turned on, by [com.nutritionscribe.shared.model.Metric.key]. Off by default. */
+    val extras: Flow<Set<String>> = store.data.map { it[Keys.EXTRAS].orEmpty() }
+
+    suspend fun setExtra(key: String, on: Boolean) {
+        store.edit { it[Keys.EXTRAS] = if (on) it[Keys.EXTRAS].orEmpty() + key else it[Keys.EXTRAS].orEmpty() - key }
+    }
+
+    /** Advanced › AI models: which model does each job. null is the app's default. */
+    val modelLookup: Flow<String?> = store.data.map { it[Keys.MODEL_LOOKUP] }
+    val modelAsk: Flow<String?> = store.data.map { it[Keys.MODEL_ASK] }
+    val modelSpeech: Flow<String?> = store.data.map { it[Keys.MODEL_SPEECH] }
+
+    suspend fun setModel(job: AiJob, model: String?) {
+        val k = when (job) { AiJob.LOOKUP -> Keys.MODEL_LOOKUP; AiJob.ASK -> Keys.MODEL_ASK; AiJob.SPEECH -> Keys.MODEL_SPEECH }
+        store.edit { if (model == null) it.remove(k) else it[k] = model }
+    }
+
+    /** Half-logged days the person chose to count in History's averages, as epoch days. */
+    val historyCounted: Flow<Set<Long>> = store.data.map { p -> p[Keys.HISTORY_COUNTED].orEmpty().mapNotNull { it.toLongOrNull() }.toSet() }
+
+    suspend fun setHistoryCounted(day: Long, counted: Boolean) {
+        store.edit {
+            val now = it[Keys.HISTORY_COUNTED].orEmpty()
+            it[Keys.HISTORY_COUNTED] = if (counted) now + day.toString() else now - day.toString()
+        }
+    }
+
+    /** Whether the person has seen and accepted what Ask sends, the first time they use it. */
+    val askConsent: Flow<Boolean> = store.data.map { it[Keys.ASK_CONSENT] ?: false }
+
+    suspend fun setAskConsent(on: Boolean) {
+        store.edit { it[Keys.ASK_CONSENT] = on }
+    }
 }
+
+/** The jobs the AI does, each with its own model in Advanced › AI models. */
+enum class AiJob(val label: String) { LOOKUP("Food lookups"), ASK("Ask chat"), SPEECH("Speech") }
 
 /** One thing a tester told us: "Wrong numbers · the butter at lunch seemed like a lot". */
 @kotlinx.serialization.Serializable
@@ -458,4 +560,6 @@ data class BetaNote(
     val kind: String,
     val tags: List<String> = emptyList(),
     val text: String = "",
+    /** The tester's name when it was written, so "From Sam" stays right after a rename. */
+    val who: String = "",
 )

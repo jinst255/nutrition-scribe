@@ -75,7 +75,21 @@ enum class Metric(
     /** Under 10% of calories (Dietary Guidelines 2020-2025): the label's 50 g at 2,000 kcal. */
     ADDED_SUGAR("added_sugar", "Added sugar", "g", GoalDirection.LIMIT, 50.0),
     /** No safe amount is set; the WHO's "under 1% of calories" is about 2 g at 2,000 kcal. */
-    TRANS_FAT("trans_fat", "Trans fat", "g", GoalDirection.LIMIT, 2.0);
+    TRANS_FAT("trans_fat", "Trans fat", "g", GoalDirection.LIMIT, 2.0),
+
+    // More to track (Goals): off until switched on, estimated from the food list.
+    // See [Extras]. Targets are the label Daily Values; ALA has none, so its adult AI.
+    COPPER("copper", "Copper", "mg", GoalDirection.REACH, 0.9, MetricGroup.MINERAL),
+    MANGANESE("manganese", "Manganese", "mg", GoalDirection.REACH, 2.3, MetricGroup.MINERAL),
+    PHOSPHORUS("phosphorus", "Phosphorus", "mg", GoalDirection.REACH, 1250.0, MetricGroup.MINERAL),
+    CHOLINE("choline", "Choline", "mg", GoalDirection.REACH, 550.0, MetricGroup.VITAMIN),
+    THIAMIN("thiamin", "Thiamin (B1)", "mg", GoalDirection.REACH, 1.2, MetricGroup.VITAMIN, shortLabel = "B1"),
+    RIBOFLAVIN("riboflavin", "Riboflavin (B2)", "mg", GoalDirection.REACH, 1.3, MetricGroup.VITAMIN, shortLabel = "B2"),
+    NIACIN("niacin", "Niacin (B3)", "mg", GoalDirection.REACH, 16.0, MetricGroup.VITAMIN, shortLabel = "B3"),
+    VITAMIN_B6("vitamin_b6", "Vitamin B6", "mg", GoalDirection.REACH, 1.7, MetricGroup.VITAMIN, shortLabel = "B6"),
+    OMEGA3_ALA("omega3_ala", "Omega-3 (ALA)", "g", GoalDirection.REACH, 1.6, MetricGroup.VITAMIN, shortLabel = "ALA"),
+    /** Two drinks of 14 g, the Dietary Guidelines' daily line for men; one for women (see Needs). */
+    ALCOHOL("alcohol", "Alcohol", "g", GoalDirection.LIMIT, 28.0);
 
     val isMicro: Boolean get() = group != MetricGroup.MACRO
 
@@ -108,4 +122,29 @@ enum class Metric(
         val MACROS: List<Metric> = entries.filter { !it.isMicro && it.partOf == null }
         val MICROS: List<Metric> = entries.filter { it.isMicro }
     }
+}
+
+/**
+ * Goals › More to track (decision 4, option C): nutrients labels rarely print, off
+ * until switched on. Each food's amount is its closest food-list match's, scaled
+ * by weight, unless its label prints it; shown with ≈, and "not known" is never 0.
+ */
+object Extras {
+    val ALL: List<Metric> = listOf(
+        Metric.OMEGA3, Metric.OMEGA3_ALA, Metric.COPPER, Metric.MANGANESE, Metric.PHOSPHORUS, Metric.CHOLINE,
+        Metric.THIAMIN, Metric.RIBOFLAVIN, Metric.NIACIN, Metric.VITAMIN_B6, Metric.ALCOHOL,
+    )
+
+    /** One switch in More to track; a row each once on. */
+    val B_VITAMINS: List<Metric> = listOf(Metric.THIAMIN, Metric.RIBOFLAVIN, Metric.NIACIN, Metric.VITAMIN_B6)
+
+    /** Switched on, by key. Kept current from settings by the app. */
+    @Volatile var on: Set<String> = emptySet()
+
+    fun isExtra(m: Metric): Boolean = m in ALL
+
+    /** Shown on Home, Goals, History and the editors: everything else, and the extras switched on. */
+    fun shown(m: Metric, on: Set<String> = this.on): Boolean = m !in ALL || m.key in on
+
+    fun shown(list: List<Metric>, on: Set<String> = this.on): List<Metric> = list.filter { shown(it, on) }
 }

@@ -103,7 +103,7 @@ fun ManualEntrySheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    com.nutritionscribe.app.ui.feedback.ReportableSheet("Enter it myself", onDismissRequest = onDismiss, sheetState = sheetState) {
         ManualEntryForm(
             title = title,
             frequentFoods = frequentFoods,

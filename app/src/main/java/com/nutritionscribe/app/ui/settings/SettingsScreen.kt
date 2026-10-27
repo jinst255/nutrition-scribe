@@ -1,5 +1,27 @@
 package com.nutritionscribe.app.ui.settings
 
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.Savings
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,6 +29,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -55,12 +78,14 @@ class SettingsViewModel : ViewModel() {
     val reset = ServiceLocator.resetManager
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onOpenDebugLog: () -> Unit,
     onOpenExportImport: () -> Unit,
     onOpenMyFoods: () -> Unit = {},
     onOpenSpending: () -> Unit = {},
+    onOpenAiModels: () -> Unit = {},
     onOpenFeedback: () -> Unit = {},
     onOpenMyLabels: () -> Unit = {},
     onOpenIdea: () -> Unit = {},
@@ -117,17 +142,12 @@ fun SettingsScreen(
     val everSpent by remember { ServiceLocator.database.aiUsageDao().observeCostSince(0) }.collectAsState(initial = 0.0)
 
     // The screen has outgrown one phone height; without this the lower rows are
-    // unreachable rather than merely cramped.
+    // unreachable rather than merely cramped. Grouped in cards (note S1): the Beta
+    // card set the look, and everything under it was a plain list.
     Column(
-        modifier = Modifier
-            .verticalScroll(rememberScrollState())
-            // No top padding: the first SectionHeader's own 26dp sits under
-            // the title bar, and adding more left a gap that looked like a bug.
-            .padding(horizontal = 16.dp),
+        modifier = Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // ---- The everyday settings. Everything a friend who was handed the
-        // app might touch is up here, in their words; the machinery is under
-        // Advanced.
         val testing = remember { com.nutritionscribe.app.ui.feedback.isTestBuild(ServiceLocator.appContext) }
         if (testing) {
             SectionHeader("Beta testing")
@@ -138,264 +158,310 @@ fun SettingsScreen(
                 onCheckIn = { events.event("check_in_open", "where" to "settings"); onOpenCheckIn() },
             )
         }
-        SectionHeader("Logging")
 
-        SettingRow(
-            title = "Highest quality mode",
-            subtitle = when {
-                !hasKey -> "Needs an API key. Whoever set up your app can add one under Advanced settings. Everything works without it."
-                quality -> "On. AI checks foods you haven't logged before and turns your speech into text. About a tenth of a cent an entry. If it can't be reached, the app carries on without it."
-                else -> "Off. Foods come from the built-in list and your own foods, and speech is recognised on the phone. Free."
-            },
-            onClick = if (hasKey) ({ setQuality(!quality) }) else null,
-        ) {
-            Switch(
-                checked = quality,
-                enabled = hasKey,
-                onCheckedChange = { setQuality(it) },
-            )
-        }
-        if (hasKey) {
-            val agreedTo = AiBackendKind.entries.filter { com.nutritionscribe.app.data.repository.AiConsent.agreed(consent, it) }
-            NavRow(
-                title = "AI privacy",
-                subtitle = if (agreedTo.isEmpty()) "Nothing is sent to an AI provider. Tap to see what would be."
-                    else "You agreed to send food descriptions to ${agreedTo.joinToString(" and ") { com.nutritionscribe.app.data.repository.AiConsent.provider(it).name }}. Tap to review.",
-                onClick = { turningOn = false; askConsent = backend },
-            )
-        }
-        if (hasKey || everSpent > 0) {
-            NavRow(
-                title = "AI spending",
-                subtitle = "${com.nutritionscribe.app.ui.cost.formatUsd(monthCost)} this month \u00B7 see what it costs over time",
-                onClick = onOpenSpending,
-            )
+        // ---- Their food -----------------------------------------------------
+        SectionHeader("Your food")
+        val saved by remember {
+            ServiceLocator.database.personalFoodDao().observeAll().map { rows -> rows.mapNotNull { ServiceLocator.personalStore.decode(it) } }
+        }.collectAsState(initial = emptyList())
+        val meals = saved.count { it.isMeal }
+        val labelCount = saved.count { !it.isMeal && it.candidate?.origin == com.nutritionscribe.shared.resolve.Origin.LABEL }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FoodTile(Icons.Outlined.Restaurant, "My foods",
+                if (saved.isEmpty()) "Foods you confirm land here" else "${saved.size} saved" + (if (meals > 0) " \u00B7 $meals meal" + (if (meals == 1) "" else "s") else ""),
+                Modifier.weight(1f), onOpenMyFoods)
+            FoodTile(Icons.Outlined.ReceiptLong, "My labels", if (labelCount == 0) "Scan a label to keep it" else "$labelCount labels",
+                Modifier.weight(1f), onOpenMyLabels)
         }
 
-        Text("Microphone", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 12.dp))
-        Hint(
-            if (micMode == com.nutritionscribe.app.data.repository.MicMode.TAP)
-                "Tap the microphone to start, and again when you're done. Pauses never end it."
-            else "Hold the microphone while you talk and let go when you're done. Pauses never end it.",
-        )
-        com.nutritionscribe.app.ui.speech.MicModeSwitch(
-            micMode,
-            {
-                events.event("setting_changed", "setting" to "mic_mode", "value" to it)
-                scope.launch { settings.setMicMode(it) }
-            },
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-        )
-        if (manualMode) {
-            Hint("\u201CEnter the numbers myself\u201D is on (Advanced settings), so lookups and the microphone are off.")
-        }
-
-        // ---- Food data: local, free, nothing to set up ------------------------
-        SectionHeader("Food data")
-        val myFoods by remember {
-            ServiceLocator.database.personalFoodDao().observeAll().map { it.size }
-        }.collectAsState(initial = 0)
-        NavRow(
-            title = "My foods",
-            subtitle = if (myFoods == 0) "Foods you confirm are remembered here and log without asking."
-            else "$myFoods remembered. They log without asking \u2014 view, change or forget them.",
-            onClick = onOpenMyFoods,
-        )
-        val myLabels by remember {
-            ServiceLocator.database.personalFoodDao().observeAll().map { rows ->
-                rows.mapNotNull { ServiceLocator.personalStore.decode(it) }.count { !it.isMeal && it.candidate?.origin == com.nutritionscribe.shared.resolve.Origin.LABEL }
+        // ---- AI -------------------------------------------------------------
+        SectionHeader("AI")
+        SettingsCard {
+            IconRow(Icons.Outlined.AutoAwesome, "Highest quality mode",
+                when {
+                    !hasKey -> "Needs an API key (Advanced). Everything works without it."
+                    quality -> "On. AI checks new foods and your speech \u00B7 about 0.1\u00A2 an entry"
+                    else -> "Off. Foods come from the built-in list and your own foods. Free."
+                },
+                onClick = if (hasKey) ({ setQuality(!quality) }) else null,
+            ) { Switch(checked = quality, enabled = hasKey, onCheckedChange = { setQuality(it) }) }
+            if (hasKey) {
+                CardDivider()
+                val agreedTo = AiBackendKind.entries.filter { com.nutritionscribe.app.data.repository.AiConsent.agreed(consent, it) }
+                IconRow(Icons.Outlined.Shield, "AI privacy",
+                    if (agreedTo.isEmpty()) "Nothing is sent to an AI provider. Tap to see what would be."
+                    else "What is sent, and to whom: ${agreedTo.joinToString(" and ") { com.nutritionscribe.app.data.repository.AiConsent.provider(it).name }}",
+                    onClick = { turningOn = false; askConsent = backend })
             }
-        }.collectAsState(initial = 0)
-        if (myLabels > 0) {
-            NavRow(
-                title = "My labels",
-                subtitle = "$myLabels scanned or picked. See the photo, check and fix the numbers.",
-                onClick = onOpenMyLabels,
-            )
+            if (hasKey || everSpent > 0) {
+                CardDivider()
+                IconRow(Icons.Outlined.Savings, "AI spending", "${com.nutritionscribe.app.ui.cost.formatUsd(monthCost)} this month", onClick = onOpenSpending)
+            }
         }
-        LabelPackRow(advanced = false)
-        Hint("Built in: 13,400 USDA foods and a hand-checked list of everyday ones. Works offline, costs nothing.")
 
-        // ---- Appearance ---------------------------------------------------
-        SectionHeader("Appearance")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ThemeMode.entries.forEach { mode ->
-                FilterChip(
-                    selected = mode == theme,
-                    onClick = { scope.launch { settings.setTheme(mode) } },
-                    label = { Text(mode.name.lowercase().replaceFirstChar { it.uppercase() }) },
+        // ---- Microphone -----------------------------------------------------
+        SectionHeader("Microphone")
+        SettingsCard {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                com.nutritionscribe.app.ui.speech.MicModeSwitch(
+                    micMode,
+                    {
+                        events.event("setting_changed", "setting" to "mic_mode", "value" to it)
+                        scope.launch { settings.setMicMode(it) }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
                 )
+                Hint(
+                    if (micMode == com.nutritionscribe.app.data.repository.MicMode.TAP)
+                        "Tap the microphone to start, and again when you're done. Pauses never end it."
+                    else "Hold the microphone while you talk and let go when you're done. Pauses never end it.",
+                )
+                if (manualMode) Hint("\u201CEnter the numbers myself\u201D is on (Advanced), so lookups and the microphone are off.")
             }
         }
 
-        // ---- Your data -----------------------------------------------------
+        // ---- Your data ------------------------------------------------------
         SectionHeader("Your data")
-        NavRow(
-            title = "Back up & restore",
-            subtitle = "Save your log to a file, or bring one back. It's the only copy there is.",
-            onClick = onOpenExportImport,
-        )
-        // Out here rather than under Debugging: someone testing the app is asked to
-        // send this, and shouldn't have to find an advanced switch first.
         val context = androidx.compose.ui.platform.LocalContext.current
         val sentAt by settings.logSentAt.collectAsState(initial = null)
-        if (!testing) NavRow(
-            title = "Something's wrong? Send feedback",
-            subtitle = "A few taps: what bothered you, and whether you'd keep using the app.",
-            onClick = onOpenFeedback,
-        )
-        if (!testing) NavRow(
-            title = "Send my log",
-            subtitle = "For whoever gave you the app: what you logged and how the app behaved, so they can fix problems." +
-                (sentAt?.let { " Last sent ${java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(it))}." } ?: ""),
-            onClick = { scope.launch { com.nutritionscribe.app.ui.debuglog.LogShare.share(context, "settings") } },
-        )
+        SettingsCard {
+            IconRow(Icons.Outlined.CloudUpload, "Back up & restore", "Save your log to a file, or bring one back. It's the only copy there is.",
+                onClick = onOpenExportImport)
+            if (!testing) {
+                CardDivider()
+                IconRow(Icons.Outlined.ChatBubbleOutline, "Something's wrong? Send feedback", "A few taps: what bothered you, and whether you'd keep using it.",
+                    onClick = onOpenFeedback)
+                CardDivider()
+                IconRow(Icons.AutoMirrored.Outlined.Send, "Send my log",
+                    "For whoever gave you the app, so they can fix problems." +
+                        (sentAt?.let { " Last sent ${java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(it))}." } ?: ""),
+                    onClick = { scope.launch { com.nutritionscribe.app.ui.debuglog.LogShare.share(context, "settings") } })
+            }
+        }
 
-        HorizontalDivider(modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
-        SettingRow(
-            title = "Show advanced settings",
-            subtitle = "API key, label pack file, how long data is kept, debug mode and reset.",
-            onClick = { scope.launch { settings.setShowAdvanced(!showAdvanced) } },
-        ) {
-            Switch(checked = showAdvanced, onCheckedChange = { scope.launch { settings.setShowAdvanced(it) } })
+        // ---- Appearance -----------------------------------------------------
+        SectionHeader("Appearance")
+        SettingsCard {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Palette, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 14.dp))
+                Text("Theme", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                SingleChoiceSegmentedButtonRow {
+                    ThemeMode.entries.forEachIndexed { i, mode ->
+                        SegmentedButton(
+                            selected = mode == theme,
+                            onClick = { scope.launch { settings.setTheme(mode) } },
+                            shape = SegmentedButtonDefaults.itemShape(i, ThemeMode.entries.size),
+                            icon = {},
+                        ) { Text(mode.name.lowercase().replaceFirstChar { it.uppercase() }, maxLines = 1, fontSize = 13.sp) }
+                    }
+                }
+            }
+        }
+
+        SettingsCard {
+            IconRow(Icons.Outlined.Tune, "Show advanced settings", "AI models, the key, the label pack, how long data is kept, debug mode and reset.",
+                onClick = { scope.launch { settings.setShowAdvanced(!showAdvanced) } },
+            ) { Switch(checked = showAdvanced, onCheckedChange = { scope.launch { settings.setShowAdvanced(it) } }) }
         }
 
         if (!showAdvanced) {
-            Spacer(Modifier.padding(bottom = 32.dp))
+            VersionLine()
+            Spacer(Modifier.padding(bottom = 24.dp))
             return@Column
         }
 
         // =====================================================================
         // Advanced
         // =====================================================================
-        SectionHeader("Advanced \u00B7 Logging")
-        SettingRow(
-            title = "Enter the numbers myself",
-            subtitle = "Skip lookup entirely and type the amounts by hand. " +
-                "Works with no key and no connection.",
-            onClick = { scope.launch { settings.setManualMode(!manualMode) } },
-        ) {
-            Switch(
-                checked = manualMode,
-                onCheckedChange = {
+        SectionHeader("Advanced")
+        var keyOpen by remember { mutableStateOf(!hasKey) }
+        SettingsCard {
+            IconRow(Icons.Outlined.Memory, "AI models", "Which model does each job, with prices", onClick = onOpenAiModels)
+            CardDivider()
+            IconRow(Icons.Outlined.Key, "Provider and API key",
+                (if (backend == AiBackendKind.OPENAI) "OpenAI" else "Anthropic") + if (hasKey) " \u00B7 key saved on this phone" else " \u00B7 no key yet",
+                onClick = { keyOpen = !keyOpen }) {
+                Icon(if (keyOpen) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null, tint = MaterialTheme.colorScheme.secondary)
+            }
+            if (keyOpen) Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AiBackendKind.entries.forEach { kind ->
+                        FilterChip(
+                            selected = kind == backend,
+                            onClick = {
+                                scope.launch { settings.setBackend(kind) }
+                                apiKeyText = settings.getApiKey(kind).orEmpty()
+                            },
+                            label = { Text(if (kind == AiBackendKind.OPENAI) "OpenAI" else "Anthropic") },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = apiKeyText,
+                    onValueChange = {
+                        apiKeyText = it
+                        settings.setApiKey(backend, it.filterNot { c -> c.isWhitespace() })
+                    },
+                    // singleLine is the fix for a key that wrapped to four lines and took over the screen.
+                    singleLine = true,
+                    label = { Text("API key") },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Password, autoCorrect = false,
+                    ),
+                    placeholder = { Text("Optional \u2014 sk-\u2026") },
+                    visualTransformation = if (apiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                            Icon(
+                                if (apiKeyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (apiKeyVisible) "Hide API key" else "Show API key",
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Hint("Stored encrypted on this phone. Never sent anywhere but the provider.")
+                if (backend == AiBackendKind.ANTHROPIC) {
+                    Hint("With an Anthropic key, AI checks foods but speech stays on the phone: better speech needs an OpenAI key.")
+                }
+            }
+            CardDivider()
+            IconRow(Icons.Outlined.Keyboard, "Enter the numbers myself", "Skip lookups and type the amounts by hand. Works with no key and no connection.",
+                onClick = { scope.launch { settings.setManualMode(!manualMode) } }) {
+                Switch(checked = manualMode, onCheckedChange = {
                     events.event("setting_changed", "setting" to "manual_mode", "value" to it)
                     scope.launch { settings.setManualMode(it) }
-                },
-            )
-        }
-
-        SectionHeader("Advanced \u00B7 AI key")
-        Text(
-            "API key",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(bottom = 4.dp),
-        )
-        OutlinedTextField(
-            value = apiKeyText,
-            onValueChange = {
-                apiKeyText = it
-                settings.setApiKey(backend, it.filterNot { c -> c.isWhitespace() })
-            },
-            // singleLine is the fix for a key that wrapped to four lines and
-            // took over the screen.
-            singleLine = true,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password, autoCorrect = false,
-            ),
-            placeholder = { Text("Optional \u2014 sk-\u2026") },
-            visualTransformation = if (apiKeyVisible) {
-                VisualTransformation.None
-            } else {
-                PasswordVisualTransformation()
-            },
-            trailingIcon = {
-                IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
-                    Icon(
-                        if (apiKeyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                        contentDescription = if (apiKeyVisible) "Hide API key" else "Show API key",
-                    )
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Hint("Stored encrypted on this phone. Never sent anywhere but the provider. With a key here, Highest quality mode (top of this screen) can be switched on.")
-
-        Text(
-            "Provider",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 14.dp, bottom = 6.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AiBackendKind.entries.forEach { kind ->
-                FilterChip(
-                    selected = kind == backend,
-                    onClick = {
-                        scope.launch { settings.setBackend(kind) }
-                        apiKeyText = settings.getApiKey(kind).orEmpty()
-                    },
-                    label = { Text(if (kind == AiBackendKind.OPENAI) "OpenAI" else "Anthropic") },
-                )
+                })
             }
         }
-        if (backend == AiBackendKind.ANTHROPIC) {
-            Hint("With an Anthropic key, AI checks foods but speech stays on the phone: better speech needs an OpenAI key.")
+
+        SectionHeader("Label pack")
+        SettingsCard {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                LabelPackRow(advanced = true)
+                Hint("Built in too: 13,400 USDA foods and a hand-checked list of everyday ones. Works offline, costs nothing.")
+            }
         }
 
-        SectionHeader("Advanced \u00B7 Label pack")
-        LabelPackRow(advanced = true)
-
-        // ---- How long things are kept -------------------------------------
         // These were display-only, which made them look like settings and behave
         // like decoration. They are the one place a user can stop the app
         // throwing their own history away, so they have to be reachable.
-        SectionHeader("Advanced \u00B7 Keep my data for")
-        RetentionRow(
-            title = "Daily totals",
-            subtitle = "The numbers behind the charts.",
-            window = totalsWindow,
-            onChange = { scope.launch { settings.setRetainProteinTotals(it) } },
-        )
-        RetentionRow(
-            title = "Food details",
-            subtitle = "What you actually said, and which food it matched.",
-            window = detailsWindow,
-            onChange = { scope.launch { settings.setRetainFoodDetails(it) } },
-        )
+        SectionHeader("Keep my data for")
+        SettingsCard {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                RetentionRow(
+                    title = "Daily totals",
+                    subtitle = "The numbers behind the charts.",
+                    window = totalsWindow,
+                    onChange = { scope.launch { settings.setRetainProteinTotals(it) } },
+                )
+                RetentionRow(
+                    title = "Food details",
+                    subtitle = "What you actually said, and which food it matched.",
+                    window = detailsWindow,
+                    onChange = { scope.launch { settings.setRetainFoodDetails(it) } },
+                )
+            }
+        }
 
-        SectionHeader("Advanced \u00B7 Debugging")
-        SettingRow(
-            title = "Debug mode",
-            subtitle = "Keeps a detailed record of everything you do and say in the app, and what it did back, " +
-                "so problems can be found from the file. It stays on this phone until you save or share it.",
-            onClick = {
-                scope.launch {
-                    settings.setDebugMode(!debugMode)
-                    events.enabled = !debugMode
-                    if (!debugMode) events.event("debug_mode_on", ServiceLocator.appSnapshot())
-                }
-            },
-        ) {
-            Switch(
-                checked = debugMode,
-                onCheckedChange = { on ->
+        SectionHeader("Debugging")
+        SettingsCard {
+            IconRow(Icons.Outlined.BugReport, "Debug mode",
+                "Keeps a full record of what you do and what the app did back, for your notes. It stays on this phone until you send it.",
+                onClick = {
+                    scope.launch {
+                        settings.setDebugMode(!debugMode)
+                        events.enabled = !debugMode
+                        if (!debugMode) events.event("debug_mode_on", ServiceLocator.appSnapshot())
+                    }
+                }) {
+                Switch(checked = debugMode, onCheckedChange = { on ->
                     scope.launch {
                         settings.setDebugMode(on)
                         events.enabled = on
                         if (on) events.event("debug_mode_on", ServiceLocator.appSnapshot())
                     }
-                },
-            )
+                })
+            }
+            CardDivider()
+            IconRow(Icons.Outlined.Description, "Debug log",
+                if (debugMode) "Recording. Save it to Downloads, share it, or clear it." else "Errors only. Turn on debug mode for the full record.",
+                onClick = onOpenDebugLog)
         }
-        NavRow(
-            title = "Debug log",
-            subtitle = if (debugMode) "Recording. Save it to Downloads, share it, or clear it." else "Errors only. Turn on debug mode for the full record.",
-            onClick = onOpenDebugLog,
-        )
 
-        HorizontalDivider(modifier = Modifier.padding(top = 28.dp, bottom = 20.dp))
+        HorizontalDivider(modifier = Modifier.padding(top = 20.dp, bottom = 12.dp))
         ResetSection(reset = viewModel.reset, onOpenExportImport = onOpenExportImport)
+        VersionLine()
         Spacer(Modifier.padding(bottom = 32.dp))
     }
+}
+
+/** A group of settings on one card (note S1). */
+@Composable
+private fun SettingsCard(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+    androidx.compose.material3.Surface(
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) { Column(content = content) }
+}
+
+@Composable
+private fun CardDivider() = HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(start = 52.dp))
+
+/** An icon, a title with a line under it, and a switch or a chevron. */
+@Composable
+private fun IconRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 60.dp)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 14.dp))
+        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+        }
+        when {
+            trailing != null -> trailing()
+            onClick != null -> Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.secondary)
+        }
+    }
+}
+
+/** "My foods · 48 saved · 6 meals": the two places their own food lives. */
+@Composable
+private fun FoodTile(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, sub: String, modifier: Modifier, onClick: () -> Unit) {
+    androidx.compose.material3.Surface(
+        onClick = onClick, shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = modifier,
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.foundation.layout.Box(
+                Modifier.size(40.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+        }
+    }
+}
+
+@Composable
+private fun VersionLine() {
+    val v = remember {
+        runCatching { ServiceLocator.appContext.packageManager.getPackageInfo(ServiceLocator.appContext.packageName, 0).versionName }.getOrNull()
+    }
+    Text("Nutrition Scribe ${v.orEmpty()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
 }
 
 /**

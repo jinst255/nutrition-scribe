@@ -46,6 +46,10 @@ object Ideas {
         Food("Kidney beans", 173740, 89.0, "½ cup cooked", Food.Kind.PROTEIN),
         Food("Edamame", 168411, 78.0, "½ cup", Food.Kind.PROTEIN),
         Food("Salmon", 175168, 85.0, "3 oz cooked", Food.Kind.PROTEIN),
+        Food("Sardines", 175139, 85.0, "3 oz canned", Food.Kind.PROTEIN),
+        Food("Rainbow trout", 173718, 85.0, "3 oz cooked", Food.Kind.PROTEIN),
+        Food("Tuna, white", 175158, 85.0, "3 oz canned", Food.Kind.PROTEIN),
+        Food("Mussels", 174217, 85.0, "3 oz cooked", Food.Kind.PROTEIN),
         Food("Eggs", 173424, 100.0, "2 eggs", Food.Kind.PROTEIN),
         Food("Chicken breast", 171477, 85.0, "3 oz cooked", Food.Kind.PROTEIN),
         Food("Firm tofu", 172475, 85.0, "3 oz", Food.Kind.PROTEIN),
@@ -119,7 +123,7 @@ object Ideas {
         /** Refresh: 0 is the best fit, 1, 2… the next ones, so a pull shows other foods. */
         variant: Int = 0,
     ): Result {
-        val byDay = entries.groupBy { Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zone).toLocalDate() }
+        val byDay = entries.groupBy { LogDays.dayOf(it.timestampEpochMillis, zone) }
         val kcalNeed = needs[Metric.CALORIES] ?: Metric.CALORIES.defaultTarget
         // The last seven days before today: today is not over yet.
         val window = (1..7).map { today.minusDays(it.toLong()) }
@@ -146,7 +150,7 @@ object Ideas {
                 .sortedByDescending { (_, n) -> n[m.key] ?: 0.0 }
             val best = rotate(ranked, variant, 2)
             val already = NutrientDay.sources(week, m).take(1).firstOrNull()?.let { (name, v) ->
-                "From what you ate: ${shortName(name)} gave ${amount(v / full.size, m)} a day. "
+                "From what you ate: ${shortName(name)} gave ${gave(week, name, v, full.size, m)}. "
             }.orEmpty()
             val add = best.joinToString(" or ") { (f, n) -> "${f.name.lowercase()} (${f.serving}, ${amount(n[m.key] ?: 0.0, m)})" }
             ideas += Idea(
@@ -215,6 +219,21 @@ object Ideas {
         return Result(full.size, NEEDED_DAYS, shown, store)
     }
 
+    /**
+     * What one food gave over the week, said the way it was eaten (note S24): "70 mg
+     * a day" only when it was there every day; "420 mg in all, twice this week"
+     * when it wasn't, because tuna twice read as tuna daily.
+     */
+    private fun gave(week: List<Entry>, name: String, v: Double, days: Int, m: Metric): String {
+        val zone = java.time.ZoneId.systemDefault()
+        val on = week.filter { e -> e.items.any { it.name == name } || (e.items.isEmpty() && e.name == name) }
+        val times = on.size
+        val dayCount = on.map { LogDays.dayOf(it.timestampEpochMillis, zone) }.distinct().size
+        if (dayCount >= days) return "${amount(v / days, m)} a day"
+        val word = when (times) { 1 -> "once"; 2 -> "twice"; else -> "$times times" }
+        return "${amount(v, m)} in all, $word this week"
+    }
+
     /** [n] from [list], starting [variant] picks further down and wrapping round. */
     private fun <T> rotate(list: List<T>, variant: Int, n: Int): List<T> {
         if (list.size <= n || variant == 0) return list.take(n)
@@ -230,7 +249,7 @@ object Ideas {
     private fun overIdea(m: Metric, avg: Double, limit: Double, week: List<Entry>, days: Int, sourcesOf: Metric, why: String, src: String): Idea {
         // Added sugar's sources are the added part only: raisins are not why it went over.
         val top = (if (m == Metric.ADDED_SUGAR) com.nutritionscribe.shared.resolve.Sugars.addedSources(week) else NutrientDay.sources(week, sourcesOf)).take(2)
-        val from = if (top.isEmpty()) "" else " Most came from ${top.joinToString(" and ") { (n, v) -> "${shortName(n)} (${amount(v / days, sourcesOf)} a day)" }}."
+        val from = if (top.isEmpty()) "" else " Most came from ${top.joinToString(" and ") { (n, v) -> "${shortName(n)} (${gave(week, n, v, days, sourcesOf)})" }}."
         return Idea(
             id = "over:${m.key}",
             kind = Kind.OVER,
@@ -239,7 +258,7 @@ object Ideas {
             source = src,
             metric = m,
             average = avg, target = limit,
-            foods = top.map { (n, v) -> "${shortName(n)} · ${amount(v / days, sourcesOf)} a day" },
+            foods = top.map { (n, v) -> "${shortName(n)} · ${gave(week, n, v, days, sourcesOf)}" },
         )
     }
 

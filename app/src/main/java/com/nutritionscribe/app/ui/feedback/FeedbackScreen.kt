@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.ListAlt
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -211,6 +212,7 @@ fun SentScreen() {
                 }
                 Text(
                     listOfNotNull(
+                        n.who.takeIf { it.isNotBlank() }?.let { "From $it" },
                         when (n.kind) { "idea" -> "Idea"; "checkin" -> "Week check-in"; "liked" -> "I liked something"; else -> n.tags.joinToString(", ").ifBlank { "Something's wrong" } },
                         n.text.takeIf { it.isNotBlank() }?.let { "\"$it\"" },
                     ).joinToString(" · "),
@@ -260,6 +262,27 @@ fun BetaSection(onTellUs: () -> Unit, onIdea: () -> Unit, onSent: () -> Unit, on
                     Text("On day 7: three quick questions, then you send your log.", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary)
                 }
+            }
+            val name by settings.testerName.collectAsState(initial = "")
+            var renaming by remember { mutableStateOf(false) }
+            BetaRow(Icons.Outlined.Person, if (name.isBlank()) "Who's testing? Add your name" else "Testing as $name", trail = "Change") { renaming = true }
+            if (renaming) {
+                var typed by remember { mutableStateOf(name) }
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { renaming = false },
+                    title = { Text("Your first name") },
+                    text = {
+                        androidx.compose.material3.OutlinedTextField(value = typed, onValueChange = { typed = it.take(40) }, singleLine = true,
+                            supportingText = { Text("It goes on the notes and logs you send.") })
+                    },
+                    confirmButton = {
+                        androidx.compose.material3.TextButton(enabled = typed.isNotBlank(), onClick = {
+                            renaming = false
+                            scope.launch { settings.setTesterName(typed.trim()) }
+                        }) { Text("Save") }
+                    },
+                    dismissButton = { androidx.compose.material3.TextButton(onClick = { renaming = false }) { Text("Cancel") } },
+                )
             }
             BetaRow(Icons.Outlined.ChatBubbleOutline, "Something's wrong? Tell us", onClick = onTellUs)
             BetaRow(Icons.Outlined.Lightbulb, "I have an idea", onClick = onIdea)

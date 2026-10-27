@@ -80,17 +80,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     modifier = Modifier.padding(vertical = 12.dp),
                     color = MaterialTheme.colorScheme.secondary,
                 )
-                // A test copy handed to a friend: the log that comes back should say
-                // whose it is, and they should know it's being kept.
-                var tester by remember { mutableStateOf("") }
-                OutlinedTextField(
-                    value = tester,
-                    onValueChange = { tester = it; scope.launch { settings.setTesterName(it) } },
-                    label = { Text("Your first name (optional)") },
-                    supportingText = { Text("So the person who gave you the app knows whose log is whose") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
                 Text(
                     "This is a test version. It keeps a log on this phone of what you log and how the app " +
                         "behaves, including label photos you scan. Nothing is sent unless you send it: after a week " +
@@ -232,7 +221,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 Column(
                     modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 ) {
-                    Metric.MACROS.forEach { metric ->
+                    com.nutritionscribe.shared.model.Extras.shown(Metric.MACROS).forEach { metric ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth(),

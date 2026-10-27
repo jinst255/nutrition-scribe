@@ -9,11 +9,16 @@ import com.nutritionscribe.app.di.ServiceLocator
 import com.nutritionscribe.app.work.RetentionCompactionWorker
 import com.nutritionscribe.app.work.RetryUnprocessedWorker
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
+@OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
 class NutritionScribeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         ServiceLocator.init(this)
+        followDayEnd()
+        followExtras()
         recordCrashes()
         scheduleBackgroundWork()
     }
@@ -31,6 +36,32 @@ class NutritionScribeApp : Application() {
                 ServiceLocator.debugEvents.flush()
             }
             previous?.uncaughtException(thread, e)
+        }
+    }
+
+    /** Keeps [com.nutritionscribe.shared.model.LogDays] on the day end chosen in Goals › Streak. */
+    /**
+     * Goals › More to track, for every screen that lists nutrients. An extra that is
+     * already a goal (omega-3, before it moved there) stays shown.
+     */
+    private fun followExtras() {
+        val settings = ServiceLocator.settingsRepository
+        val goals = ServiceLocator.goalsRepository.goals
+        fun of(on: Set<String>, gs: List<com.nutritionscribe.shared.model.MetricGoal>) =
+            on + gs.filter { it.enabled && com.nutritionscribe.shared.model.Extras.isExtra(it.metric) }.map { it.metric.key }
+        com.nutritionscribe.shared.model.Extras.on = kotlinx.coroutines.runBlocking { of(settings.extras.first(), goals.first()) }
+        kotlinx.coroutines.GlobalScope.launch {
+            kotlinx.coroutines.flow.combine(settings.extras, goals) { on, gs -> of(on, gs) }
+                .collect { com.nutritionscribe.shared.model.Extras.on = it }
+        }
+    }
+
+    private fun followDayEnd() {
+        val settings = ServiceLocator.settingsRepository
+        com.nutritionscribe.shared.model.LogDays.endHour =
+            kotlinx.coroutines.runBlocking { settings.streak.first().dayEndHour }
+        kotlinx.coroutines.GlobalScope.launch {
+            settings.streak.collect { com.nutritionscribe.shared.model.LogDays.endHour = it.dayEndHour }
         }
     }
 

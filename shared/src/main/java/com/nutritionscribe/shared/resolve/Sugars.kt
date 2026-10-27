@@ -91,6 +91,16 @@ object Sugars {
         } ?: 0.0) }
     }.filter { it.second > 0.05 }.groupBy({ it.first }, { it.second }).map { (n, v) -> n to v.sum() }.sortedByDescending { it.second }
 
+    /** Which foods gave the natural sugar (fruit, plain milk), largest first: the Natural sheet (note S11). */
+    fun naturalSources(entries: List<Entry>): List<Pair<String, Double>> = entries.flatMap { e ->
+        if (e.items.isEmpty()) listOf(e.name to splitEntry(e).natural)
+        else e.items.map { it.name to (it.nutrients[Metric.SUGAR.key]?.let { s ->
+            val a = it.nutrients[Metric.ADDED_SUGAR.key]
+                ?: addedFraction(it.name, Origin.entries.firstOrNull { o -> o.name == it.origin })?.let { f -> s * f }
+            if (a == null) 0.0 else s - a.coerceIn(0.0, s)
+        } ?: 0.0) }
+    }.filter { it.second > 0.05 }.groupBy({ it.first }, { it.second }).map { (n, v) -> n to v.sum() }.sortedByDescending { it.second }
+
     fun splitEntry(e: Entry): Split {
         val sugar = e.nutrients[Metric.SUGAR.key] ?: return Split(0.0, 0.0, 0.0)
         e.nutrients[Metric.ADDED_SUGAR.key]?.let { a ->

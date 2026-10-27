@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -36,6 +37,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -68,66 +70,43 @@ import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.pow
 
-/** The four colours a bar can be. Same meaning everywhere in the app. */
-internal data class StandingColors(val met: Color, val short: Color, val missed: Color, val none: Color) {
-    fun of(s: Standing): Color = when (s) {
-        Standing.MET -> met
-        Standing.SHORT -> short
-        Standing.MISSED -> missed
-        Standing.NO_GOAL -> none
-    }
-}
+/** The colours a day can be. Same meaning everywhere in the app (see Limits). */
+internal typealias StandingColors = com.nutritionscribe.app.ui.theme.LimitColors
 
 @Composable
-internal fun standingColors() = StandingColors(
-    met = MaterialTheme.colorScheme.primary,
-    short = MaterialTheme.colorScheme.tertiary,
-    missed = MaterialTheme.colorScheme.error,
-    // Nothing is being judged: the same green as a good day, never a verdict.
-    none = MaterialTheme.colorScheme.primary,
-)
+internal fun standingColors(): StandingColors = com.nutritionscribe.app.ui.theme.limitColors()
 
 /**
- * The card chart: a month as a line with a soft fill, and the goal as a dashed
- * rule. Days with nothing recorded are skipped rather than drawn as zero.
+ * A card's days as small bars, coloured by how each day did. Today and half-logged
+ * days are drawn hollow: they aren't judged or averaged until they're complete.
+ * The full chart it opens draws the same bars, bigger (note S19).
  */
 @Composable
-internal fun Sparkline(days: List<DayValue>, goal: MetricGoal, color: Color, modifier: Modifier = Modifier) {
-    val rule = MaterialTheme.colorScheme.outline
+internal fun DayStrip(days: List<DayValue>, goal: MetricGoal, full: Set<Long>, today: Long, modifier: Modifier = Modifier) {
+    val colors = standingColors()
+    val hollow = MaterialTheme.colorScheme.outline
+    val patchy = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
     Canvas(modifier) {
-        val recorded = days.withIndex().filter { it.value.value != null }
-        if (recorded.isEmpty()) return@Canvas
-        val hi = max(recorded.maxOf { it.value.value!! }, goal.target ?: 0.0).coerceAtLeast(1.0) * 1.08
-        val n = max(days.size - 1, 1)
-        fun x(i: Int) = size.width * i / n
-        fun y(v: Double) = (size.height * (1 - v / hi)).toFloat()
-
-        goal.target?.let { t ->
-            drawLine(
-                rule, Offset(0f, y(t)), Offset(size.width, y(t)), strokeWidth = 1.dp.toPx(),
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx())),
-            )
+        if (days.isEmpty()) return@Canvas
+        val hi = max(days.mapNotNull { it.value }.maxOrNull() ?: 0.0, listOfNotNull(goal.target, goal.ceilingValue).maxOrNull() ?: 0.0).coerceAtLeast(1.0)
+        val gap = 2.dp.toPx()
+        val w = ((size.width - gap * (days.size - 1)) / days.size).coerceAtLeast(1f)
+        days.forEachIndexed { i, d ->
+            val x = i * (w + gap)
+            val v = d.value
+            val h = if (v == null) (if (d.patchy) size.height * 0.2f else 0f) else (size.height * (v / hi)).toFloat().coerceIn(3.dp.toPx(), size.height)
+            if (h <= 0f) return@forEachIndexed
+            val top = size.height - h
+            val r = CornerRadius(2.dp.toPx())
+            when {
+                v == null -> drawRoundRect(patchy, Offset(x, top), Size(w, h), r)
+                d.epochDay == today || d.epochDay !in full -> drawRoundRect(
+                    hollow, Offset(x + 0.75.dp.toPx(), top + 0.75.dp.toPx()), Size(w - 1.5.dp.toPx(), h - 1.5.dp.toPx()), r,
+                    style = Stroke(width = 1.5.dp.toPx()),
+                )
+                else -> drawRoundRect(colors.of(MetricHistory.standing(goal, v)), Offset(x, top), Size(w, h), r)
+            }
         }
-        if (recorded.size == 1) {
-            val only = recorded.single()
-            drawCircle(color, 2.5.dp.toPx(), Offset(x(only.index), y(only.value.value!!)))
-            return@Canvas
-        }
-        val line = Path()
-        recorded.forEachIndexed { k, iv ->
-            val px = x(iv.index); val py = y(iv.value.value!!)
-            if (k == 0) line.moveTo(px, py) else line.lineTo(px, py)
-        }
-        val area = Path().apply {
-            addPath(line)
-            lineTo(x(recorded.last().index), size.height)
-            lineTo(x(recorded.first().index), size.height)
-            close()
-        }
-        drawPath(area, color.copy(alpha = 0.14f))
-        drawPath(line, color, style = Stroke(width = 1.8.dp.toPx()))
-        val last = recorded.last()
-        drawCircle(color, 2.5.dp.toPx(), Offset(x(last.index), y(last.value.value!!)))
     }
 }
 
@@ -155,9 +134,13 @@ fun MetricChartScreen(
     val goal = chartGoal(metric, goals)
 
     val zone = remember { ZoneId.systemDefault() }
-    val today = LocalDate.now(zone)
+    val today = com.nutritionscribe.shared.model.LogDays.today(zone)
     val todayDay = today.toEpochDay()
     val days = remember(entries, metric) { MetricHistory.daily(entries, metric, zone, today) }
+    val counted by ServiceLocator.settingsRepository.historyCounted.collectAsState(initial = emptySet())
+    val calTarget = goals.firstOrNull { it.metric == Metric.CALORIES && it.enabled }?.target
+        ?: com.nutritionscribe.shared.model.Needs.forProfile(ServiceLocator.profileNow()).getValue(Metric.CALORIES)
+    val full = remember(entries, counted, calTarget) { MetricHistory.fullDays(entries, zone, today, calTarget, counted) }
     val firstDay = days.firstOrNull()?.epochDay ?: todayDay
 
     var viewport by remember { mutableStateOf(MetricHistory.latest(30.0, todayDay, todayDay)) }
@@ -172,8 +155,8 @@ fun MetricChartScreen(
     val size = MetricHistory.bucketSizeFor(viewport.spanDays)
     val buckets = remember(days, size) { MetricHistory.buckets(days, size) }
     val visibleDays = days.filter { it.epochDay + 1 > viewport.startDay && it.epochDay < viewport.endDay }
-    val average = MetricHistory.average(visibleDays)
-    val loggedCount = visibleDays.count { it.value != null }
+    val average = MetricHistory.averageFull(visibleDays, full)
+    val loggedCount = visibleDays.count { it.value != null && it.epochDay in full }
     val colors = standingColors()
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -199,7 +182,7 @@ fun MetricChartScreen(
                 Text(
                     average?.let { formatAmount(it, metric, withUnit = false) } ?: "–",
                     style = MaterialTheme.typography.displaySmall,
-                    color = colors.of(average?.let { MetricHistory.standing(goal, it) } ?: Standing.NO_GOAL),
+                    color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
                     " ${metric.unit} a day, on average",
@@ -210,7 +193,7 @@ fun MetricChartScreen(
             }
             Text(
                 buildString {
-                    append(if (loggedCount == 1) "1 day logged" else "$loggedCount days logged")
+                    append(if (loggedCount == 1) "1 full day" else "$loggedCount full days")
                     goal.target?.let {
                         append(" · ")
                         append(
@@ -258,6 +241,7 @@ fun MetricChartScreen(
             goal = goal,
             colors = colors,
             selected = selected,
+            full = full,
             onViewportChange = { viewport = it },
             onSelect = { selected = it },
             firstDay = firstDay,
@@ -266,8 +250,8 @@ fun MetricChartScreen(
             // tapped bar's foods still need room underneath.
             modifier = Modifier.fillMaxWidth().height(230.dp).padding(top = 8.dp),
         )
-        if (goal.target != null && days.isNotEmpty()) {
-            Legend(goal, colors, Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp))
+        if (days.isNotEmpty()) {
+            Legend(goal, colors, Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp, start = 16.dp, end = 16.dp))
         }
         Text(
             if (days.isEmpty()) {
@@ -289,6 +273,11 @@ fun MetricChartScreen(
             entries = entries,
             zone = zone,
             colors = colors,
+            full = full,
+            onCount = { day, on ->
+                ServiceLocator.debugEvents.event("history_count_day", "day" to day, "on" to on)
+                kotlinx.coroutines.MainScope().launch { ServiceLocator.settingsRepository.setHistoryCounted(day, on) }
+            },
             onOpenEntry = onOpenEntry,
             onAdd = onAddToDay,
             onZoomTo = { b ->
@@ -307,36 +296,34 @@ fun MetricChartScreen(
 }
 
 /**
- * What the bar colours mean for THIS goal. The same green means "enough" on a
- * protein chart and "not too much" on a sugar one, so the key has to say which.
+ * What the bar colours mean for THIS goal, with ▲ and ▼ so it isn't colour alone
+ * (note S28). Not a goal and no line of their own: grey, and the key says so.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun Legend(goal: MetricGoal, colors: StandingColors, modifier: Modifier = Modifier) {
     val limit = goal.effectiveDirection == GoalDirection.LIMIT
-    val lines = goal.floorValue != null || goal.ceilingValue != null
     val scored = goal.enabled && goal.target != null
-    // Not a goal and no line of their own: nothing is being judged, so no key.
-    if (!scored && !lines) return
     val items = buildList {
-        if (scored) {
-            add(Standing.MET to if (limit) "under limit" else "hit goal")
-            if (!limit) add(Standing.SHORT to "under goal")
-            if (limit && goal.ceilingValue != null) add(Standing.SHORT to "a little over")
-            if (limit && goal.ceilingValue == null) add(Standing.MISSED to "over")
+        if (!scored && goal.floorValue == null && goal.ceilingValue == null) {
+            add(colors.none to "No line set · set one in Goals")
         } else {
-            add(Standing.MET to "within your lines")
+            if (goal.floorValue != null || (scored && !limit)) add(colors.low to "▼ Too low")
+            add(colors.inRange to "In range")
+            if (scored && limit) add(colors.over to "Over target")
+            if (goal.ceilingValue != null) add(colors.past to "▲ Past your line")
         }
-        if (goal.floorValue != null) add(Standing.MISSED to "below ${formatAmount(goal.floorValue!!, goal.metric)}")
-        if (goal.ceilingValue != null) add(Standing.MISSED to "above ${formatAmount(goal.ceilingValue!!, goal.metric)}")
+        add(androidx.compose.ui.graphics.Color.Transparent to "Hollow: today or half-logged")
     }
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-        items.forEach { (standing, text) ->
+    androidx.compose.foundation.layout.FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        items.forEach { (c, text) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 androidx.compose.foundation.layout.Box(
                     Modifier
                         .padding(end = 5.dp)
-                        .size(8.dp)
-                        .background(colors.of(standing), androidx.compose.foundation.shape.RoundedCornerShape(2.dp)),
+                        .size(9.dp)
+                        .background(c, androidx.compose.foundation.shape.RoundedCornerShape(2.dp))
+                        .then(if (c == androidx.compose.ui.graphics.Color.Transparent) Modifier.border(1.5.dp, MaterialTheme.colorScheme.outline, androidx.compose.foundation.shape.RoundedCornerShape(2.dp)) else Modifier),
                 )
                 Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -366,6 +353,8 @@ internal fun InteractiveChart(
     firstDay: Long,
     today: Long,
     modifier: Modifier = Modifier,
+    /** Days that count; the rest (today, half-logged) are drawn hollow. Every day counts when null. */
+    full: Set<Long>? = null,
 ) {
     val measurer = rememberTextMeasurer()
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -442,10 +431,23 @@ internal fun InteractiveChart(
                 val barW = max(w - inset * 2, 1.5.dp.toPx())
                 val standing = MetricHistory.standing(goal, v)
                 val isSel = selected != null && selected.startEpochDay == b.startEpochDay && selected.endEpochDay == b.endEpochDay
-                val c = colors.of(standing).copy(alpha = if (selected == null || isSel) 1f else 0.38f)
+                val alpha = if (selected == null || isSel) 1f else 0.38f
                 val yTop = y(v)
                 val radius = CornerRadius(minOf(barW / 2, 4.dp.toPx()))
+                val hollow = b.days == 1L && full != null && (b.startEpochDay == today || b.startEpochDay !in full)
+                if (hollow) {
+                    val sw = 1.5.dp.toPx()
+                    drawRoundRect(ruleColor.copy(alpha = alpha), Offset(x0 + inset + sw / 2, yTop + sw / 2), Size(barW - sw, y(0.0) - yTop - sw), radius, style = Stroke(sw))
+                    continue
+                }
+                val c = colors.of(standing).copy(alpha = alpha)
                 drawRoundRect(c, Offset(x0 + inset, yTop), Size(barW, y(0.0) - yTop), radius)
+                // ▲ past a line, ▼ too low: the shape says it as well as the colour.
+                val mark = when (standing) { Standing.PAST -> "▲"; Standing.LOW -> "▼"; else -> null }
+                if (mark != null && barW >= 6.dp.toPx()) {
+                    val layout = measurer.measure(mark, TextStyle(fontSize = 9.sp, color = c))
+                    drawText(layout, topLeft = Offset(x0 + inset + barW / 2 - layout.size.width / 2, yTop - layout.size.height - 1.dp.toPx()))
+                }
             }
 
             // Goal and threshold rules, over the bars so they stay readable.
@@ -595,6 +597,8 @@ private fun SelectionPanel(
     entries: List<com.nutritionscribe.shared.model.Entry>,
     zone: ZoneId,
     colors: StandingColors,
+    full: Set<Long>,
+    onCount: (Long, Boolean) -> Unit,
     onOpenEntry: (String) -> Unit,
     onAdd: (LocalDate) -> Unit,
     onZoomTo: (Bucket) -> Unit,
@@ -614,11 +618,15 @@ private fun SelectionPanel(
     val start = LocalDate.ofEpochDay(bucket.startEpochDay)
     val end = LocalDate.ofEpochDay(bucket.endEpochDay)
     val oneDay = bucket.days == 1L
+    // Sorted by what gave the most of this nutrient that day (note S27).
     val dayEntries = if (oneDay) {
-        entries.filter { MetricHistory.dayOf(it, zone) == bucket.startEpochDay }.sortedBy { it.timestampEpochMillis }
+        entries.filter { MetricHistory.dayOf(it, zone) == bucket.startEpochDay }
+            .sortedWith(compareByDescending<com.nutritionscribe.shared.model.Entry> { it.amountOf(metric) ?: -1.0 }.thenBy { it.timestampEpochMillis })
     } else {
         emptyList()
     }
+    val dayTotal = dayEntries.sumOf { it.amountOf(metric) ?: 0.0 }
+    val dayTop = dayEntries.maxOfOrNull { it.amountOf(metric) ?: 0.0 }?.coerceAtLeast(0.0001) ?: 1.0
 
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
         item {
@@ -641,9 +649,16 @@ private fun SelectionPanel(
                             else -> "${formatAmount(v, metric)} a day · ${bucket.recordedDays} of ${bucket.days} days logged"
                         },
                         style = MaterialTheme.typography.bodyMedium,
-                        color = v?.let { colors.of(MetricHistory.standing(goal, it)) }
-                            ?: MaterialTheme.colorScheme.secondary,
+                        color = MaterialTheme.colorScheme.secondary,
                     )
+                    if (oneDay && bucket.value != null && bucket.startEpochDay != com.nutritionscribe.shared.model.LogDays.today(zone).toEpochDay()) {
+                        val counts = bucket.startEpochDay in full
+                        Text(
+                            if (counts) "Counted in your averages" else "Under half your calories logged, so it's left out of averages",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
+                        )
+                        if (!counts) TextButton(onClick = { onCount(bucket.startEpochDay, true) }) { Text("Count this day") }
+                    }
                 }
                 if (oneDay) {
                     // A day with nothing logged is exactly where this is needed:
@@ -669,25 +684,32 @@ private fun SelectionPanel(
                 )
             }
         }
+        if (dayEntries.isNotEmpty()) item {
+            Text("Sorted by ${metric.label.lowercase()}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.padding(top = 8.dp))
+        }
         items(dayEntries, key = { it.id }) { e ->
-            Row(
+            val amt = e.amountOf(metric)
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { onOpenEntry(e.id) }
-                    .padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(e.name)
-                    Text(
-                        e.timeLabel(zone),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(e.name, maxLines = 2)
+                        Text(e.timeLabel(zone), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(amt?.let { formatAmount(it, metric) } ?: "not known", style = com.nutritionscribe.app.ui.theme.NumberStyle)
+                        if (amt != null && dayTotal > 0) Text("${Math.round(amt / dayTotal * 100)}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                    }
                 }
-                Text(
-                    e.amountOf(metric)?.let { formatAmount(it, metric) } ?: "–",
-                    color = MaterialTheme.colorScheme.secondary,
+                if (amt != null) androidx.compose.foundation.layout.Box(
+                    Modifier.fillMaxWidth((amt / dayTop).toFloat().coerceIn(0.01f, 1f)).height(4.dp)
+                        .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.RoundedCornerShape(2.dp)),
                 )
             }
         }

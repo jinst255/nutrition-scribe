@@ -47,8 +47,8 @@ data class Bucket(
 
 enum class BucketSize { DAY, WEEK, MONTH }
 
-/** How a day or bucket did against its goal. Drives every colour on the History tab. */
-enum class Standing { MET, SHORT, MISSED, NO_GOAL }
+/** How a day or bucket did against its goal: [com.nutritionscribe.shared.model.Limits.State]. */
+typealias Standing = com.nutritionscribe.shared.model.Limits.State
 
 /**
  * The part of the timeline on screen, in days.
@@ -65,7 +65,7 @@ object MetricHistory {
     const val MIN_SPAN_DAYS = 7.0
 
     fun dayOf(entry: Entry, zone: ZoneId): Long =
-        Instant.ofEpochMilli(entry.timestampEpochMillis).atZone(zone).toLocalDate().toEpochDay()
+        com.nutritionscribe.shared.model.LogDays.dayOf(entry.timestampEpochMillis, zone).toEpochDay()
 
     /**
      * A contiguous run of days, from the first day this metric was ever recorded
@@ -162,30 +162,30 @@ object MetricHistory {
     }
 
     /**
-     * Where a value stands, judged only by numbers the user chose.
-     *
-     * Their own lines first: under a floor or over a ceiling they typed is MISSED,
-     * whether or not the metric is a goal. Then, for a goal with a target, its
-     * direction: for something to reach, at the target is MET and under it SHORT;
-     * for something to stay under, at or below is MET, over it SHORT when they
-     * set a ceiling above it (still under that) and MISSED when they did not.
-     * A metric that is not a goal and has no lines is never judged: NO_GOAL, which
-     * is drawn the same green as a good day.
+     * Where a finished day stands, judged only by numbers the user chose (see
+     * Limits): their own lines first, then a goal's target in its direction. Not a
+     * goal and no lines is never judged, and is drawn grey.
      */
-    fun standing(goal: MetricGoal?, value: Double): Standing {
-        if (goal == null) return Standing.NO_GOAL
-        goal.floorValue?.let { if (value < it) return Standing.MISSED }
-        goal.ceilingValue?.let { if (value > it) return Standing.MISSED }
-        val target = goal.target?.takeIf { goal.enabled }
-            ?: return if (goal.floorValue != null || goal.ceilingValue != null) Standing.MET else Standing.NO_GOAL
-        return when (goal.effectiveDirection) {
-            GoalDirection.REACH -> if (value >= target) Standing.MET else Standing.SHORT
-            GoalDirection.LIMIT -> when {
-                value <= target -> Standing.MET
-                goal.ceilingValue != null -> Standing.SHORT
-                else -> Standing.MISSED
-            }
-        }
+    fun standing(goal: MetricGoal?, value: Double): Standing =
+        com.nutritionscribe.shared.model.Limits.judge(value, goal, dayOver = true)
+
+    /**
+     * The days that count toward an average: over, and at least half the calorie
+     * target logged (or counted anyway by the person). Today is left out until it
+     * ends, and so is a day with a breakfast and nothing else: it made every
+     * average read low (note S46).
+     */
+    fun fullDays(entries: List<Entry>, zone: ZoneId, today: LocalDate, calorieTarget: Double, countAnyway: Set<Long> = emptySet()): Set<Long> {
+        val kcal = HashMap<Long, Double>()
+        for (e in entries) kcal[dayOf(e, zone)] = (kcal[dayOf(e, zone)] ?: 0.0) + (e.calories ?: 0.0)
+        val t = today.toEpochDay()
+        return kcal.filter { (d, v) -> d < t && (v >= calorieTarget / 2 || d in countAnyway) }.keys
+    }
+
+    /** Mean over [days] that are both recorded and full. */
+    fun averageFull(days: List<DayValue>, full: Set<Long>): Double? {
+        val recorded = days.filter { it.epochDay in full }.mapNotNull { it.value }
+        return if (recorded.isEmpty()) null else recorded.average()
     }
 
     /** Longest span worth zooming out to: all of history, but never under a week. */

@@ -45,6 +45,7 @@ data class AiUsageRow(
 enum class UsageKind(val label: String) {
     FOOD_LOOKUP("Food lookups"),
     SPEECH("Speech to text"),
+    ASK("Ask chat"),
     OTHER("Other"),
 }
 

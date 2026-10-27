@@ -102,10 +102,11 @@ private fun axisUsd(v: Double, step: Double): String = when {
     else -> String.format(Locale.US, "$%.0f", v)
 }
 
-/** The two series and their colours: categorical slots 1 and 2, validated on this app's surfaces in both modes. */
+/** The series and their colours: categorical slots 1 to 3, validated on this app's surfaces in both modes. */
 private enum class Series(val kinds: Set<String>, val label: String, val light: Color, val dark: Color) {
     LOOKUP(setOf(UsageKind.FOOD_LOOKUP.name, UsageKind.OTHER.name), "Food lookups", Color(0xFF2A78D6), Color(0xFF3987E5)),
     SPEECH(setOf(UsageKind.SPEECH.name), "Speech to text", Color(0xFFEB6834), Color(0xFFD95926)),
+    ASK(setOf(UsageKind.ASK.name), "Ask chat", Color(0xFF8A5CC8), Color(0xFF9D74DB)),
 }
 
 private fun Series.of(row: AiUsageRow) = row.kind in kinds
@@ -313,7 +314,7 @@ fun SpendingScreen(onOpenEntry: (String) -> Unit) {
                 Box(Modifier.size(8.dp).clip(RoundedCornerShape(2.dp)).background(if (dark) s.dark else s.light))
                 Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                     Text(
-                        entryName ?: if (s == Series.SPEECH) "Speech" else "Lookup (not logged)",
+                        entryName ?: when (s) { Series.SPEECH -> "Speech"; Series.ASK -> "Ask"; else -> "Lookup (not logged)" },
                         style = MaterialTheme.typography.bodyMedium, maxLines = 1,
                     )
                     Text(

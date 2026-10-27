@@ -9,6 +9,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,6 +74,37 @@ object NutritionScribeColors {
     val DarkContainer = Color(0xFF1E211F)
     val DarkContainerHigh = Color(0xFF272A28)
     val DarkContainerHighest = Color(0xFF313532)
+
+    // Limit states (round 9): soft on purpose, so a day over a target reads as
+    // information, not an alarm. Bright red stays for errors and "looks off".
+    val DarkOver = Color(0xFFB9A27A)
+    val DarkPast = Color(0xFFB98A82)
+    val LightOver = Color(0xFF8E7848)
+    val LightPast = Color(0xFFA5675E)
+}
+
+/** The colours of [com.nutritionscribe.shared.model.Limits.State], for bars, chart days and legends. */
+data class LimitColors(val inRange: Color, val over: Color, val past: Color, val low: Color, val none: Color) {
+    fun of(state: com.nutritionscribe.shared.model.Limits.State): Color = when (state) {
+        com.nutritionscribe.shared.model.Limits.State.IN_RANGE -> inRange
+        com.nutritionscribe.shared.model.Limits.State.OVER -> over
+        com.nutritionscribe.shared.model.Limits.State.PAST -> past
+        com.nutritionscribe.shared.model.Limits.State.LOW -> low
+        com.nutritionscribe.shared.model.Limits.State.NOT_JUDGED -> none
+    }
+}
+
+@Composable
+fun limitColors(): LimitColors {
+    val scheme = MaterialTheme.colorScheme
+    val dark = scheme.background.luminance() < 0.5f
+    return LimitColors(
+        inRange = scheme.primary,
+        over = if (dark) NutritionScribeColors.DarkOver else NutritionScribeColors.LightOver,
+        past = if (dark) NutritionScribeColors.DarkPast else NutritionScribeColors.LightPast,
+        low = scheme.tertiary,
+        none = scheme.outline,
+    )
 }
 
 // Setting `primary` alone is not enough, and the gap is very visible: Material 3

@@ -52,7 +52,7 @@ class WearMessageListenerService : com.google.android.gms.wearable.WearableListe
 
     private suspend fun pushTodaySummary() {
         val goal = ServiceLocator.settingsRepository.dailyGoalGrams.first()
-        val startOfDay = java.time.LocalDate.now().atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val startOfDay = com.nutritionscribe.shared.model.LogDays.start(com.nutritionscribe.shared.model.LogDays.today())
         val total = ServiceLocator.currentEntryRepository().observeProteinTotal(startOfDay, Long.MAX_VALUE).first()
 
         val summary = TodaySummary(total, goal, System.currentTimeMillis())

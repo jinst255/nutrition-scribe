@@ -51,6 +51,8 @@ object Needs {
                 // As little as possible; the WHO's under-1%-of-calories line.
                 m == Metric.TRANS_FAT -> round1(calories * 0.01 / 9.0)
                 m == Metric.CAFFEINE -> macros[m] ?: m.defaultTarget
+                // Up to 2 drinks a day for men, 1 for women (Dietary Guidelines); 14 g each.
+                m == Metric.ALCOHOL -> if (profile.sex == TargetCalculator.Sex.MALE) 28.0 else 14.0
                 m.isMicro -> micros[m] ?: m.defaultTarget
                 else -> macros[m] ?: m.defaultTarget
             }
@@ -134,13 +136,42 @@ object Needs {
                 Metric.FOLATE to 400.0,
             )
         }
-        if (profile.diet == Profile.Diet.ANY) return base
-        return base.mapValues { (m, v) ->
+        val all = base + extras(profile)
+        if (profile.diet == Profile.Diet.ANY) return all
+        return all.mapValues { (m, v) ->
             when (m) {
                 Metric.IRON -> round1(v * 1.8)
                 Metric.ZINC -> round1(v * 1.5)
                 else -> v
             }
+        }
+    }
+
+    /** The DRIs for More to track: the RDA where there is one, the AI otherwise. */
+    private fun extras(profile: Profile): Map<Metric, Double> {
+        val age = profile.ageYears
+        val teen = age < 19
+        val male = profile.sex == TargetCalculator.Sex.MALE
+        val phosphorus = if (teen) 1250.0 else 700.0
+        return when {
+            profile.stage == Profile.LifeStage.PREGNANT && !male -> mapOf(
+                Metric.COPPER to 1.0, Metric.MANGANESE to 2.0, Metric.PHOSPHORUS to phosphorus, Metric.CHOLINE to 450.0,
+                Metric.THIAMIN to 1.4, Metric.RIBOFLAVIN to 1.4, Metric.NIACIN to 18.0, Metric.VITAMIN_B6 to 1.9, Metric.OMEGA3_ALA to 1.4,
+            )
+            profile.stage == Profile.LifeStage.BREASTFEEDING && !male -> mapOf(
+                Metric.COPPER to 1.3, Metric.MANGANESE to 2.6, Metric.PHOSPHORUS to phosphorus, Metric.CHOLINE to 550.0,
+                Metric.THIAMIN to 1.4, Metric.RIBOFLAVIN to 1.6, Metric.NIACIN to 17.0, Metric.VITAMIN_B6 to 2.0, Metric.OMEGA3_ALA to 1.3,
+            )
+            male -> mapOf(
+                Metric.COPPER to if (teen) 0.89 else 0.9, Metric.MANGANESE to if (teen) 2.2 else 2.3, Metric.PHOSPHORUS to phosphorus,
+                Metric.CHOLINE to 550.0, Metric.THIAMIN to 1.2, Metric.RIBOFLAVIN to 1.3, Metric.NIACIN to 16.0,
+                Metric.VITAMIN_B6 to if (age > 50) 1.7 else 1.3, Metric.OMEGA3_ALA to 1.6,
+            )
+            else -> mapOf(
+                Metric.COPPER to if (teen) 0.89 else 0.9, Metric.MANGANESE to if (teen) 1.6 else 1.8, Metric.PHOSPHORUS to phosphorus,
+                Metric.CHOLINE to if (teen) 400.0 else 425.0, Metric.THIAMIN to if (teen) 1.0 else 1.1, Metric.RIBOFLAVIN to if (teen) 1.0 else 1.1,
+                Metric.NIACIN to 14.0, Metric.VITAMIN_B6 to when { teen -> 1.2; age > 50 -> 1.5; else -> 1.3 }, Metric.OMEGA3_ALA to 1.1,
+            )
         }
     }
 
