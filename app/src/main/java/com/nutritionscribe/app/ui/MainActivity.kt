@@ -96,6 +96,10 @@ private object Routes {
     fun feedback(checkIn: Boolean = false, idea: Boolean = false) =
         "feedback?checkin=${if (checkIn) 1 else 0}&kind=${if (idea) "idea" else ""}"
     const val BETA_SENT = "beta_sent"
+    const val TESTER_GUIDE = "tester_guide"
+    /** where: what led here (check_in, settings_beta, …), recorded with the send. */
+    const val LOG_CONTENTS = "log_contents?where={where}"
+    fun logContents(where: String) = "log_contents?where=$where"
     /** Scan index for "start a new entry from a scan", from the Log screen. */
     const val SCAN_NEW = -2
     /** Scan index for a kind not saved yet, from the Logged card: the entry becomes it. */
@@ -146,10 +150,16 @@ private fun NutritionScribeApp() {
     val name by settings.testerName.collectAsState(initial = null)
     val confirmed by settings.nameConfirmedVersion.collectAsState(initial = null)
     val askName = testing && name != null && confirmed != null && confirmed!! < version
+    val introSeen by settings.testerIntroSeen.collectAsState(initial = null)
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     when {
-        onboarded == null || (testing && (name == null || confirmed == null)) -> Unit
+        onboarded == null || (testing && (name == null || confirmed == null || introSeen == null)) -> Unit
         askName -> com.nutritionscribe.app.ui.onboarding.BetaNameScreen(current = name.orEmpty(), onDone = {})
         onboarded == false -> OnboardingScreen(onFinished = {})
+        // A tester who set up on an older version gets the welcome once, after updating.
+        testing && introSeen == false -> com.nutritionscribe.app.ui.onboarding.TesterIntro(onDone = {
+            scope.launch { settings.setTesterIntroSeen() }
+        })
         else -> MainNavScaffold()
     }
 }
@@ -192,6 +202,8 @@ private fun titleFor(route: String?, args: Bundle?): String = when (route) {
         else -> "Tell us"
     }
     Routes.BETA_SENT -> "What I've sent"
+    Routes.TESTER_GUIDE -> "Tester guide"
+    Routes.LOG_CONTENTS -> "What's in your log"
     Routes.EXPORT_IMPORT -> "Back up & restore"
     Routes.ENTRY_DETAIL -> "Entry"
     // The chart switches nutrient in place, so the bar names the screen, not the nutrient.
@@ -386,9 +398,18 @@ private fun MainNavScaffold() {
                     b.arguments?.getString("kind") == "idea" -> com.nutritionscribe.app.ui.feedback.FeedbackKind.IDEA
                     else -> com.nutritionscribe.app.ui.feedback.FeedbackKind.PROBLEM
                 }
-                com.nutritionscribe.app.ui.feedback.FeedbackScreen(kind = kind)
+                com.nutritionscribe.app.ui.feedback.FeedbackScreen(kind = kind,
+                    onLogContents = { navController.navigate(Routes.logContents("check_in")) })
             }
-            composable(Routes.BETA_SENT) { com.nutritionscribe.app.ui.feedback.SentScreen() }
+            composable(Routes.BETA_SENT) {
+                com.nutritionscribe.app.ui.feedback.SentScreen(onLogContents = { navController.navigate(Routes.logContents("sent_screen")) })
+            }
+            composable(Routes.TESTER_GUIDE) {
+                com.nutritionscribe.app.ui.feedback.TesterGuideScreen(onLogContents = { navController.navigate(Routes.logContents("guide")) })
+            }
+            composable(Routes.LOG_CONTENTS, arguments = listOf(navArgument("where") { type = NavType.StringType; defaultValue = "" })) { b ->
+                com.nutritionscribe.app.ui.feedback.LogContentsScreen(where = b.arguments?.getString("where").orEmpty().ifBlank { "log_contents" })
+            }
             composable(
                 Routes.ADD_ENTRY,
                 arguments = listOf(
@@ -579,6 +600,8 @@ private fun MainNavScaffold() {
                     onOpenIdea = { navController.navigate(Routes.feedback(idea = true)) },
                     onOpenSent = { navController.navigate(Routes.BETA_SENT) },
                     onOpenCheckIn = { navController.navigate(Routes.feedback(checkIn = true)) },
+                    onOpenGuide = { navController.navigate(Routes.TESTER_GUIDE) },
+                    onOpenLogContents = { navController.navigate(Routes.logContents("settings_beta")) },
                 )
             }
             composable(Routes.SPENDING) {

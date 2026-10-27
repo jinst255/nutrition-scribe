@@ -261,10 +261,24 @@ fun MicButton(
     caption: String? = null,
 ) {
     var askedOnce by remember { mutableStateOf(false) }
+    var explain by remember { mutableStateOf(false) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         ServiceLocator.debugEvents.event("mic_permission", "granted" to ok)
         if (!ok) onHint("The microphone is off for this app. Turn it on in Android settings, or type instead.")
         else if (mode == MicMode.TAP) controller.start(mode)
+    }
+    if (explain) {
+        PermissionWhy(
+            name = "Microphone",
+            icon = Icons.Filled.Mic,
+            title = "So you can say what you ate",
+            text = "Hold the green button and talk: \"two eggs and toast with butter\". " +
+                if (ServiceLocator.cloudTranscriber() != null) "With your AI key on, OpenAI writes out what you said."
+                else "Your phone's own speech service writes out what you said.",
+            allow = "Allow the microphone", later = "Not now, I'll type",
+            onAllow = { explain = false; ServiceLocator.debugEvents.event("mic_why", "choice" to "allow"); permission.launch(Manifest.permission.RECORD_AUDIO) },
+            onLater = { explain = false; ServiceLocator.debugEvents.event("mic_why", "choice" to "later") },
+        )
     }
     val listening = controller.isActive
     val busy = controller.state is VoiceController.State.Transcribing
@@ -302,7 +316,8 @@ fun MicButton(
                         if (controller.state is VoiceController.State.Transcribing) return@detectTapGestures
                         if (!controller.hasPermission()) {
                             if (!askedOnce) { askedOnce = true }
-                            permission.launch(Manifest.permission.RECORD_AUDIO)
+                            // Why first, then Android's own prompt.
+                            explain = true
                             return@detectTapGestures
                         }
                         when (mode) {
@@ -495,4 +510,38 @@ fun VoiceDialog(
             }
         },
     )
+}
+
+
+/**
+ * One sheet before Android's permission prompt: why the app wants it and what
+ * happens to what it picks up. A bare system prompt with no reason reads as a
+ * grab, and gets "Don't allow".
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+fun PermissionWhy(
+    name: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    text: String,
+    allow: String,
+    later: String,
+    onAllow: () -> Unit,
+    onLater: () -> Unit,
+) {
+    com.nutritionscribe.app.ui.feedback.ReportableSheet(name = "$name permission", onDismissRequest = onLater) {
+        androidx.compose.foundation.layout.Column(
+            Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(14.dp),
+        ) {
+            Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.secondaryContainer, CircleShape), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+            }
+            Text(title, style = MaterialTheme.typography.headlineSmall)
+            Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.secondary)
+            androidx.compose.material3.Button(onClick = onAllow, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(allow) }
+            androidx.compose.material3.TextButton(onClick = onLater, modifier = Modifier.fillMaxWidth()) { Text(later) }
+        }
+    }
 }

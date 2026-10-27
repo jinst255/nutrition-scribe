@@ -345,7 +345,14 @@ object ServiceLocator {
 
     val openFoodFacts = com.nutritionscribe.shared.resolve.OpenFoodFactsSource()
 
-    suspend fun debugExtras(): Map<String, String> {
+    /** The debug log zip, minus what the tester chose to leave out. */
+    suspend fun buildDebugExport(): java.io.File {
+        val leaveOut = settingsRepository.logLeaveOut.first()
+        return debugEvents.buildExport(appSnapshot(), debugLogger.readAll(), debugExtras(leaveOut), leaveOut)
+    }
+
+    suspend fun debugExtras(leaveOut: Set<String> = emptySet()): Map<String, String> {
+        val part = { p: com.nutritionscribe.app.ui.feedback.LogPart -> p.key !in leaveOut }
         val json = kotlinx.serialization.json.Json { encodeDefaults = true }
         val since = System.currentTimeMillis() - 45L * 86_400_000L
         val entries = runCatching {
@@ -381,11 +388,20 @@ object ServiceLocator {
             ),
             // Body stats are what every reference on Home comes from; a log without
             // them can't explain why a bar looked full.
+            // Each part only if the tester left it ticked under What's in your log.
             "profile" to runCatching { s.profile.first() }.getOrNull()?.let {
-                mapOf("sex" to it.sex, "age" to it.ageYears, "height_cm" to Math.round(it.heightCm), "weight_kg" to Math.round(it.weightKg),
-                    "activity" to it.activity, "aim" to it.aim, "stage" to it.stage, "diet" to it.diet, "plasma_donor" to it.plasmaDonor)
+                buildMap {
+                    if (part(com.nutritionscribe.app.ui.feedback.LogPart.ABOUT)) {
+                        put("sex", it.sex); put("age", it.ageYears); put("height_cm", Math.round(it.heightCm))
+                        put("weight_kg", Math.round(it.weightKg)); put("stage", it.stage)
+                    }
+                    if (part(com.nutritionscribe.app.ui.feedback.LogPart.ACTIVITY)) { put("activity", it.activity); put("aim", it.aim); put("diet", it.diet) }
+                    if (part(com.nutritionscribe.app.ui.feedback.LogPart.PLASMA)) put("plasma_donor", it.plasmaDonor)
+                }
             },
-            "plasma_donations" to runCatching { s.plasmaDonations.first().map { it.toString() }.sorted() }.getOrNull(),
+            "plasma_donations" to if (!part(com.nutritionscribe.app.ui.feedback.LogPart.PLASMA)) null
+                else runCatching { s.plasmaDonations.first().map { it.toString() }.sorted() }.getOrNull(),
+            "left_out" to leaveOut.sorted(),
             "label_pack" to labelPack.status.value.toString(),
             "goals" to runCatching { goalsRepository.goals.first() }.getOrDefault(emptyList()).map {
                 mapOf("metric" to it.metric.key, "enabled" to it.enabled, "target" to it.target, "floor" to it.floorValue, "ceiling" to it.ceilingValue)

@@ -139,6 +139,9 @@ class SettingsRepository(
         val DAY_END_HOUR = intPreferencesKey("day_end_hour")
         val IDEA_HIDDEN = stringPreferencesKey("idea_hidden")
         val NAME_CONFIRMED_VERSION = intPreferencesKey("tester_name_confirmed_version")
+        val LOG_LEAVE_OUT = stringSetPreferencesKey("log_leave_out")
+        val SETUP_DONE_AT = androidx.datastore.preferences.core.longPreferencesKey("setup_done_at")
+        val TESTER_INTRO_SEEN = booleanPreferencesKey("tester_intro_seen")
         val EXTRAS = stringSetPreferencesKey("extras_tracked")
         val MODEL_LOOKUP = stringPreferencesKey("model_lookup")
         val MODEL_ASK = stringPreferencesKey("model_ask")
@@ -511,7 +514,33 @@ class SettingsRepository(
 
     suspend fun confirmName(name: String, versionCode: Int) {
         setTesterName(name)
-        store.edit { it[Keys.NAME_CONFIRMED_VERSION] = versionCode }
+        // Each new test version starts with the debug log on: a problem a tester
+        // hits is only findable if it was recorded. Turning it off lasts until the next update.
+        store.edit { it[Keys.NAME_CONFIRMED_VERSION] = versionCode; it[Keys.DEBUG_MODE] = true }
+    }
+
+    /**
+     * Parts of the debug log the tester chose to leave out (see
+     * [com.nutritionscribe.app.ui.feedback.LogPart]). Empty, so everything goes, until they untick one.
+     */
+    val logLeaveOut: Flow<Set<String>> = store.data.map { it[Keys.LOG_LEAVE_OUT].orEmpty() }
+
+    suspend fun setLogLeaveOut(parts: Set<String>) {
+        store.edit { it[Keys.LOG_LEAVE_OUT] = parts }
+    }
+
+    /** The tester welcome (the week, practice hold, what leaves the phone), seen once per install. */
+    val testerIntroSeen: Flow<Boolean> = store.data.map { it[Keys.TESTER_INTRO_SEEN] ?: false }
+
+    suspend fun setTesterIntroSeen() {
+        store.edit { it[Keys.TESTER_INTRO_SEEN] = true }
+    }
+
+    /** When setup finished, for "You're all set" in the Tester guide. */
+    val setupDoneAt: Flow<Long?> = store.data.map { it[Keys.SETUP_DONE_AT] }
+
+    suspend fun setSetupDone(now: Long) {
+        store.edit { it[Keys.SETUP_DONE_AT] = now }
     }
 
     /** Goals › More to track: extras turned on, by [com.nutritionscribe.shared.model.Metric.key]. Off by default. */

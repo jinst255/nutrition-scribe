@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.outlined.CollectionsBookmark
 import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
@@ -241,10 +243,24 @@ fun ScanScreen(
     }
 
     if (!granted) {
-        Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Scanning needs the camera. Nothing is recorded; the picture is read on your phone.")
-            Button(onClick = { askPermission.launch(Manifest.permission.CAMERA) }) { Text("Allow camera") }
-            OutlinedButton(onClick = onCancel) { Text("Not now") }
+        // Why first, then Android's prompt. In a test version label photos are
+        // kept for the test log, so "nothing is recorded" would not be true.
+        val testing = remember { com.nutritionscribe.app.ui.feedback.isTestBuild(context) }
+        Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            androidx.compose.foundation.layout.Box(
+                Modifier.size(48.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Outlined.PhotoCamera, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp)) }
+            Text("To read barcodes and labels", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Point it at a barcode or a Nutrition Facts label and the app reads the numbers on your phone. " +
+                    if (testing) "Label photos stay on this phone, and go in your test log when you send it." else "Nothing is kept.",
+                style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.secondary,
+            )
+            Button(onClick = { events.event("camera_why", "choice" to "allow"); askPermission.launch(Manifest.permission.CAMERA) },
+                modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Allow the camera") }
+            androidx.compose.material3.TextButton(onClick = { events.event("camera_why", "choice" to "later"); onCancel() },
+                modifier = Modifier.fillMaxWidth()) { Text("Not now") }
         }
         return
     }

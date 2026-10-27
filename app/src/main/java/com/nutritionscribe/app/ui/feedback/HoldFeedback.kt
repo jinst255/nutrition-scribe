@@ -61,8 +61,15 @@ object HoldFeedback {
 }
 
 @Composable
-fun HoldToFeedback(screen: () -> String, modifier: Modifier = Modifier.fillMaxSize(), content: @Composable () -> Unit) {
-    val debug by ServiceLocator.settingsRepository.debugMode.collectAsState(initial = false)
+fun HoldToFeedback(
+    screen: () -> String,
+    modifier: Modifier = Modifier.fillMaxSize(),
+    /** Setup's practice card: works with debug mode off, saves nothing, and calls this once the note is "saved". */
+    practice: (() -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    val debugOn by ServiceLocator.settingsRepository.debugMode.collectAsState(initial = false)
+    val debug = debugOn || practice != null
     val haptic = LocalHapticFeedback.current
     var spot by remember { mutableStateOf<Offset?>(null) }
     var ring by remember { mutableStateOf<Offset?>(null) }
@@ -114,7 +121,7 @@ fun HoldToFeedback(screen: () -> String, modifier: Modifier = Modifier.fillMaxSi
                             }
                         }.getOrNull()
                         shot = null
-                        if (bmp != null) scope.launch { shot = withContext(Dispatchers.IO) { ServiceLocator.debugEvents.saveScan(bmp, prefix = "spot") } }
+                        if (bmp != null && practice == null) scope.launch { shot = withContext(Dispatchers.IO) { ServiceLocator.debugEvents.saveScan(bmp, prefix = "spot") } }
                         // The rest of this press is ours: lifting the finger must not tap.
                         do {
                             val ev = awaitPointerEvent(PointerEventPass.Initial)
@@ -136,7 +143,10 @@ fun HoldToFeedback(screen: () -> String, modifier: Modifier = Modifier.fillMaxSi
     }
 
     spot?.let { at ->
-        SpotDialog(screen(), at, shot = { shot }, onDone = { spot = null })
+        SpotDialog(screen(), at, shot = { shot }, practice = practice != null, onDone = { saved ->
+            spot = null
+            if (saved) practice?.invoke()
+        })
     }
 }
 
@@ -150,12 +160,12 @@ fun SheetFeedback(name: String, content: @Composable () -> Unit) =
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun SpotDialog(screen: String, at: Offset, shot: () -> String?, onDone: () -> Unit) {
+private fun SpotDialog(screen: String, at: Offset, shot: () -> String?, practice: Boolean = false, onDone: (saved: Boolean) -> Unit) {
     val reasons = listOf("Wrong number", "Wrong food", "Confusing", "Looks off", "Missing something", "Too slow", "Hard to tap")
     var picked by remember { mutableStateOf(setOf<String>()) }
     var note by remember { mutableStateOf("") }
     AlertDialog(
-        onDismissRequest = onDone,
+        onDismissRequest = { onDone(false) },
         title = { Text("What's wrong here?") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -168,18 +178,23 @@ private fun SpotDialog(screen: String, at: Offset, shot: () -> String?, onDone: 
                 }
                 OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("Anything else? (optional)") },
                     modifier = Modifier.fillMaxWidth(), minLines = 2)
+                Text(if (practice) "Practice: this one isn't saved." else "Saved on your phone. It goes with your log when you send it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (practice) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.secondary)
             }
         },
         confirmButton = {
+            // "Save note", not "Send": nothing leaves the phone until the log is sent.
             TextButton(enabled = picked.isNotEmpty() || note.isNotBlank(), onClick = {
-                ServiceLocator.debugEvents.always(
+                if (practice) ServiceLocator.debugEvents.event("hold_practice_done", "reasons" to picked.toList())
+                else ServiceLocator.debugEvents.always(
                     "spot_feedback", "screen" to screen, "x" to at.x.toInt(), "y" to at.y.toInt(),
                     "reasons" to picked.toList(), "note" to note.trim(), "shot" to shot(),
                 )
-                onDone()
-            }) { Text("Send") }
+                onDone(true)
+            }) { Text("Save note") }
         },
-        dismissButton = { TextButton(onClick = onDone) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = { onDone(false) }) { Text("Cancel") } },
     )
 }
 

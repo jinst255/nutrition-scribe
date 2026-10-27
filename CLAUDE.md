@@ -8,7 +8,7 @@ Design spec: [nutrition-scribe-blueprint.md](nutrition-scribe-blueprint.md).
 ## Commands
 
 ```bash
-# JVM tests (seconds; no device). Expect shared 220 (9 skipped), app 44.
+# JVM tests (seconds; no device). Expect shared 220 (9 skipped), app 54.
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :shared:testDebugUnitTest :app:testDebugUnitTest
 # The label-pack test runs only when given an unzipped pack:
 #   gunzip -c app/src/main/assets-pack/labels.db.gz > /tmp/labels.db

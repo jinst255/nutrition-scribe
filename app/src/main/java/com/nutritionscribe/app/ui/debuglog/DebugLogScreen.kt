@@ -78,7 +78,7 @@ fun DebugLogScreen() {
     }
 
     suspend fun export(): java.io.File = withContext(Dispatchers.IO) {
-        events.buildExport(ServiceLocator.appSnapshot(), logger.readAll(), ServiceLocator.debugExtras())
+        ServiceLocator.buildDebugExport()
     }
 
     Column(

@@ -203,6 +203,9 @@ class DebugEvents(
 
     fun scanCount(): Int = scanDir.listFiles()?.size ?: 0
 
+    /** Label photos only, not the screenshots saved with notes. */
+    fun labelPhotoCount(): Int = scanDir.listFiles()?.count { !it.name.startsWith("spot-") } ?: 0
+
     /** The newest [n] lines, for the on-screen preview. */
     fun tail(n: Int): List<String> {
         flush()
@@ -220,7 +223,12 @@ class DebugEvents(
      *   thought to record (framework warnings, ML Kit, the reason a screen froze);
      * - scans/: the photos label scans were read from.
      */
-    fun buildExport(header: Map<String, Any?>, errorLog: String, extras: Map<String, String> = emptyMap()): File {
+    /**
+     * [leaveOut]: the parts of the log the tester unticked (see [com.nutritionscribe.app.ui.feedback.LogPart]).
+     * Their events and label photos stay out; screenshots saved with notes always go.
+     */
+    fun buildExport(header: Map<String, Any?>, errorLog: String, extras: Map<String, String> = emptyMap(), leaveOut: Set<String> = emptySet()): File {
+        val drop = com.nutritionscribe.app.ui.feedback.LogPart.droppedEvents(leaveOut)
         flush()
         val out = File(cacheDir, "debug-export/${exportName()}")
         out.parentFile?.mkdirs()
@@ -240,13 +248,17 @@ class DebugEvents(
                 h["session"] = JsonPrimitive(session)
                 for ((k, v) in header) h[k] = toJson(v)
                 w.write(redact(JsonObject(h).toString())); w.write("\n")
-                for (f in listOf(previous, file)) if (f.exists()) f.bufferedReader().use { r -> r.copyTo(w) }
+                for (f in listOf(previous, file)) if (f.exists()) f.bufferedReader().use { r ->
+                    if (drop.isEmpty()) r.copyTo(w)
+                    else r.lineSequence().filterNot { com.nutritionscribe.app.ui.feedback.LogPart.isDropped(it, drop) }.forEach { w.write(it); w.write("\n") }
+                }
                 val e = mapOf("type" to JsonPrimitive("error_log"), "text" to JsonPrimitive(errorLog))
                 w.write(redact(JsonObject(e).toString())); w.write("\n")
             }
             for ((name, text) in extras) entry(name) { it.write(redact(text)) }
             entry("logcat.txt") { it.write(redact(ownLogcat())) }
-            scanDir.listFiles()?.sortedBy { it.name }?.forEach { f ->
+            val photos = com.nutritionscribe.app.ui.feedback.LogPart.PHOTOS.key !in leaveOut
+            scanDir.listFiles()?.sortedBy { it.name }?.filter { photos || it.name.startsWith("spot-") }?.forEach { f ->
                 zip.putNextEntry(java.util.zip.ZipEntry("scans/${f.name}"))
                 f.inputStream().use { it.copyTo(zip) }
                 zip.closeEntry()

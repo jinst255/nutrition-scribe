@@ -49,15 +49,29 @@ fun OnboardingScreen(onFinished: () -> Unit) {
     var step by remember { mutableIntStateOf(0) }
     val goals = ServiceLocator.goalsRepository
     var selectedMetrics by remember { mutableStateOf(MetricGoal.STARTER_METRICS.toSet()) }
-    var apiKey by remember { mutableStateOf("") }
     // Per-metric targets and baselines, filled either by hand or by the
     // calculator. Kept as text so a half-typed number is not thrown away.
     val targetText = remember { mutableStateMapOf<Metric, String>() }
     val baselineText = remember { mutableStateMapOf<Metric, String>() }
-    var showKeyHelp by remember { mutableStateOf(false) }
     val keptKey = remember { ServiceLocator.settingsRepository.hasAnyApiKey() }
     val scope = rememberCoroutineScope()
     val settings = ServiceLocator.settingsRepository
+    val testing = remember { com.nutritionscribe.app.ui.feedback.isTestBuild(ServiceLocator.appContext) }
+    var intro by remember { mutableStateOf(testing) }
+
+    // Full-screen steps, laid out like the name step; the rest share the column below.
+    if (intro) { TesterIntro(onDone = { intro = false; scope.launch { settings.setTesterIntroSeen() } }); return }
+    if (step == 0) { ReadyToGo(keptKey) { step = 1 }; return }
+    if (step == 3) {
+        AllSet(onStart = {
+            scope.launch {
+                settings.setSetupDone(System.currentTimeMillis())
+                settings.setOnboarded(true)
+                onFinished()
+            }
+        })
+        return
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
@@ -65,149 +79,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
         verticalArrangement = Arrangement.Center,
     ) {
         when (step) {
-            0 -> {
-                // This screen used to open with "Add your API key" and hide the
-                // offline database behind "Skip — I'll enter it myself", which
-                // read as "give us a credit card or type your own numbers". The
-                // app works with no key and no network, so that is the headline
-                // and the key is the extra. Nobody should have to sign up for a
-                // developer account to write down that they ate a banana.
-                Text("Ready to go", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    "Say or type what you ate. The first time you log a food you check it once; " +
-                        "after that it logs without asking. 13,400 foods and 230,000 package labels are built in — no " +
-                        "account, key or connection needed, and without an AI key nothing you eat leaves your phone.",
-                    modifier = Modifier.padding(vertical = 12.dp),
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                Text(
-                    "This is a test version. It keeps a log on this phone of what you log and how the app " +
-                        "behaves, including label photos you scan. Nothing is sent unless you send it: after a week " +
-                        "the app will ask you to, and you can switch the log off in Settings > Advanced.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(vertical = 8.dp),
-                )
-                Button(
-                    onClick = {
-                        scope.launch {
-                            settings.setManualMode(false)
-                            // A key kept through a reset keeps Highest quality mode on.
-                            settings.setLookupSource(if (keptKey) LookupSource.AI else LookupSource.OFFLINE)
-                        }
-                        step = 1
-                    },
-                    modifier = Modifier.padding(top = 4.dp),
-                ) { Text("Start logging") }
-
-                // Recommended, never required: the single biggest accuracy gain for
-                // packaged food, but ~40 MB, so it is offered rather than forced.
-                val pack = ServiceLocator.labelPack
-                val packStatus by pack.status.collectAsState()
-                val packPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-                    androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
-                ) { uri -> if (uri != null) scope.launch { pack.installFrom(uri) } }
-                Card(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Recommended: the label pack", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            when (packStatus) {
-                                is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed ->
-                                    "Installed. Branded food and barcode scans will use the real package label."
-                                is com.nutritionscribe.app.data.resolve.LabelPack.Status.Working ->
-                                    "Setting up the package labels that came with the app. This takes a few seconds; you can carry on."
-                                else -> "Real Nutrition Facts for about 230,000 packaged products, so branded food and " +
-                                    "barcode scans are exact instead of estimated. About 70 MB. You can add it later in Settings."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-                        if (packStatus !is com.nutritionscribe.app.data.resolve.LabelPack.Status.Installed &&
-                            packStatus !is com.nutritionscribe.app.data.resolve.LabelPack.Status.Working) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                                if (com.nutritionscribe.app.data.resolve.LabelPack.DOWNLOAD_URL != null) {
-                                    Button(onClick = { scope.launch { pack.download() } }) { Text("Download") }
-                                }
-                                androidx.compose.material3.OutlinedButton(onClick = { packPicker.launch(arrayOf("*/*")) }) {
-                                    Text("Install from file")
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (keptKey) {
-                    // A reset that kept the key lands here too. Showing an empty key
-                    // box then read as "your key is gone", and invited pasting it again.
-                    Card(modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Your API key is still saved", style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                "Highest quality mode is on: AI checks foods you haven't logged before and turns your speech into text. " +
-                                    "You can switch it off or remove the key in Settings.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.padding(top = 6.dp),
-                            )
-                        }
-                    }
-                } else {
-                Text(
-                    "Adding an API key is optional. It costs a fraction of a cent per " +
-                        "entry and lets the app understand brands, restaurant meals and " +
-                        "whole sentences.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(top = 24.dp),
-                )
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    label = { Text("sk-… (optional)") },
-                    singleLine = true,
-                    // A key typed by hand got a space from autocorrect; a key is never words.
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrect = false),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                )
-                Button(
-                    onClick = {
-                        settings.setApiKey(AiBackendKind.OPENAI, apiKey.filterNot { it.isWhitespace() })
-                        scope.launch {
-                            settings.setManualMode(false)
-                            settings.setLookupSource(LookupSource.AI)
-                        }
-                        step = 1
-                    },
-                    enabled = apiKey.isNotBlank(),
-                    modifier = Modifier.padding(top = 8.dp),
-                ) { Text("Use this key") }
-                TextButton(onClick = { showKeyHelp = !showKeyHelp }) {
-                    Text(if (showKeyHelp) "Hide" else "How do I get an API key?")
-                }
-
-                if (showKeyHelp) {
-                    Card(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Getting a key", style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                "Most people should skip this — the app works fine without it.\n\n" +
-                                    "1. Go to platform.openai.com and make an account.\n" +
-                                    "2. Add a payment method. Lookups cost a fraction of a cent " +
-                                    "each; a few dollars lasts a very long time.\n" +
-                                    "3. Open the API keys page and create a new secret key.\n" +
-                                    "4. Copy it and paste it above. It starts with \"sk-\".\n\n" +
-                                    "You can add this later in Settings — nothing is lost by " +
-                                    "skipping now.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.padding(top = 8.dp),
-                            )
-                        }
-                    }
-                }
-                }
-            }
             1 -> {
                 Text("What do you want to track?", style = MaterialTheme.typography.headlineSmall)
                 Text(
@@ -341,12 +212,11 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                             // Kept in step for the screens that still read it.
                             targetText[Metric.PROTEIN]?.toDoubleOrNull()
                                 ?.let { settings.setDailyGoalGrams(it) }
-                            settings.setOnboarded(true)
-                            onFinished()
+                            step = 3
                         }
                     },
                     modifier = Modifier.padding(top = 20.dp, bottom = 8.dp),
-                ) { Text("Start logging") }
+                ) { Text("Continue") }
             }
         }
     }

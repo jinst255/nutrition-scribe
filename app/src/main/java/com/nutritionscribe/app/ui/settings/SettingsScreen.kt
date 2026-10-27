@@ -91,6 +91,8 @@ fun SettingsScreen(
     onOpenIdea: () -> Unit = {},
     onOpenSent: () -> Unit = {},
     onOpenCheckIn: () -> Unit = {},
+    onOpenGuide: () -> Unit = {},
+    onOpenLogContents: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val settings = viewModel.settings
@@ -156,6 +158,8 @@ fun SettingsScreen(
                 onIdea = { events.event("beta_open", "what" to "idea"); onOpenIdea() },
                 onSent = { events.event("beta_open", "what" to "sent"); onOpenSent() },
                 onCheckIn = { events.event("check_in_open", "where" to "settings"); onOpenCheckIn() },
+                onGuide = { events.event("beta_open", "what" to "guide"); onOpenGuide() },
+                onLogContents = { events.event("beta_open", "what" to "log_contents"); onOpenLogContents() },
             )
         }
 

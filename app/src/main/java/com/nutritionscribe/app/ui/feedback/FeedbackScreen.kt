@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Lightbulb
@@ -69,7 +70,7 @@ enum class FeedbackKind { PROBLEM, IDEA, CHECK_IN }
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun FeedbackScreen(kind: FeedbackKind = FeedbackKind.PROBLEM, onDone: () -> Unit = {}) {
+fun FeedbackScreen(kind: FeedbackKind = FeedbackKind.PROBLEM, onDone: () -> Unit = {}, onLogContents: () -> Unit = {}) {
     val events = ServiceLocator.debugEvents
     val settings = ServiceLocator.settingsRepository
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -79,6 +80,8 @@ fun FeedbackScreen(kind: FeedbackKind = FeedbackKind.PROBLEM, onDone: () -> Unit
     var keep by remember { mutableStateOf<String?>(null) }
     var why by remember { mutableStateOf("") }
     var pay by remember { mutableStateOf<String?>(null) }
+    var price by remember { mutableStateOf<String?>(null) }
+    var otherPrice by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf<String?>(null) }
 
     Column(
@@ -118,23 +121,31 @@ fun FeedbackScreen(kind: FeedbackKind = FeedbackKind.PROBLEM, onDone: () -> Unit
                 Chips(listOf("Wrong amounts", "Too many taps", "Scanning", "Slow", "Nothing"), selected = tags,
                     onTap = { t -> tags.clear(); tags += t })
                 Question(2, "Would you keep using it?")
-                Chips(listOf("Yes", "Maybe", "No"), selected = listOfNotNull(keep), onTap = { keep = it; if (it != "Yes") pay = null })
+                Chips(listOf("Yes", "Maybe", "No"), selected = listOfNotNull(keep), onTap = { keep = it })
                 OutlinedTextField(
                     value = why, onValueChange = { why = it }, modifier = Modifier.fillMaxWidth(),
                     label = { Text("Why? (optional)") },
                     placeholder = { Text(if (keep == "No") "e.g. too much effort to log" else "e.g. it's faster than typing everything") },
                 )
-                // The app is meant to be free; whether anyone would pay is only worth
-                // asking someone who would keep it.
-                if (keep == "Yes") {
-                    Question(3, "Would you pay anything for it?")
-                    Chips(listOf("No, only if free", "\$1–3 once", "\$5–10 once", "\$1–2 a month", "More than that"),
-                        selected = listOfNotNull(pay), onTap = { pay = it })
+                // The app stays free. What's asked is whether it's good enough that
+                // someone would pay a little to have the AI without their own key:
+                // a small subscription through the owner, monthly or yearly.
+                Question(3, "The app stays free. Is it good enough that you'd pay a little, so you don't need your own AI key?")
+                Chips(listOf("Yes", "Maybe", "No, I'd only use it free"), selected = listOfNotNull(pay),
+                    onTap = { pay = it; if (it.startsWith("No")) price = null })
+                if (pay == "Yes" || pay == "Maybe") {
+                    Text("What would feel fair?", style = MaterialTheme.typography.bodyLarge)
+                    Chips(listOf("\$1 a month", "\$2–3 a month", "\$2 a year", "\$5 a year", "\$10 a year", "Other"),
+                        selected = listOfNotNull(price), onTap = { price = it })
+                    if (price == "Other") {
+                        OutlinedTextField(value = otherPrice, onValueChange = { otherPrice = it.take(60) }, modifier = Modifier.fillMaxWidth(),
+                            singleLine = true, label = { Text("How much, and how often?") }, placeholder = { Text("e.g. \$3 a year") })
+                    }
                 }
             }
         }
 
-        val hasAnything = tags.isNotEmpty() || note.isNotBlank() || keep != null || why.isNotBlank()
+        val hasAnything = tags.isNotEmpty() || note.isNotBlank() || keep != null || why.isNotBlank() || pay != null
         Button(
             enabled = hasAnything,
             onClick = {
@@ -144,12 +155,13 @@ fun FeedbackScreen(kind: FeedbackKind = FeedbackKind.PROBLEM, onDone: () -> Unit
                 val noteNow = note.trim()
                 when (kind) {
                     FeedbackKind.CHECK_IN -> {
-                        events.always("beta_checkin", "bothered" to tagsNow.firstOrNull(), "keep" to keep, "why" to why.trim(), "pay" to pay)
-                        val checkin = BetaNote(now, "checkin", listOfNotNull(tagsNow.firstOrNull(), keep?.let { "Keep using: $it" }), why.trim())
-                        scope.launch {
-                            settings.addBetaNote(checkin)
-                            com.nutritionscribe.app.ui.debuglog.LogShare.share(context, "check_in")
-                        }
+                        val priceNow = if (price == "Other") otherPrice.trim().ifBlank { "Other" } else price
+                        events.always("beta_checkin", "bothered" to tagsNow.firstOrNull(), "keep" to keep, "why" to why.trim(),
+                            "pay" to pay, "price" to priceNow)
+                        val checkin = BetaNote(now, "checkin", listOfNotNull(tagsNow.firstOrNull(), keep?.let { "Keep using: $it" },
+                            pay?.let { "Pay: $it" + (priceNow?.let { p -> ", $p" } ?: "") }), why.trim())
+                        // Then What's in your log, where the tester sees it and sends it.
+                        scope.launch { settings.addBetaNote(checkin); onLogContents() }
                     }
                     else -> {
                         val k = if (kind == FeedbackKind.IDEA) "idea" else if (tagsNow == listOf("I liked something")) "liked" else "problem"
@@ -158,13 +170,13 @@ fun FeedbackScreen(kind: FeedbackKind = FeedbackKind.PROBLEM, onDone: () -> Unit
                     }
                 }
                 tags.clear(); note = ""
-                saved = if (kind == FeedbackKind.CHECK_IN) "Thanks! Choose where to send your log." else "Thanks, it's saved. It goes with your next log."
+                saved = if (kind == FeedbackKind.CHECK_IN) "Thanks! Next: what's in your log." else "Thanks, it's saved. It goes with your next log."
             },
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-        ) { Text(if (kind == FeedbackKind.CHECK_IN) "Send answers and my log" else "Save") }
+        ) { Text(if (kind == FeedbackKind.CHECK_IN) "Next: what's in your log" else "Save") }
         saved?.let { Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium) }
         Text(
-            if (kind == FeedbackKind.CHECK_IN) "Nothing leaves the phone until you tap Send. Your API key is never included."
+            if (kind == FeedbackKind.CHECK_IN) "Nothing leaves the phone until you tap Send my log. Your API key is never included."
             else "Saved notes go with your log on day 7, or tap Send my log now in Settings.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
         )
@@ -186,7 +198,7 @@ private fun Chips(options: List<String>, selected: List<String>, onTap: (String)
 
 /** Everything they've told us, and whether it has gone out yet (with a sent log). */
 @Composable
-fun SentScreen() {
+fun SentScreen(onLogContents: () -> Unit = {}) {
     val settings = ServiceLocator.settingsRepository
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
@@ -220,7 +232,7 @@ fun SentScreen() {
                 )
             }
         }
-        OutlinedButton(onClick = { scope.launch { com.nutritionscribe.app.ui.debuglog.LogShare.share(context, "sent_screen") } },
+        OutlinedButton(onClick = onLogContents,
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(top = 8.dp)) { Text("Send my log now") }
         Text("Your log has what you ate and how the app behaved. It never includes your API key. Nothing leaves the phone until you tap Send.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
@@ -232,7 +244,7 @@ fun SentScreen() {
  * then the four things a tester comes to Settings for.
  */
 @Composable
-fun BetaSection(onTellUs: () -> Unit, onIdea: () -> Unit, onSent: () -> Unit, onCheckIn: () -> Unit) {
+fun BetaSection(onTellUs: () -> Unit, onIdea: () -> Unit, onSent: () -> Unit, onCheckIn: () -> Unit, onGuide: () -> Unit, onLogContents: () -> Unit) {
     val settings = ServiceLocator.settingsRepository
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
@@ -263,6 +275,7 @@ fun BetaSection(onTellUs: () -> Unit, onIdea: () -> Unit, onSent: () -> Unit, on
                         color = MaterialTheme.colorScheme.secondary)
                 }
             }
+            BetaRow(Icons.AutoMirrored.Outlined.MenuBook, "Tester guide", trail = null, onClick = onGuide)
             val name by settings.testerName.collectAsState(initial = "")
             var renaming by remember { mutableStateOf(false) }
             BetaRow(Icons.Outlined.Person, if (name.isBlank()) "Who's testing? Add your name" else "Testing as $name", trail = "Change") { renaming = true }
@@ -287,9 +300,7 @@ fun BetaSection(onTellUs: () -> Unit, onIdea: () -> Unit, onSent: () -> Unit, on
             BetaRow(Icons.Outlined.ChatBubbleOutline, "Something's wrong? Tell us", onClick = onTellUs)
             BetaRow(Icons.Outlined.Lightbulb, "I have an idea", onClick = onIdea)
             BetaRow(Icons.Outlined.ListAlt, "What I've sent", trail = if (notes.isEmpty()) null else if (notes.size == 1) "1 note" else "${notes.size} notes", onClick = onSent)
-            BetaRow(Icons.AutoMirrored.Outlined.Send, "Send my log now") {
-                scope.launch { com.nutritionscribe.app.ui.debuglog.LogShare.share(context, "settings_beta") }
-            }
+            BetaRow(Icons.AutoMirrored.Outlined.Send, "Send my log now", onClick = onLogContents)
         }
     }
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.padding(top = 8.dp)) {
@@ -302,7 +313,7 @@ fun BetaSection(onTellUs: () -> Unit, onIdea: () -> Unit, onSent: () -> Unit, on
 
 private fun buildTip() = androidx.compose.ui.text.buildAnnotatedString {
     pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)); append("Tip: "); pop()
-    append("press and hold anything that looks wrong for a second, then tap what it was.")
+    append("press and hold anything that looks wrong for a second, then tap what it was. It stays on your phone until you send your log.")
 }
 
 @Composable

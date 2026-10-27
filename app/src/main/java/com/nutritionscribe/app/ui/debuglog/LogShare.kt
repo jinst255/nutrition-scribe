@@ -16,7 +16,7 @@ object LogShare {
     suspend fun share(context: Context, where: String) {
         val events = ServiceLocator.debugEvents
         val f = withContext(Dispatchers.IO) {
-            events.buildExport(ServiceLocator.appSnapshot(), ServiceLocator.debugLogger.readAll(), ServiceLocator.debugExtras())
+            ServiceLocator.buildDebugExport()
         }
         events.always("log_shared", "where" to where, "bytes" to f.length(), "file" to f.name)
         ServiceLocator.settingsRepository.setLogSent(System.currentTimeMillis())
