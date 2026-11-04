@@ -150,24 +150,47 @@ class SettingsRepository(
         val HISTORY_COUNTED = stringSetPreferencesKey("history_counted_days")
     }
 
-    private val encryptedPrefs by lazy {
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            context,
-            storage.secureName,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
+    /**
+     * Null only when the Android Keystore can't be used at all; then no key is
+     * saved and the app runs offline instead of crashing. See [SecureStoreOpener].
+     */
+    @Volatile private var opened: android.content.SharedPreferences? = null
+
+    /** How the store last opened; RESET means a key that couldn't be decrypted was dropped. */
+    @Volatile var secureStoreOutcome: SecureStoreOpener.Outcome? = null
+        private set
+
+    private val encryptedPrefs: android.content.SharedPreferences?
+        get() {
+            if (secureStoreOutcome != null) return opened
+            synchronized(this) {
+                if (secureStoreOutcome != null) return opened
+                val (prefs, outcome) = SecureStoreOpener.open(
+                    create = {
+                        val masterKey = MasterKey.Builder(context)
+                            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                            .build()
+                        EncryptedSharedPreferences.create(
+                            context,
+                            storage.secureName,
+                            masterKey,
+                            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+                        )
+                    },
+                    wipe = { context.deleteSharedPreferences(storage.secureName) },
+                )
+                opened = prefs
+                secureStoreOutcome = outcome // set last: it marks the store as tried
+                return prefs
+            }
+        }
 
     fun getApiKey(backend: AiBackendKind): String? =
-        encryptedPrefs.getString("api_key_${backend.name}", null)
+        SecureStoreOpener.read { encryptedPrefs?.getString("api_key_${backend.name}", null) }
 
     fun setApiKey(backend: AiBackendKind, key: String) {
-        encryptedPrefs.edit().putString("api_key_${backend.name}", key).apply()
+        encryptedPrefs?.edit()?.putString("api_key_${backend.name}", key)?.apply()
         keysChanged.value++
     }
 
@@ -182,7 +205,7 @@ class SettingsRepository(
      */
     @SuppressLint("ApplySharedPref")
     fun clearApiKeys() {
-        encryptedPrefs.edit().clear().commit()
+        encryptedPrefs?.edit()?.clear()?.commit()
     }
 
     /** Forgets every non-secret preference, back to first-launch defaults. */

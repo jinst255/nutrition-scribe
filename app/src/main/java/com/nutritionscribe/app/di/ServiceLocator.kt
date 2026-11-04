@@ -275,6 +275,7 @@ object ServiceLocator {
             "backend" to backendCache.value,
             "has_openai_key" to (settingsRepository.getApiKey(AiBackendKind.OPENAI)?.isNotBlank() == true),
             "has_anthropic_key" to (settingsRepository.getApiKey(AiBackendKind.ANTHROPIC)?.isNotBlank() == true),
+            "secure_store" to settingsRepository.secureStoreOutcome,
             "label_pack_installed" to labelPack.isInstalled,
             "food_db_loaded" to (foodDatabase.reader() != null),
             "speech_recognition_available" to android.speech.SpeechRecognizer.isRecognitionAvailable(appContext),

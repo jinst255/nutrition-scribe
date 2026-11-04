@@ -44,13 +44,13 @@ object EntryCsv {
                     .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
             }
             listOf(
-                e.id,
+                text(e.id),
                 e.timestampEpochMillis.toString(),
                 localDateTime,
                 e.timeUnspecified.toString(),
                 e.needsDetail.toString(),
-                escape(e.rawText),
-                escape(e.name),
+                text(e.rawText),
+                text(e.name),
                 e.proteinGrams.toString(),
                 e.calories?.toString().orEmpty(),
                 e.carbsGrams?.toString().orEmpty(),
@@ -61,7 +61,7 @@ object EntryCsv {
                 e.amountOf(Metric.SODIUM)?.toString().orEmpty(),
                 e.amountOf(Metric.CAFFEINE)?.toString().orEmpty(),
                 e.isFixedFood.toString(),
-                escape(e.source),
+                text(e.source),
                 e.confidence.name,
                 *MICRO_COLUMNS.map { (_, m) -> e.amountOf(m)?.toString().orEmpty() }.toTypedArray(),
             ).joinToString(",")
@@ -85,16 +85,17 @@ object EntryCsv {
             .associate { (i, name) -> name.trim() to i }
         return records.drop(1).mapNotNull { cols ->
             fun col(name: String): String? = index[name]?.let { cols.getOrNull(it) }
+            fun textCol(name: String): String? = col(name)?.let(::unguard)
 
-            val id = col("id").orEmpty()
+            val id = textCol("id").orEmpty()
             if (id.isBlank()) return@mapNotNull null
             val ts = col("timestamp")?.toLongOrNull() ?: return@mapNotNull null
 
             Entry(
                 id = id,
                 timestampEpochMillis = ts,
-                rawText = col("raw_text").orEmpty(),
-                name = col("name").orEmpty(),
+                rawText = textCol("raw_text").orEmpty(),
+                name = textCol("name").orEmpty(),
                 nutrients = nutrientsOf(
                     protein = col("protein_grams")?.toDoubleOrNull() ?: 0.0,
                     calories = col("calories")?.toDoubleOrNull(),
@@ -107,7 +108,7 @@ object EntryCsv {
                     caffeine = col("caffeine_mg")?.toDoubleOrNull(),
                 ) + MICRO_COLUMNS.mapNotNull { (name, m) -> col(name)?.toDoubleOrNull()?.let { m.key to it } },
                 isFixedFood = col("is_fixed_food").toBoolean(),
-                source = col("source").orEmpty(),
+                source = textCol("source").orEmpty(),
                 confidence = runCatching { Confidence.valueOf(col("confidence").orEmpty()) }
                     .getOrDefault(Confidence.ESTIMATED),
                 timeUnspecified = col("time_unspecified").toBoolean(),
@@ -116,8 +117,38 @@ object EntryCsv {
         }
     }
 
+    /**
+     * Characters that make a spreadsheet read a cell as a formula. A food name is
+     * free text (typed, spoken, from the AI or from Open Food Facts), so a name like
+     * `=HYPERLINK("https://…?"&A2,"x")` would run when the export is opened in Excel
+     * or Sheets and could send the log somewhere. See OWASP "CSV Injection".
+     */
+    private val FORMULA_START = setOf('=', '+', '-', '@', '\t', '\r')
+
+    /**
+     * A text cell made safe for spreadsheets, then CSV-escaped. A cell that could
+     * start a formula gets a leading `'`, which spreadsheets show as plain text.
+     * A cell that already starts with `'` gets one too, so [unguard] can take
+     * exactly one off and every value round-trips unchanged.
+     */
+    fun text(value: String): String = escape(guard(value))
+
+    fun guard(value: String): String {
+        val first = value.firstOrNull() ?: return value
+        return if (first in FORMULA_START || first == '\'') "'$value" else value
+    }
+
+    /**
+     * Undoes [guard] on import. It only strips a `'` that [guard] could have
+     * added (one followed by a formula character or another `'`), so a name in an
+     * export made before this fix that happens to start with `'` keeps it.
+     */
+    fun unguard(value: String): String =
+        if (value.length >= 2 && value[0] == '\'' && (value[1] in FORMULA_START || value[1] == '\'')) value.substring(1)
+        else value
+
     fun escape(value: String): String =
-        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+        if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
             "\"${value.replace("\"", "\"\"")}\""
         } else {
             value

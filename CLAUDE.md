@@ -8,7 +8,7 @@ Design spec: [nutrition-scribe-blueprint.md](nutrition-scribe-blueprint.md).
 ## Commands
 
 ```bash
-# JVM tests (seconds; no device). Expect shared 220 (9 skipped), app 54.
+# JVM tests (seconds; no device). Expect shared 220 (9 skipped), app 69.
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :shared:testDebugUnitTest :app:testDebugUnitTest
 # The label-pack test runs only when given an unzipped pack:
 #   gunzip -c app/src/main/assets-pack/labels.db.gz > /tmp/labels.db
@@ -41,6 +41,20 @@ shell's own command line and the shell kills itself (exit 144).
 
 - **Questions:** ask clarifying questions with the AskUserQuestion tool, never as a numbered list in chat.
 - **Commits:** commit or push only when asked.
+- **Every bug fix ships with a regression test** (policy since 2026-11-04). It applies to any bug,
+  issue, crash or security finding, however small.
+  - Write the test first and watch it fail on the unfixed code; then fix it and watch it pass.
+  - Test the exact input or state that broke, not just the happy path. Add the nearby edge
+    cases too (empty, huge, unicode, null, the old data format).
+  - Name it after the behaviour, e.g. `csvExportNeutralisesFormulaCells`. Open it with a comment saying
+    what broke, how it showed up, and why the fix works. Then whoever sees it fail later can fix it
+    without digging through history. Put no personal data in it.
+  - Prefer JVM tests (`shared` or `app/src/test`). Pull the logic out of Android types if that's
+    what it takes. Use an instrumented test only when the bug lives in Android itself (Room
+    migrations, the Keystore), and then say in the commit that it needs the emulator.
+  - If something truly can't be tested automatically, say why in the commit message and add
+    a manual check to `docs/`.
+  - Never delete, skip or loosen an existing test to make a fix pass.
 - **The repo is public.** Nothing personal or secret goes in files, test fixtures or commit messages.
   - No names, emails, device serials, body stats, food logs or keys.
   - No claude.ai session or artifact links.

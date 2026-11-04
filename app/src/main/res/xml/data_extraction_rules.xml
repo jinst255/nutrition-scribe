@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    What Android 12+ may copy off this phone. Read by DataExtractionRulesTest.
+
+    cloud-backup: nothing, as before (allowBackup="false" already said so).
+    device-transfer: everything except the encrypted API-key store. Its key lives
+    in this phone's Keystore and never moves, so a copied file can't be decrypted
+    on the new phone and used to crash the app. The food log, goals and settings
+    still move to a new phone as they did before.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="protein_scribe_secure_prefs.xml" />
+    </device-transfer>
+</data-extraction-rules>
