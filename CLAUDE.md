@@ -8,7 +8,7 @@ Design spec: [nutrition-scribe-blueprint.md](nutrition-scribe-blueprint.md).
 ## Commands
 
 ```bash
-# JVM tests (seconds; no device). Expect shared 220 (9 skipped), app 69.
+# JVM tests (seconds; no device). Expect shared 329 (10 skipped), app 147.
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :shared:testDebugUnitTest :app:testDebugUnitTest
 # The label-pack test runs only when given an unzipped pack:
 #   gunzip -c app/src/main/assets-pack/labels.db.gz > /tmp/labels.db
@@ -41,8 +41,9 @@ shell's own command line and the shell kills itself (exit 144).
 
 - **Questions:** ask clarifying questions with the AskUserQuestion tool, never as a numbered list in chat.
 - **Commits:** commit or push only when asked.
-- **Every bug fix ships with a regression test** (policy since 2026-11-04). It applies to any bug,
-  issue, crash or security finding, however small.
+- **Every bug fix ships with a regression test** (policy since 2026-11-04, widened 2026-11-14). It
+  applies to any bug, issue, crash, security finding or problem solved, however small. The point:
+  if it breaks again, a test says so at once, before a human tester runs into it a third time.
   - Write the test first and watch it fail on the unfixed code; then fix it and watch it pass.
   - Test the exact input or state that broke, not just the happy path. Add the nearby edge
     cases too (empty, huge, unicode, null, the old data format).

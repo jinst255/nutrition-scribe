@@ -119,6 +119,8 @@ object MicroFill {
 
     /** A remembered food with its micros, or null when nothing could be added. */
     fun fill(food: PersonalFood, lookup: (String) -> FoodCandidate?, search: ((String) -> List<FoodCandidate>)? = null): PersonalFood? {
+        // A recipe's numbers are its ingredients' (per serving); nothing to borrow.
+        if (food.isRecipe) return null
         if (food.isMeal) return fillMeal(food, search)
         val stored = food.candidate
         val own = stored?.let { lookup(it.id) }?.takeIf { c -> Metric.MICROS.any { c.per100g?.containsKey(it.key) == true } }

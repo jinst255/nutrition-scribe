@@ -409,6 +409,11 @@ class EntryRepository(
         entryDao.deleteByIds(ids)
     }
 
+    /** Undo for a delete: the same entries back, ids, times, items and numbers as they were. */
+    suspend fun restore(entries: List<Entry>) {
+        entries.forEach { entryDao.upsert(it.toRow(), it.toNutrientRows()) }
+    }
+
     suspend fun dismissUnprocessed(entry: UnprocessedEntry) {
         unprocessedDao.delete(entry.toRow())
     }

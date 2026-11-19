@@ -23,7 +23,14 @@ data class RetentionWindow(
     }
 
     companion object {
-        val DEFAULT_PROTEIN_TOTALS = RetentionWindow(1, RetentionUnit.YEARS)
-        val DEFAULT_FOOD_DETAILS = RetentionWindow(3, RetentionUnit.MONTHS)
+        val FOREVER = RetentionWindow(0, RetentionUnit.INDEFINITE)
+
+        /**
+         * Both Forever (review F2): a year of logs is a few MB, and the old defaults
+         * (1 year, 3 months) dropped people's history without telling them. A shorter
+         * window is only ever set after a warning in Settings.
+         */
+        val DEFAULT_PROTEIN_TOTALS = FOREVER
+        val DEFAULT_FOOD_DETAILS = FOREVER
     }
 }

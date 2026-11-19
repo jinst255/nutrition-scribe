@@ -24,7 +24,7 @@ import com.nutritionscribe.app.data.db.UnprocessedDao
  *               "reset my settings" means the goals too; they are only in a
  *               different table for query reasons.
  *   API key   — every stored key, for every backend.
- *   label pack — the 40 MB of package labels. Kept by default: it is not the
+ *   label pack — the ~70 MB of package labels. Kept by default: it is not the
  *               user's data, it is slow to get back, and nothing in it is personal.
  *
  * The AI spending history goes with the food log: its rows point at entries.

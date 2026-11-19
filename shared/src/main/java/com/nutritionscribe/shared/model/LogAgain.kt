@@ -29,6 +29,25 @@ object LogAgain {
 
     fun key(e: Entry): String = e.name.trim().lowercase()
 
+    /** Units a person counts one at a time: "4 squares" can be one more square. */
+    private val COUNTED = setOf(null, "piece", "square", "slice", "cookie", "cracker", "chip", "egg", "bar", "nugget", "strip",
+        "stick", "wing", "taco", "meatball", "pancake", "waffle", "biscuit", "roll", "muffin", "dumpling", "shrimp")
+
+    /**
+     * The entry as one of what it counted ("1 square" of "4 squares"), for Log
+     * again's "just 1 more" (owner, 10-31: the 4 squares of chocolate came back as all
+     * 4 again). Null unless it is one food counted in whole pieces, more than one.
+     */
+    fun oneOf(e: Entry): Entry? {
+        val item = e.items.singleOrNull() ?: return null
+        val n = item.amount ?: return null
+        if (n < 2 || n != Math.floor(n) || n > 24 || item.unit !in COUNTED) return null
+        val f = 1.0 / n
+        val one = item.copy(amount = 1.0, grams = item.grams?.times(f), nutrients = item.nutrients.mapValues { it.value * f },
+            portion = item.unit?.let { "1 $it" } ?: "1")
+        return e.copy(items = listOf(one), nutrients = e.nutrients.mapValues { it.value * f })
+    }
+
     fun choices(entries: List<Entry>, nowMillis: Long, zone: ZoneId): List<Choice> {
         val since = nowMillis - HISTORY_DAYS * 86_400_000L
         val nowMinute = minuteOfDay(nowMillis, zone)

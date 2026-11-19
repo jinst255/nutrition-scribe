@@ -31,7 +31,7 @@ fun AiConsentDialog(kind: AiBackendKind, onAnswer: (Boolean) -> Unit) {
         title = { Text("Send food descriptions to ${p.name}?") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Highest quality mode uses ${p.name}'s AI through the API key on this phone. ${p.name} would get:", style = MaterialTheme.typography.bodyMedium)
+                Text("With offline mode off, the app uses ${p.name}'s AI through the API key on this phone. ${p.name} would get:", style = MaterialTheme.typography.bodyMedium)
                 p.sends.forEach { Row { Text("•  "); Text(it, style = MaterialTheme.typography.bodyMedium) } }
                 Text("What ${p.name} says it does with it", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(p.training, style = MaterialTheme.typography.bodyMedium)

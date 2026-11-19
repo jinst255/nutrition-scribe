@@ -18,7 +18,7 @@ import kotlin.concurrent.thread
 import kotlin.math.sqrt
 
 /**
- * Records the microphone to memory, for Highest quality mode's transcription.
+ * Records the microphone to memory, for OpenAI transcription (AI on).
  *
  * Plain 16 kHz mono PCM: what speech models are trained on, about 1.9 MB a
  * minute, and a WAV header is all it needs to upload. There is no pause

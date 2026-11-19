@@ -182,7 +182,8 @@ private fun WeekHeader(result: Ideas.Result, onRefresh: () -> Unit) {
 private fun IdeaCard(idea: Ideas.Idea, onDismiss: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val over = idea.kind == Ideas.Kind.OVER
-    val accent = if (over) scheme.error else scheme.primary
+    // Review V2: over a limit is Home's amber "over" colour, not error red (nothing broke).
+    val accent = if (over) com.nutritionscribe.app.ui.theme.limitColors().over else scheme.primary
     Card(colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.Top) {
@@ -204,12 +205,14 @@ private fun IdeaCard(idea: Ideas.Idea, onDismiss: () -> Unit) {
             val m = idea.metric
             if (avg != null && target != null && m != null && target > 0) {
                 Column(Modifier.padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    com.nutritionscribe.app.ui.home.HomeBar((avg / target).toFloat(), accent, unknown = false, modifier = Modifier.fillMaxWidth())
+                    // Past the limit, the bar rescales with a tick at the limit, as on Home.
+                    val bar = com.nutritionscribe.shared.model.Limits.bar(avg, target, null)
+                    com.nutritionscribe.app.ui.home.HomeBar(bar.fraction, accent, unknown = false, modifier = Modifier.fillMaxWidth(), targetTick = bar.targetTick)
                     Text(
                         "${com.nutritionscribe.app.ui.history.formatAmount(avg, m)} a day · " +
                             (if (over) "limit ${com.nutritionscribe.app.ui.history.formatAmount(target, m)}" else "you need ${com.nutritionscribe.app.ui.history.formatAmount(target, m)}"),
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (over) scheme.error else scheme.onSurfaceVariant,
+                        color = scheme.onSurfaceVariant,
                     )
                 }
             }

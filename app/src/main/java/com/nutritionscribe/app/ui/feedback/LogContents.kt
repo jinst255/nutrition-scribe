@@ -106,13 +106,13 @@ fun LogContentsScreen(where: String) {
                         listOfNotNull("Age ${pr.ageYears}", "${Math.round(pr.heightCm)} cm", "${Math.round(pr.weightKg)} kg",
                             pr.stage.takeIf { it != com.nutritionscribe.shared.model.Profile.LifeStage.NONE }?.label).joinToString(" · ")
                     } ?: "Not filled in",
-                    "So I can check your targets came out right.", first = true, onToggle = ::toggle)
+                    "So I can check your targets came out right.", first = true, onToggle = { p, on -> toggle(p, on) })
                 OptRow(LogPart.ACTIVITY, leaveOut, "Activity and aim",
-                    p?.let { "${it.activity.label} · ${it.aim.label}" } ?: "Not filled in", "Same reason.", onToggle = ::toggle)
+                    p?.let { "${it.activity.label} · ${it.aim.label}" } ?: "Not filled in", "Same reason.", onToggle = { p, on -> toggle(p, on) })
                 OptRow(LogPart.PLASMA, leaveOut, "Plasma donations",
-                    if (plasma.isEmpty()) "None" else if (plasma.size == 1) "1 day" else "${plasma.size} days", "Only matters if you donate.", onToggle = ::toggle)
+                    if (plasma.isEmpty()) "None" else if (plasma.size == 1) "1 day" else "${plasma.size} days", "Only matters if you donate.", onToggle = { p, on -> toggle(p, on) })
                 OptRow(LogPart.PHOTOS, leaveOut, "Label photos you scanned",
-                    if (photos == 1) "1 photo" else "$photos photos", "Shows me what the scanner misread.", onToggle = ::toggle)
+                    if (photos == 1) "1 photo" else "$photos photos", "Shows me what the scanner misread.", onToggle = { p, on -> toggle(p, on) })
             }
         }
         Text("Your API key is never included.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)

@@ -202,6 +202,61 @@ class NutritionFactsParserTest {
         assertEquals(20.0, p.perServing["calcium"]!!, 0.0)
     }
 
+    /**
+     * Owner, 2026-10-28, on a protein powder's detailed panel: "I think it missed
+     * a lot of these values." B vitamins, phosphorus, copper, manganese and choline
+     * were on the label and not read, so they were borrowed from the food list.
+     */
+    @Test
+    fun `a detailed panel's B vitamins and minerals are read`() {
+        val p = NutritionFactsParser.parse(
+            "Calories 130\nProtein 25g\nTotal Carbohydrate 3g\nTotal Fat 2g\nThiamin 0.6mg 50%\nRiboflavin 0.7mg 50%\n" +
+                "Niacin 8mg 50%\nVitamin B6 0.9mg 50%\nVitamin B12 1.2mcg 50%\nPhosphorus 250mg 20%\nCopper 0.3mg 35%\n" +
+                "Manganese 1.1mg 50%\nCholine 55mg 10%",
+        )
+        assertEquals(0.6, p.perServing["thiamin"]!!, 1e-9)
+        assertEquals(0.7, p.perServing["riboflavin"]!!, 1e-9)
+        assertEquals(8.0, p.perServing["niacin"]!!, 1e-9)
+        assertEquals(0.9, p.perServing["vitamin_b6"]!!, 1e-9)
+        assertEquals(1.2, p.perServing["vitamin_b12"]!!, 1e-9)
+        assertEquals(250.0, p.perServing["phosphorus"]!!, 1e-9)
+        assertEquals(0.3, p.perServing["copper"]!!, 1e-9)
+        assertEquals(1.1, p.perServing["manganese"]!!, 1e-9)
+        assertEquals(55.0, p.perServing["choline"]!!, 1e-9)
+    }
+
+    /**
+     * A tester's corn tortillas: the panel says Protein 1g, and the reader took the
+     * footer's "Calories per gram: Fat 9 • Carbohydrates 4 • Protein 4", so six
+     * tortillas logged 24 g of protein and the app flagged its own numbers. The
+     * footnote (and its 2,000 / 2,500 calorie table) is never the food.
+     */
+    @Test
+    fun `the footnote under the panel is not read as the food`() {
+        val p = NutritionFactsParser.parse(
+            "Nutrition Facts\nServing Size: 1 Tortilla (28.35 g)\nCalories 50 Calories From Fat 5\nTotal Fat 1g 0%\nSaturated Fat 0g\n" +
+                "Trans Fat 0g\nCholesterol 0mg\nSodium 10mg 1%\nTotal Carbohydrates 13g 4%\nDietary Fiber 1g\nSugars 0g\nProtein/Proteina 1g\n" +
+                "Calcium 4% Iron 2%\nPercent Daily Values are based on a 2,000 calorie diet.\nCalories 2,000 2,500\n" +
+                "Total Fat Less than 65g 80g\nSodium Less than 2,400mg 2,400mg\nTotal Carbohydrate 300g 375g\nDietary Fiber 25g 30g\n" +
+                "Calories per gram: Fat 9 Carbohydrates 4 Protein 4",
+        )
+        assertEquals(1.0, p.perServing["protein"]!!, 0.0)
+        assertEquals(50.0, p.perServing["calories"]!!, 0.0)
+        assertEquals(10.0, p.perServing["sodium"]!!, 0.0)
+        assertEquals(13.0, p.perServing["carbs"]!!, 0.0)
+        assertEquals(1.0, p.perServing["fiber"]!!, 0.0)
+        assertEquals(1.0, p.perServing["fat"]!!, 0.0)
+    }
+
+    /** The same tortilla panel exactly as the phone's text recogniser read it ("Proteln/Proteina 19", "Percenl Daly Values"). */
+    @Test
+    fun `the tortilla panel as the phone read it gives 1 g of protein, not the footer's 4`() {
+        val p = NutritionFactsParser.parse("23/202%\nNutrition Facts\nServ\nSeg Size: 1 Tortilla (28.35 g)\nVings Per Container: 100\nAmount Per Serving\nCalories 50 Calories From Fat 5\nTotal Fat 1g\nSaturated Fat Og\nTrans Fat Og\nCholesterol Omg\nSodlum 10mg\nTotal Carbohydrates 13g\nDietary Fiber 19\nSugars 0g\nProteln/Proteina 19\nVtamin A 0%\nCalcumlCaldo\n4%\nIngre\nPercenl Daly Values are based ona 2.000 calorie diet\nYour daly vaes may be higher or lower depending on your\nColoriles\nAmenos que\nmenos que\nnenos Que\nnenos QUe\nVitamin C 0%\nIron/Hierro 2%\n2, 000 2, 500\n650 80g\n200 259\n300mg 300mg\n2.400mg 2.400ng\n25\n% Daily Value\nProtein 4\n(Preservata\nPERISHABLE\nEEP REFRIGERATED\nER PIRCHAS\nLime\n0%\n0%\n0%\n1%\n4%\n5%")
+        assertEquals(1.0, p.perServing["protein"]!!, 0.0)
+        assertEquals(50.0, p.perServing["calories"]!!, 0.0)
+        assertEquals(13.0, p.perServing["carbs"]!!, 0.0)
+    }
+
     @Test
     fun `a weight on the front of the box is not calories`() {
         val p = NutritionFactsParser.parse("CALORIES\nNET WT 32.5 OZ (2 LB) 922 G")

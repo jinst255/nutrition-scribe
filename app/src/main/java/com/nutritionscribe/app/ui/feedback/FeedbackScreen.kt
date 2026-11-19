@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.feedback
 
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -71,6 +74,7 @@ enum class FeedbackKind { PROBLEM, IDEA, CHECK_IN }
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FeedbackScreen(kind: FeedbackKind = FeedbackKind.PROBLEM, onDone: () -> Unit = {}, onLogContents: () -> Unit = {}) {
+    com.nutritionscribe.app.ui.common.ScreenKeyboardFit()
     val events = ServiceLocator.debugEvents
     val settings = ServiceLocator.settingsRepository
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -85,7 +89,8 @@ fun FeedbackScreen(kind: FeedbackKind = FeedbackKind.PROBLEM, onDone: () -> Unit
     var saved by remember { mutableStateOf<String?>(null) }
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
+        // Sam: with the keyboard up the note box and Send sat under it. The page now ends above the keyboard.
+        Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         when (kind) {
@@ -297,6 +302,30 @@ fun BetaSection(onTellUs: () -> Unit, onIdea: () -> Unit, onSent: () -> Unit, on
                     dismissButton = { androidx.compose.material3.TextButton(onClick = { renaming = false }) { Text("Cancel") } },
                 )
             }
+            // Owner 2026-11-14: shaking replaced press-and-hold; on by default, off here.
+            val shakeOn by settings.shakeToReport.collectAsState(initial = com.nutritionscribe.app.ui.feedback.ShakeReport.DEFAULT_ON)
+            Column {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 60.dp).toggleable(
+                        value = shakeOn, role = androidx.compose.ui.semantics.Role.Switch,
+                        onValueChange = { on ->
+                            ServiceLocator.debugEvents.event("shake_to_report", "on" to on)
+                            scope.launch { settings.setShakeToReport(on) }
+                        },
+                    ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Icon(Icons.Outlined.Vibration, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Shake to report a problem", fontSize = 16.sp)
+                        Text("Shake your phone on any screen to note what's wrong.", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary)
+                    }
+                    androidx.compose.material3.Switch(checked = shakeOn, onCheckedChange = null)
+                }
+            }
             BetaRow(Icons.Outlined.ChatBubbleOutline, "Something's wrong? Tell us", onClick = onTellUs)
             BetaRow(Icons.Outlined.Lightbulb, "I have an idea", onClick = onIdea)
             BetaRow(Icons.Outlined.ListAlt, "What I've sent", trail = if (notes.isEmpty()) null else if (notes.size == 1) "1 note" else "${notes.size} notes", onClick = onSent)
@@ -305,15 +334,15 @@ fun BetaSection(onTellUs: () -> Unit, onIdea: () -> Unit, onSent: () -> Unit, on
     }
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.padding(top = 8.dp)) {
         Text(
-            buildTip(), style = MaterialTheme.typography.bodyMedium,
+            buildTip(settings.shakeToReport.collectAsState(initial = ShakeReport.DEFAULT_ON).value), style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
         )
     }
 }
 
-private fun buildTip() = androidx.compose.ui.text.buildAnnotatedString {
+private fun buildTip(shakeOn: Boolean) = androidx.compose.ui.text.buildAnnotatedString {
     pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)); append("Tip: "); pop()
-    append("press and hold anything that looks wrong for a second, then tap what it was. It stays on your phone until you send your log.")
+    append(ShakeReport.tip(shakeOn))
 }
 
 @Composable
@@ -333,7 +362,10 @@ private fun BetaRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title
     }
 }
 
-/** A test build ("1.4-test"): the Beta testing section shows. */
-fun isTestBuild(context: android.content.Context): Boolean = runCatching {
-    context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty().contains("test")
+/** A test build ("1.4-test") still in beta testing: the Beta testing section shows (see [BetaMode]). */
+fun isTestBuild(context: android.content.Context): Boolean = isTestVersion(context) && !BetaMode.hasLeft(context)
+
+/** A test build at all, whether or not they have left beta testing. */
+fun isTestVersion(context: android.content.Context): Boolean = runCatching {
+    BetaMode.isOn(context.packageManager.getPackageInfo(context.packageName, 0).versionName, left = false)
 }.getOrDefault(false)

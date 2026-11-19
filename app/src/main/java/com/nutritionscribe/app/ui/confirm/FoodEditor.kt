@@ -58,6 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
@@ -140,13 +141,28 @@ fun FoodEditor(
     val fixes = remember(d) { NutrientSanity.suggest(d.nutrients, d.grams) }
     val red = issues.mapNotNull { it.metrics.firstOrNull() }.toSet()
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    // Review L3: Back threw typed numbers away without a word. Ask when something changed.
+    var askDiscard by remember { mutableStateOf(false) }
+    val leave = { if (Undoable.editorChanged(draft, d)) askDiscard = true else onDismiss() }
+    // Sam (beta, Android 15+ with three-button nav): with decorFitsSystemWindows = false
+    // this dialog got no navigation-bar inset, so Done sat under the nav buttons.
+    // DialogKeyboardFit() makes its window cover the screen and fit nothing, so the
+    // paddings below are the real bar sizes.
+    Dialog(onDismissRequest = leave, properties = EditorDialog.PROPERTIES) {
+        com.nutritionscribe.app.ui.common.DialogKeyboardFit()
+        if (askDiscard) androidx.compose.material3.AlertDialog(
+            onDismissRequest = { askDiscard = false },
+            title = { Text("Discard your changes?") },
+            text = { Text("What you changed here won't be kept.") },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { askDiscard = false; onDismiss() }) { Text("Discard") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { askDiscard = false }) { Text("Keep editing") } },
+        )
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
                 Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back without saving") }
+                    IconButton(onClick = leave) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back without saving") }
                     Column(Modifier.weight(1f)) {
-                        Text(d.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Text(com.nutritionscribe.app.ui.common.shownFoodName(d.name), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         partOf?.let { Text("In: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 1) }
                     }
                 }
@@ -155,8 +171,10 @@ fun FoodEditor(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        if (d.status == Resolver.Status.REMEMBERED) "Your usual" else ItemDraft.label(d.candidate?.origin) +
-                            (d.candidate?.labelServingText?.let { " · label serving $it" } ?: ""),
+                        (if (d.status == Resolver.Status.REMEMBERED) "Your usual" else ItemDraft.label(d.candidate) +
+                            (d.candidate?.labelServingText?.let { " · label serving $it" } ?: "")) +
+                            // The source's own name, in full, here and only here (review L2).
+                            (d.candidate?.let { c -> ItemDraft.withBrand(c, " ") }?.takeIf { it != com.nutritionscribe.app.ui.common.shownFoodName(d.name) }?.let { "\n$it" } ?: ""),
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary,
                     )
                     HowMuch(d) { d = it }
@@ -211,17 +229,20 @@ private fun HowMuch(d: ItemDraft, onChange: (ItemDraft) -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedIconButton(onClick = { onChange(d.withAmount(com.nutritionscribe.shared.resolve.Units.bump(d.item.unit, d.amount, -1))) },
                     modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.Remove, contentDescription = "Less") }
-                var amountText by remember(d.amount) { mutableStateOf(com.nutritionscribe.shared.resolve.Units.format(d.amount)) }
+                var amountBox by remember { mutableStateOf(com.nutritionscribe.app.ui.common.TypedNumber("")) }
                 Box(Modifier.heightIn(min = 48.dp).width(76.dp).border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp)),
                     contentAlignment = Alignment.Center) {
                     BasicTextField(
-                        value = amountText,
-                        onValueChange = { t -> amountText = t; parseAmount(t)?.let { onChange(d.withAmount(it)) } },
+                        value = amountBox.shown(d.amount, com.nutritionscribe.shared.resolve.Units::format),
+                        onValueChange = { t -> amountBox = amountBox.type(t); parseAmount(t)?.let { onChange(d.withAmount(it)) } },
                         singleLine = true,
                         textStyle = NumberStyle.copy(fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurface, textAlign = androidx.compose.ui.text.style.TextAlign.Center),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        modifier = Modifier.padding(horizontal = 8.dp),
+                        modifier = Modifier.padding(horizontal = 8.dp).onFocusChanged { f ->
+                            if (f.isFocused && !amountBox.focused) amountBox = com.nutritionscribe.app.ui.common.TypedNumber(com.nutritionscribe.shared.resolve.Units.format(d.amount), true)
+                            else if (!f.isFocused && amountBox.focused) amountBox = amountBox.focus(false)
+                        },
                     )
                 }
                 OutlinedIconButton(onClick = { onChange(d.withAmount(com.nutritionscribe.shared.resolve.Units.bump(d.item.unit, d.amount, +1))) },
@@ -374,9 +395,10 @@ private fun NutrientBox(m: Metric, value: Double?, kind: BoxKind, percent: Boole
     val scheme = MaterialTheme.colorScheme
     val dv = m.defaultTarget
     val asPct = percent && m != Metric.CALORIES && dv > 0
-    var text by remember(value, asPct) {
-        mutableStateOf(value?.let { if (asPct) Math.round(it / dv * 100).toString() else fmt(it) }.orEmpty())
-    }
+    val format: (Double) -> String = { if (asPct) Math.round(it / dv * 100).toString() else fmt(it) }
+    // Their text while they type (see TypedNumber): cleared to retype, it came back as the old number.
+    var box by remember { mutableStateOf(com.nutritionscribe.app.ui.common.TypedNumber("")) }
+    val text = box.shown(value, format)
     val labelColor = when (kind) { BoxKind.DASHED -> com.nutritionscribe.app.ui.theme.limitColors().over; BoxKind.RED -> scheme.error; else -> scheme.secondary }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(m.panelLabel.replace("Total carbohydrate", "Carbs"), style = MaterialTheme.typography.labelMedium, color = labelColor, maxLines = 1)
@@ -386,15 +408,21 @@ private fun NutrientBox(m: Metric, value: Double?, kind: BoxKind, percent: Boole
                 BasicTextField(
                     value = text,
                     onValueChange = { t ->
-                        text = t
-                        val v = t.replace(',', '.').toDoubleOrNull()
-                        onSet(if (t.isBlank()) null else v?.let { if (asPct) it / 100.0 * dv else it } ?: value)
+                        box = box.type(t)
+                        box.typed?.let { v -> onSet(if (asPct) v / 100.0 * dv else v) }
                     },
                     singleLine = true,
                     textStyle = NumberStyle.copy(fontSize = 14.5.sp, color = scheme.onSurface),
                     cursorBrush = SolidColor(scheme.primary),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().onFocusChanged { f ->
+                        if (f.isFocused && !box.focused) box = com.nutritionscribe.app.ui.common.TypedNumber(value?.let(format).orEmpty(), true)
+                        else if (!f.isFocused && box.focused) {
+                            // Left empty: back to the number it had before they typed over it.
+                            if (box.text.isBlank()) onSet(null)
+                            box = box.focus(false)
+                        }
+                    },
                 )
             }
             Text(if (asPct) "%" else m.unit, style = MaterialTheme.typography.labelMedium, color = scheme.secondary)
@@ -421,9 +449,15 @@ private fun NotThis(d: ItemDraft, search: suspend (String) -> List<FoodCandidate
         results.take(8).forEach { c ->
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onPick(c) }.padding(vertical = 8.dp, horizontal = 4.dp)) {
                 Text(listOfNotNull(c.brand, c.name).distinct().joinToString(" — "), style = MaterialTheme.typography.bodyMedium)
-                Text(ItemDraft.label(c.origin) + (c.labelServingText?.let { " · $it" } ?: ""), style = MaterialTheme.typography.labelSmall,
+                Text(ItemDraft.label(c) + (c.labelServingText?.let { " · $it" } ?: ""), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.secondary)
             }
         }
     }
+}
+
+
+/** The food editor's window: full width, fitted between the system bars (see FoodEditor). */
+object EditorDialog {
+    val PROPERTIES = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
 }

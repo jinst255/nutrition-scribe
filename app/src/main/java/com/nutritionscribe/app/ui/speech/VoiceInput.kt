@@ -48,7 +48,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.input.pointer.pointerInput
-import com.nutritionscribe.app.ui.feedback.holdFeedbackExempt
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -74,7 +73,7 @@ import kotlinx.coroutines.withContext
  * Two engines behind one face:
  *  - the phone's own recogniser, free and on the phone, kept listening across
  *    pauses by [ContinuousRecognizer];
- *  - in Highest quality mode with an OpenAI key, a plain recording sent to
+ *  - with AI on (not offline) and an OpenAI key, a plain recording sent to
  *    OpenAI's speech model when the person stops — better with brand names and
  *    numbers, and it cannot cut anyone off because it does not listen for pauses
  *    at all.
@@ -122,7 +121,7 @@ class VoiceController(
     fun start(mode: MicMode) {
         if (isActive || state is State.Transcribing) return
         this.mode = mode
-        com.nutritionscribe.app.ui.feedback.HoldFeedback.voiceBusy = true
+        com.nutritionscribe.app.ui.feedback.ShakeReport.voiceBusy = true
         if (freshTagEachTime) tag = java.util.UUID.randomUUID().toString()
         startedAt = System.currentTimeMillis()
         val transcriber = ServiceLocator.cloudTranscriber()
@@ -131,7 +130,7 @@ class VoiceController(
     }
 
     fun stop(reason: String) {
-        com.nutritionscribe.app.ui.feedback.HoldFeedback.voiceBusy = false
+        com.nutritionscribe.app.ui.feedback.ShakeReport.voiceBusy = false
         if (!isActive) return
         events.event("speech_stop", "reason" to reason, "held_ms" to System.currentTimeMillis() - startedAt)
         val s = state as State.Listening
@@ -213,7 +212,7 @@ class VoiceController(
 
     private fun transcribe(wav: ByteArray) {
         val t = ServiceLocator.cloudTranscriber() ?: run {
-            state = State.Failed("Highest quality mode is off, so there's nothing to send this to.", canRetry = false)
+            state = State.Failed("Offline mode is on, so this stays on the phone and there's nothing to send it to.", canRetry = false)
             return
         }
         state = State.Transcribing
@@ -301,13 +300,15 @@ fun MicButton(
             .background(if (listening) scheme.error else scheme.primary)
             .semantics {
                 contentDescription = label
-                onClick(label) {
-                    if (mode == MicMode.TAP) { if (listening) controller.stop("tap") else controller.start(mode) }
+                // TalkBack can't hold a button: its click starts and stops in either mode (review F8).
+                onClick(if (listening) "Stop and send" else "Start talking") {
+                    when (MicA11y.onClick(listening)) {
+                        MicA11y.Action.START -> if (controller.hasPermission()) controller.start(MicMode.TAP) else explain = true
+                        MicA11y.Action.STOP -> controller.stop("a11y_click")
+                    }
                     true
                 }
             }
-            // Holding to talk is never "hold for feedback".
-            .holdFeedbackExempt()
             // Keyed on the mode only: restarting this while a finger is down (as a
             // key on "listening" would) cancels the hold the moment it begins.
             .pointerInput(mode) {
@@ -352,7 +353,7 @@ fun MicButton(
             androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 // The level shows in the icon, since a wide button cannot pulse.
                 Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp).scale(pulse))
-                Text(caption, style = MaterialTheme.typography.labelLarge, color = tint, maxLines = 1)
+                Text(caption, style = MaterialTheme.typography.labelLarge.copy(fontSize = com.nutritionscribe.app.ui.common.cappedSp(14f)), color = tint, maxLines = 1)
             }
         }
     }
@@ -410,7 +411,7 @@ fun ListeningPanel(controller: VoiceController, mode: MicMode, modifier: Modifie
                             color = MaterialTheme.colorScheme.error,
                         )
                         Text(
-                            if (state.cloud) "Highest quality" else "On this phone",
+                            if (state.cloud) "OpenAI speech" else "On this phone",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.secondary,
                         )
@@ -544,4 +545,11 @@ fun PermissionWhy(
             androidx.compose.material3.TextButton(onClick = onLater, modifier = Modifier.fillMaxWidth()) { Text(later) }
         }
     }
+}
+
+/** What a screen reader's click on the mic does. Holding to talk can't be done with TalkBack, so it is a toggle. */
+object MicA11y {
+    enum class Action { START, STOP }
+
+    fun onClick(listening: Boolean): Action = if (listening) Action.STOP else Action.START
 }

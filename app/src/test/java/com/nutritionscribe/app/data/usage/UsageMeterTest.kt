@@ -46,6 +46,28 @@ class UsageMeterTest {
         assertEquals((400 * 0.20 + 600 * 0.02 + 400 * 1.20) / 1e6, row.costUsd, 1e-12)
     }
 
+    /**
+     * Web search (owner, 2026-11-14: "make sure to add the costs correctly"): a
+     * Responses API call reports input_tokens/output_tokens, not prompt_ and
+     * completion_, and each search it ran costs $0.01 on top. Read as a chat call
+     * it came to $0, so the spending screen would have hidden every search.
+     */
+    @Test
+    fun webSearchCountsItsTokensAndEachSearch() {
+        val response = """{"model":"gpt-6-luna","output":[{"type":"web_search_call","id":"ws1","status":"completed"},
+            {"type":"web_search_call","id":"ws2","status":"completed"},{"type":"message","content":[]}],
+            "usage":{"input_tokens":3000,"input_tokens_details":{"cached_tokens":1000},"output_tokens":200}}"""
+        meter.recordHttp("https://api.openai.com/v1/responses", """{"model":"gpt-6-luna"}""", 200, response, 4000, UsageKind.WEB_SEARCH)
+        val row = dao.rows.single()
+        assertEquals("WEB_SEARCH", row.kind)
+        assertEquals(3000, row.inputTokens)
+        assertEquals(1000, row.cachedInputTokens)
+        assertEquals(200, row.outputTokens)
+        val tokens = (2000 * 0.10 + 1000 * 0.01 + 200 * 0.50) / 1e6
+        assertEquals(tokens + 2 * PriceBook.WEB_SEARCH_PER_CALL, row.costUsd, 1e-12)
+        assertEquals(0.01, PriceBook.WEB_SEARCH_PER_CALL, 0.0)
+    }
+
     @Test
     fun anthropicCountsCacheReadsOnTopOfInput() {
         val response = """{"model":"claude-haiku-4-5","usage":{"input_tokens":200,"cache_read_input_tokens":800,"output_tokens":100}}"""

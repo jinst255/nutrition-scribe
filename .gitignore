@@ -11,6 +11,21 @@ local.properties
 # Personal food log exports — real data, never commit.
 protein-scribe-export*.json
 nutrition-scribe-export*.json
+# The app's own export, fix and backup names (nutrition-scribe-2026-11-19.json, …-fix-…, .csv).
+nutrition-scribe-20*.json
+nutrition-scribe-20*.csv
+nutrition-scribe-fix-*.json
+nutrition-scribe-undo-fix-*.json
+
+# Beta testers' logs and screenshots — friends' personal data, kept offline.
+# The app names each zip after the tester, so catch stray copies too.
+beta-tester-logs/
+nutrition-scribe-debug-*.zip
+# The owner's phone pulls (debug logs, screenshots, exports) live in ~/nutrition-scribe-data/,
+# outside the repo. Copies dropped into the working tree stay out of git too.
+nutrition-scribe-data/
+phone-20*/
+debug-logs/
 
 # Python bytecode
 __pycache__/

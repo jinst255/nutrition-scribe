@@ -43,7 +43,7 @@ object Streak {
      * [counted] is every day that met the rule. Today counts if it already has;
      * if not, it is [DayState.PENDING] and the run from yesterday still stands.
      */
-    fun compute(counted: Set<LocalDate>, today: LocalDate, restPerWeek: Int): Result {
+    fun compute(counted: Set<LocalDate>, today: LocalDate, restPerWeek: Int, weekStart: DayOfWeek = DayOfWeek.MONDAY): Result {
         val first = counted.minOrNull() ?: return Result(0, 0, null, emptyMap(), restPerWeek)
         val days = LinkedHashMap<LocalDate, DayState>()
         var run = 0
@@ -52,7 +52,7 @@ object Streak {
         val restUsed = HashMap<LocalDate, Int>()
         var d = first
         while (!d.isAfter(today)) {
-            val week = d.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+            val week = d.with(TemporalAdjusters.previousOrSame(weekStart))
             when {
                 d in counted -> { run++; days[d] = DayState.COUNTED }
                 d == today -> days[d] = DayState.PENDING

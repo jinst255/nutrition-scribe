@@ -12,6 +12,12 @@ import com.nutritionscribe.shared.food.FoodQuery
  * butter, avocado, bread and cheese a second time, and a generic 600 g sandwich
  * on top. A food that is already a line is that line: with an amount it sets the
  * amount, without one it was only being pointed at.
+ *
+ * Saying what a line IS ("that bacon is low sodium bacon", "it was Great Value")
+ * used to add the words as a food of their own: the owner said "That bacon is low
+ * sodium bacon, previously scanned" and got a new line called "previously scanned";
+ * "It was great value" about a pumpkin pie added a food called "value". Those are
+ * now a [Change.Swap] of that line, and talk about scanning is never a food.
  */
 object Changes {
 
@@ -22,7 +28,31 @@ object Changes {
         data class Remove(val line: Int) : Change()
         /** New food, as words for the resolver. */
         data class Add(val text: String) : Change()
+        /** The same line, but this food: [text] are the words to look it up by (amount kept). */
+        data class Swap(val line: Int, val text: String) : Change()
+        /** Words about a line that couldn't be pinned to one ("great value" with three lines). */
+        data class Unclear(val text: String) : Change()
     }
+
+    /** "previously scanned", "the one I scanned": where the food came from, never a food. */
+    private val SCAN_TALK = Regex("^(?:it's |its |it was |that's |the one )?(?:i |i've |we )?(?:previously |already |just |had )?(?:scanned|scan(?:ned)? (?:it|in)|from (?:the|my) (?:label|scan))(?: (?:it|in|before|earlier|already|previously|last time|yesterday|the label))*$")
+
+    /** Words that make a kind of the same food: "low sodium bacon", "multi grain bread". */
+    private val KIND_WORDS = setOf(
+        "low", "reduced", "less", "no", "sodium", "salt", "salted", "unsalted", "fat", "free", "nonfat", "lowfat",
+        "lite", "light", "diet", "zero", "sugar", "added", "unsweetened", "sweetened", "whole", "wheat", "white",
+        "multi", "multigrain", "grain", "organic", "lean", "extra", "skim", "thick", "thin", "cut", "center",
+        "original", "plain", "regular", "turkey", "pork", "beef", "chicken", "smoked", "uncured", "honey", "maple",
+        "sliced", "slices", "real", "classic", "natural", "keto", "protein", "high", "fiber",
+    )
+
+    /** The words of a line that say what food it is, for "it was great value" → "great value pumpkin pie". */
+    private fun foodOf(l: Line) = l.food.ifBlank { l.name.substringAfter(" — ") }
+
+    /** The words to look up a swapped line by, with its amount so the new food keeps it. */
+    fun swapQuery(words: String, amount: Double?, unit: String?): String =
+        listOfNotNull(amount?.takeIf { it > 0 }?.let { Units.format(it) }, unit?.takeIf { amount != null }, words)
+            .joinToString(" ")
 
     private val REMOVE = Regex("^(?:please\\s+)?(?:remove|delete|take out|take off|drop|get rid of|scratch|minus|no|without|there was no|there wasn't any|i didn't have|i did not have|didn't have|not)\\s+(?:the\\s+|any\\s+|my\\s+)?(.+)$")
     private val ADD_LEAD = Regex("^(?:please\\s+)?(?:add|plus|also add|and also|also|and|include|put in|throw in|i also had|also had|there was also|there was|there were)\\s+")
@@ -41,13 +71,19 @@ object Changes {
     ): List<Change> {
         val out = mutableListOf<Change>()
         val adds = mutableListOf<String>()
+        /** The line the last clause was about: "that bacon, it was great value". */
+        var lastLine: Int? = null
+        fun qualifierOnly(words: List<String>) = words.isNotEmpty() &&
+            (words.all { isBrandWord(it) } || words.all { it in KIND_WORDS || isBrandWord(it) })
         for (raw in clauses(text)) {
             var clause = raw.trim().trim('.', ',', '!', '?').trim()
             if (clause.isBlank()) continue
+            if (SCAN_TALK.matches(ItemParser.normaliseText(clause).trim())) continue
 
             val removed = REMOVE.find(clause)?.let { m -> match(m.groupValues[1], lines) }
             if (removed != null) { out += Change.Remove(removed); continue }
 
+            val explicitAdd = ADD_LEAD.containsMatchIn(clause)
             clause = CHANGE_LEAD.replace(clause, "").trim()
             // "the milk to 300 ml": a line, then its new amount.
             val xIs = X_IS_AMOUNT.find(clause)
@@ -55,6 +91,28 @@ object Changes {
             val xAmount = xIs?.let { amountOnly(it.groupValues[2]) }
             if (xLine != null && xAmount != null) {
                 out += Change.SetAmount(xLine, xAmount.first, xAmount.second, xAmount.second != null)
+                lastLine = xLine
+                continue
+            }
+            // "that bacon is low sodium bacon", "the bread was multi grain": the line is another kind.
+            if (xLine != null && !explicitAdd) {
+                val right = ItemParser.cleanFood(ItemParser.normaliseText(xIs.groupValues[2]))
+                val rw = FoodQuery.contentWords(right)
+                val head = FoodQuery.contentWords(foodOf(lines[xLine])).lastOrNull()
+                when {
+                    rw.isNotEmpty() && head != null && head in rw && match(right, lines) == xLine -> {
+                        out += Change.Swap(xLine, right); lastLine = xLine; continue
+                    }
+                    qualifierOnly(right.split(" ").filter { it.isNotBlank() }) -> {
+                        out += Change.Swap(xLine, "$right ${foodOf(lines[xLine])}"); lastLine = xLine; continue
+                    }
+                }
+            }
+            // "great value", "low sodium": a brand or kind with no food, about one line.
+            val plain = ItemParser.cleanFood(ItemParser.normaliseText(clause))
+            if (!explicitAdd && amountOnly(clause) == null && qualifierOnly(plain.split(" ").filter { it.isNotBlank() })) {
+                val i = lastLine ?: lines.indices.singleOrNull()
+                out += if (i != null) Change.Swap(i, "$plain ${foodOf(lines[i])}") else Change.Unclear(plain)
                 continue
             }
             // "2 slices", "half": an amount with no food, for the only line it fits.
@@ -74,6 +132,7 @@ object Changes {
                 val foodWords = FoodQuery.contentWords(item.food)
                 if (foodWords.isEmpty()) continue
                 val i = match(item.food, lines)
+                if (i != null) lastLine = i
                 when {
                     // A line said again with an amount: that line's new amount.
                     i != null && item.amount != null -> out += Change.SetAmount(i, item.amount, item.unit, item.unit != null)

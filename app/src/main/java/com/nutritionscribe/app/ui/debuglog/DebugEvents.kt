@@ -196,7 +196,10 @@ class DebugEvents(
                 bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true) else bitmap
             val name = "$prefix-" + SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date()) + ".jpg"
             File(scanDir, name).outputStream().use { small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, it) }
-            scanDir.listFiles()?.sortedByDescending { it.name }?.drop(MAX_SCANS)?.forEach { it.delete() }
+            val files = scanDir.listFiles().orEmpty().associateBy { it.name }
+            val gone = DebugPhotos.toDelete(files.keys, MAX_SCANS, MAX_SPOTS)
+            gone.forEach { files[it]?.delete() }
+            event("photo_saved", "name" to name, "bytes" to File(scanDir, name).length(), "deleted" to gone)
             name
         }.getOrNull()
     }
@@ -305,6 +308,7 @@ class DebugEvents(
     companion object {
         private const val MAX_BYTES = 8L * 1024 * 1024
         private const val MAX_SCANS = 20
+        private const val MAX_SPOTS = 60
 
         private val KEY_PATTERN = Regex("""(sk-[A-Za-z0-9_\-]{8,}|sk-ant-[A-Za-z0-9_\-]{8,})""")
 

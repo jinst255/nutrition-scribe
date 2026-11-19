@@ -264,6 +264,26 @@ object Portions {
     /** A cup of chopped vegetables or cooked rice is 120–160 g; dry cereal far less. */
     private const val SOLID_G_PER_ML = 0.55
 
+    /**
+     * One of a volume unit at the rough [SOLID_G_PER_ML] (a tablespoon at 8.13 g):
+     * a weight nobody measured. Remembered as a food's own, it halved a tester's
+     * peanut butter; [FoodRepair.roughWeight] looks for it.
+     */
+    fun isRoughVolume(gramsPerUnit: Double): Boolean =
+        ML.values.any { kotlin.math.abs(gramsPerUnit - it * SOLID_G_PER_ML) < 0.001 }
+
+    /** "1 tbsp", "2 Tablespoons", "0.5 cup", "30 mL" -> millilitres; null when the label is not a volume. */
+    fun volumeMl(label: String): Double? {
+        val low = label.lowercase().replace(Regex("\\bfl\\.?\\s*oz\\b"), "floz")
+        val m = Regex("^\\s*(\\d+(?:\\.\\d+)?(?:\\s*/\\s*\\d+)?)\\s*([a-z]+)\\b").find(low) ?: return null
+        val unit = ItemParser.UNITS[m.groupValues[2]] ?: m.groupValues[2]
+        val ml = ML[unit] ?: return null
+        return labelAmount(m.groupValues[1]) * ml
+    }
+
+    /** Grams above which one whole of a food is not a portion anyone means by its name alone. */
+    private const val HUGE_WHOLE = 400.0
+
     /** "a little bit of cheese": about a third of an ordinary portion. */
     const val LITTLE = 0.35
     /** …and inside a wrap, where the filling portion is already small. */
@@ -351,6 +371,11 @@ object Portions {
             }
             val named = food.portions.filter { labelSays(it.label, unit) }
             if (named.isNotEmpty()) return Answer(plainest(named), "listed portion")
+            // Another volume on record gives the food's own density: a honey label's
+            // "1 tbsp (21 g)" makes a teaspoon 7 g. Without it, a teaspoon came out at
+            // the rough 2.7 g below, and that was remembered.
+            food.portions.firstNotNullOfOrNull { p -> volumeMl(p.label)?.takeIf { it > 0 }?.let { ml -> p.grams / ml } }
+                ?.let { gramsPerMl -> return Answer(gramsPerMl * ML.getValue(unit), "from the label's own measure") }
             // By the drink's own weight per mL, the same one used to show it back in
             // mL: as water, 300 mL of milk came back as 291 mL.
             if (com.nutritionscribe.shared.model.Liquids.isLiquid(food.name, food.labelServingText) ||
@@ -389,7 +414,14 @@ object Portions {
         // only for foods whose listed portions are no help.
         if (unit == null || unit == "piece") {
             // The floor only guards an uncounted "one": "10 chips" really is ten chips.
-            itemPortion(food)?.let { if (it >= default * 0.25 || counted) return Answer(it, "one of it") }
+            itemPortion(food)?.let { whole ->
+                // Nothing said about a food whose one is huge (a pineapple, a melon, a
+                // cabbage): a serving, never the whole thing (review F6: 905 g of pineapple).
+                if (item.amount == null && whole > HUGE_WHOLE && default < whole) {
+                    return Answer(default, "a serving · a whole one is ${whole.toInt()} g")
+                }
+                if (whole >= default * 0.25 || counted) return Answer(whole, "one of it")
+            }
         }
         if (unit == null) best(RULES, itemWords, null, counted)?.let { return Answer(it.grams, it.note) }
         if (food.origin == Origin.LABEL && food.labelServingGrams != null) {

@@ -51,7 +51,16 @@ data class ItemDraft(
     /** "2", "0.5" — the amount as said, or one. */
     val amount: Double get() = item.amount ?: 1.0
 
-    fun withAmount(amount: Double): ItemDraft = recompute(item.copy(amount = amount.coerceAtLeast(0.0)))
+    fun withAmount(amount: Double): ItemDraft {
+        // With no amount, a label's line is one serving; with one and no unit, a count
+        // of pieces. Stepping must not switch between them (30 g went to 7.5 g on −):
+        // the first step names what was being counted.
+        val unit = item.unit ?: "serving".takeIf {
+            item.amount == null && candidate?.origin == Origin.LABEL && candidate.labelServingGrams != null &&
+                grams != null && kotlin.math.abs(grams - candidate.labelServingGrams!!) < 0.01
+        }
+        return recompute(item.copy(amount = amount.coerceAtLeast(0.0), unit = unit), sameUnit = true)
+    }
 
     fun withUnit(unit: String?): ItemDraft = recompute(item.copy(unit = unit))
 
@@ -96,11 +105,43 @@ data class ItemDraft(
     fun withCandidate(c: FoodCandidate): ItemDraft = copy(candidate = c, alternates = (listOfNotNull(candidate) + alternates - c).distinctBy { it.id },
         weak = false, untouched = false, overrides = emptyMap()).recompute(item)
 
+    /**
+     * A label scanned onto this line. The same product: only the numbers it was
+     * missing are filled in (a barcode with no potassium), and those keys come back
+     * so the screen can say so and offer the rest. Another product: it becomes that.
+     */
+    fun withLabelScan(c: FoodCandidate): Pair<ItemDraft, Set<String>> {
+        val mine = candidate
+        if (mine == null || computed.isEmpty() || !sameProduct(mine, c)) return withCandidate(c) to emptySet()
+        val theirs = withCandidate(c).computed
+        val filled = theirs.keys - computed.keys
+        return copy(computed = computed + theirs.filterKeys { it in filled }, untouched = false) to filled
+    }
+
     fun withNutrient(key: String, value: Double?): ItemDraft =
         copy(overrides = if (value == null) overrides - key else overrides + (key to value), untouched = false)
 
-    private fun recompute(newItem: ItemParser.Item): ItemDraft {
-        val c = candidate ?: return copy(item = newItem, untouched = false)
+    /**
+     * Numbers typed by hand, carried to a new amount. They were kept as they were,
+     * so after the owner typed in a nutrient (11-16) the amount stopped changing
+     * that number: "When I manually edit in one of the nutrients the values it stops
+     * scaling." A number typed for 2 slices is half as much for 1.
+     */
+    private fun scaledOverrides(newGrams: Double?, newAmount: Double): Map<String, Double> {
+        if (overrides.isEmpty()) return overrides
+        val oldAmount = item.amount ?: 1.0
+        val r = when {
+            grams != null && grams > 0 && newGrams != null && newGrams > 0 -> newGrams / grams
+            oldAmount > 0 -> newAmount / oldAmount
+            else -> 1.0
+        }
+        return if (r == 1.0) overrides else overrides.mapValues { it.value * r }
+    }
+
+    /** [sameUnit]: only the amount changed, whatever the unit is now called. */
+    private fun recompute(newItem: ItemParser.Item, sameUnit: Boolean = newItem.unit == item.unit): ItemDraft {
+        val c = candidate ?: return copy(item = newItem, untouched = false,
+            overrides = scaledOverrides(null, newItem.amount ?: 1.0))
         // A label with no weight printed (vitamin gummies: "2 gummies") is counted in its
         // servings. Before, a scan put on an empty line scaled that line's own empty
         // numbers, and the entry saved with no nutrients at all under a made-up 50 g.
@@ -110,16 +151,18 @@ data class ItemDraft(
             newItem.statedProteinG?.let { n = n + ("protein" to it) }
             val note = (if (servings == 1.0) "1 serving" else "${fmtServings(servings)} servings") +
                 (c.labelServingText?.trim()?.trimStart(':', ' ')?.takeIf { it.isNotBlank() }?.let { " ($it each)" } ?: "")
-            return copy(item = newItem, grams = null, portionNote = note, computed = n, untouched = false)
+            return copy(item = newItem, grams = null, portionNote = note, computed = n, untouched = false,
+                overrides = scaledOverrides(null, newItem.amount ?: 1.0))
         }
         var portion = Portions.gramsFor(c, newItem)
-        // A food rebuilt from a logged entry can have no portion for its own unit
-        // ("2 eggs" with no egg on record): the weight came back unchanged, and "1 egg"
-        // still counted 100 g. Same unit, new amount: the weight follows the amount.
+        // Same unit, new amount: the weight follows the amount, always. A line's weight
+        // per unit is already settled (by their usual, a label, the AI); looking it up
+        // again could only change it. A food rebuilt from a logged entry with no egg
+        // on record counted "1 egg" at 100 g, and an AI's peanut butter re-weighed by
+        // the rough 0.55 g/mL guess lost half its weight, learned for every log after.
         val oldAmount = item.amount ?: 1.0
         val newAmount = newItem.amount ?: 1.0
-        if (grams != null && grams > 0 && newItem.unit == item.unit && newAmount != oldAmount && oldAmount > 0 &&
-            (portion == null || kotlin.math.abs(portion.grams - grams) < 0.01)) {
+        if (grams != null && grams > 0 && sameUnit && newAmount != oldAmount && oldAmount > 0) {
             val g = grams * newAmount / oldAmount
             portion = Portions.Answer(g, amountText(g))
         }
@@ -133,8 +176,9 @@ data class ItemDraft(
         }
         var stated = n
         newItem.statedProteinG?.let { stated = stated + ("protein" to it) }
-        return copy(item = newItem, grams = portion?.grams ?: grams, portionNote = portion?.how ?: portionNote,
-            computed = stated, untouched = false)
+        val newGrams = portion?.grams ?: grams
+        return copy(item = newItem, grams = newGrams, portionNote = portion?.how ?: portionNote,
+            computed = stated, untouched = false, overrides = scaledOverrides(newGrams, newItem.amount ?: 1.0))
     }
 
     companion object {
@@ -188,11 +232,35 @@ data class ItemDraft(
             )
         }
 
+        /**
+         * One product, whatever its source: the same brand, and one name says nothing
+         * the other doesn't ("Chobani strawberry greek yogurt" is the barcode's
+         * "Chobani — Strawberry Blended Nonfat Greek Yogurt").
+         *
+         * It used to be "most of the same words", brand words included. The owner's
+         * scan of their sliced low-sodium bacon (11-18) shared "great value bacon" with
+         * the line's Great Value Real Bacon Pieces, so it only filled gaps and kept the
+         * bits' 7 g serving: 5 slices logged as 17.5 g and 75 kcal. Their multi-grain
+         * bread's label was kept as 100% Whole Wheat the same way. A label they scan for
+         * a line is the food in their hand; another kind becomes it.
+         */
+        fun sameProduct(a: FoodCandidate, b: FoodCandidate): Boolean {
+            if (a.id == b.id) return true
+            if (!a.brand.orEmpty().trim().equals(b.brand.orEmpty().trim(), ignoreCase = true)) return false
+            val wa = com.nutritionscribe.shared.food.FoodQuery.contentWords(a.name).toSet()
+            val wb = com.nutritionscribe.shared.food.FoodQuery.contentWords(b.name).toSet()
+            if (wa.isEmpty() || wb.isEmpty()) return false
+            return (wa intersect wb).size >= minOf(2, minOf(wa.size, wb.size)) && (wa.containsAll(wb) || wb.containsAll(wa))
+        }
+
         /** "Sun-maid — California Raisins", not "Sun-maid — Sun-maid California Raisins". */
         fun withBrand(c: FoodCandidate, sep: String): String {
             val b = c.brand?.trim()?.takeIf { it.isNotBlank() && !c.name.contains(it, ignoreCase = true) }
             return if (b != null) "$b$sep${c.name}" else c.name
         }
+
+        /** Where a food's numbers came from, as the card says it. */
+        fun label(c: FoodCandidate?): String = if (c?.id?.startsWith("web:") == true) "Found online" else label(c?.origin)
 
         fun label(origin: Origin?): String = when (origin) {
             Origin.PERSONAL -> "Your usual"

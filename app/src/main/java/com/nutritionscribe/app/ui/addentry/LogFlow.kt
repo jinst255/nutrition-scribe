@@ -51,7 +51,16 @@ object LogFlow {
         val pipeline = ServiceLocator.logPipeline
         ServiceLocator.debugEvents.event("submit_text", "how" to how, "text" to text, "tag" to t, "day" to LogDay.date?.toString())
         return try {
-            val r = pipeline.resolve(text, tag = t, how = how)
+            // The local answer first. Their own food needs no AI: it logs now. Anything
+            // the AI would fill opens the card at once on the local answer, and the AI's
+            // arrives on it (a tester: "Slow", waiting 1.5 to 7 s on every new food).
+            val (quick, wantsAi) = pipeline.resolveQuick(text, how)
+            if (wantsAi) {
+                LogSession.start(quick, tag = t, how = how)
+                LogSession.awaitAi(text, t, how)
+                return Outcome.Review
+            }
+            val r = quick
             if (r.silent) {
                 val (stamp, unspecified) = LogDay.stamp()
                 val entry = pipeline.logNow(r, stamp, tag = t, timeUnspecified = unspecified)

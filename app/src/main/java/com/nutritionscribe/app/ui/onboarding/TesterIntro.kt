@@ -60,7 +60,8 @@ import com.nutritionscribe.app.data.repository.AiBackendKind
 import com.nutritionscribe.app.data.repository.LookupSource
 import com.nutritionscribe.app.di.ServiceLocator
 import com.nutritionscribe.app.network.openai.KeyCheck
-import com.nutritionscribe.app.ui.feedback.HoldToFeedback
+import com.nutritionscribe.app.ui.feedback.ShakeToReport
+import androidx.compose.material.icons.outlined.Vibration
 import com.nutritionscribe.app.ui.feedback.LeavesYourPhone
 import com.nutritionscribe.app.ui.feedback.PointRow
 import com.nutritionscribe.app.ui.feedback.SetupFooter
@@ -121,18 +122,18 @@ fun TesterIntro(onDone: () -> Unit) {
             TesterCard {
                 PointRow(Icons.Outlined.CalendarMonth, "Log everything you eat for 7 days",
                     "Snacks too, and drinks like soda or coffee (not plain water). Rough is fine: \"a handful of almonds\" works.")
-                PointRow(Icons.Outlined.TouchApp, "Hold anything that looks wrong",
-                    "Press a number, a food or a screen for a second and say what bugged you. That helps the most.")
+                PointRow(Icons.Outlined.Vibration, "Shake your phone when something looks wrong",
+                    "On any screen. Tap what bugged you; a screenshot goes with it. That helps the most.")
                 PointRow(Icons.AutoMirrored.Outlined.Send, "On day 7, send your log",
                     "Three quick questions, then your log comes to me. You see what's in it first.")
             }
             Text("It's a test version, so expect rough edges. The numbers are estimates, not medical advice.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
         }
-        1 -> SetupPage(Icons.Outlined.TouchApp, "Try it: hold the card",
-            "Press and hold the card below for a second. This is how you report anything in the app.", page = 1,
-            buttons = { TextButton(onClick = { events.event("hold_practice_skipped"); go(2) }, modifier = Modifier.fillMaxWidth()) { Text("Skip") } }) {
-            HoldToFeedback(screen = { "Practice" }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), practice = { go(2) }) {
+        1 -> SetupPage(Icons.Outlined.Vibration, "Try it: shake your phone",
+            "Give it a quick shake, two or three times. This is how you report anything in the app.", page = 1,
+            buttons = { TextButton(onClick = { events.event("shake_practice_skipped"); go(2) }, modifier = Modifier.fillMaxWidth()) { Text("Skip") } }) {
+            ShakeToReport(screen = { "Practice" }, enabled = true, practice = { go(2) }) {
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface,
                     border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -140,7 +141,7 @@ fun TesterIntro(onDone: () -> Unit) {
                             Text("Banana", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                             Text("105 kcal", style = com.nutritionscribe.app.ui.theme.NumberStyle)
                         }
-                        Text("1 medium · 8:10 AM · Protein 1 g · Fibre 3 g", style = MaterialTheme.typography.bodyMedium,
+                        Text("1 medium · 8:10 AM · Protein 1 g · Fiber 3 g", style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.secondary)
                     }
                 }
@@ -149,10 +150,10 @@ fun TesterIntro(onDone: () -> Unit) {
                 color = MaterialTheme.colorScheme.secondary, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
         }
         2 -> SetupPage(Icons.Outlined.Check, "That's all it takes",
-            "Hold works on every screen: a number, a food, a button, a whole page. Notes stay on your phone and go with your log on day 7.",
+            "A shake works on every screen. Notes stay on your phone and go with your log on day 7.",
             page = 2, buttons = { Button(onClick = { go(3) }, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Next") } }) {
             TesterCard {
-                PointRow(Icons.AutoMirrored.Outlined.Send, "No hold? Settings › Beta testing", "Something's wrong? Tell us, or I have an idea.")
+                PointRow(Icons.AutoMirrored.Outlined.Send, "Rather not shake? Settings › Beta testing", "Switch shaking off there, and use Something's wrong? Tell us, or I have an idea.")
             }
         }
         else -> SetupPage(Icons.Outlined.Lock, "What leaves your phone", null, page = 3,
@@ -176,7 +177,12 @@ private sealed interface KeyState {
  * with a free call before going on.
  */
 @Composable
-internal fun ReadyToGo(keptKey: Boolean, onStart: (withKey: Boolean) -> Unit) {
+internal fun ReadyToGo(
+    keptKey: Boolean,
+    onStart: (withKey: Boolean) -> Unit,
+    /** The free key check; a test passes its own. */
+    checkKey: suspend (String) -> KeyCheck.Result = { KeyCheck.check(it) },
+) {
     val settings = ServiceLocator.settingsRepository
     val events = ServiceLocator.debugEvents
     val scope = rememberCoroutineScope()
@@ -185,17 +191,21 @@ internal fun ReadyToGo(keptKey: Boolean, onStart: (withKey: Boolean) -> Unit) {
     var state by remember { mutableStateOf<KeyState>(KeyState.Idle) }
     var help by remember { mutableStateOf(false) }
     val clean = key.filterNot { it.isWhitespace() }
+    // Read when the button is pressed, never captured: a button holding an older
+    // composition's key checked only the part typed first, and a working key was refused.
+    fun current() = key.filterNot { it.isWhitespace() }
 
     fun check() {
         state = KeyState.Checking
+        val now = current()
         scope.launch {
-            val r = KeyCheck.check(clean)
+            val r = checkKey(now)
             events.event("key_check", "result" to r.toString())
             state = KeyState.Done(r)
         }
     }
     fun useKey() {
-        settings.setApiKey(AiBackendKind.OPENAI, clean)
+        settings.setApiKey(AiBackendKind.OPENAI, current())
         scope.launch { settings.setManualMode(false); settings.setLookupSource(LookupSource.AI) }
         onStart(true)
     }
@@ -206,7 +216,8 @@ internal fun ReadyToGo(keptKey: Boolean, onStart: (withKey: Boolean) -> Unit) {
     }
 
     val result = (state as? KeyState.Done)?.result
-    SetupPage(Icons.Outlined.Key, "Ready to go",
+    // Review G7: "Ready to go" didn't say this page is where the key goes.
+    SetupPage(Icons.Outlined.Key, if (keptKey) "Your AI key" else "Add an AI key",
         "Say or type what you ate. The first time you log a food you check it once; after that it logs without asking.",
         buttons = {
             if (keptKey) {
@@ -215,30 +226,30 @@ internal fun ReadyToGo(keptKey: Boolean, onStart: (withKey: Boolean) -> Unit) {
                     onStart(true)
                 }, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Next") }
             } else when (result) {
-                KeyCheck.Result.Works -> Button(onClick = ::useKey, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Next") }
+                KeyCheck.Result.Works -> Button(onClick = { useKey() }, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Next") }
                 KeyCheck.Result.Refused -> {
-                    FilledTonalButton(onClick = ::check, enabled = clean.isNotEmpty(), modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Try again") }
-                    TextButton(onClick = ::withoutKey, modifier = Modifier.fillMaxWidth()) { Text("Start without a key") }
+                    FilledTonalButton(onClick = { check() }, enabled = clean.isNotEmpty(), modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Try again") }
+                    TextButton(onClick = { withoutKey() }, modifier = Modifier.fillMaxWidth()) { Text("Start without a key") }
                 }
                 KeyCheck.Result.NoCredit, is KeyCheck.Result.Unreachable -> {
-                    FilledTonalButton(onClick = ::useKey, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Save it anyway") }
-                    TextButton(onClick = ::withoutKey, modifier = Modifier.fillMaxWidth()) { Text("Start without a key") }
+                    FilledTonalButton(onClick = { useKey() }, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Save it anyway") }
+                    TextButton(onClick = { withoutKey() }, modifier = Modifier.fillMaxWidth()) { Text("Start without a key") }
                 }
                 null -> {
-                    Button(onClick = ::check, enabled = clean.isNotEmpty() && state != KeyState.Checking,
+                    Button(onClick = { check() }, enabled = clean.isNotEmpty() && state != KeyState.Checking,
                         modifier = Modifier.fillMaxWidth().height(54.dp)) {
                         if (state == KeyState.Checking) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                         else Text("Use this key")
                     }
-                    TextButton(onClick = ::withoutKey, modifier = Modifier.fillMaxWidth()) { Text("I don't have a key") }
+                    TextButton(onClick = { withoutKey() }, modifier = Modifier.fillMaxWidth()) { Text("I don't have a key") }
                 }
             }
         }) {
         if (keptKey) {
             TesterCard {
                 Text("Your API key is still saved", style = MaterialTheme.typography.titleSmall)
-                Text("Highest quality mode is on: AI checks foods you haven't logged before and turns your speech into text. " +
-                    "You can switch it off or remove the key in Settings.",
+                Text("AI is on: it looks up foods you haven't logged before and turns your speech into text. " +
+                    "To stop it, turn on Run in offline mode in Settings.",
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
             }
         } else {
@@ -268,7 +279,7 @@ internal fun ReadyToGo(keptKey: Boolean, onStart: (withKey: Boolean) -> Unit) {
             )
             val (line, tone) = when (result) {
                 null -> "Got a key from me? It's in my message: press and hold it there, tap Copy, then Paste here." to 0
-                KeyCheck.Result.Works -> "Key works. Highest quality mode will be on." to 1
+                KeyCheck.Result.Works -> "Key works. AI is on." to 1
                 KeyCheck.Result.Refused -> "That key didn't work. It may have a typo or been turned off. Ask for a new one, or start without it and add it later in Settings." to 2
                 KeyCheck.Result.NoCredit -> "That key is real but has no credit left. Ask whoever gave it to you to top it up, or start without it for now." to 2
                 is KeyCheck.Result.Unreachable -> "Couldn't reach OpenAI to check it. Are you online? You can save it now; it's tried again when you log." to 2

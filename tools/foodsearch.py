@@ -151,6 +151,8 @@ AND_A_HALF = re.compile(r"\b(\d+(?:\.\d+)?)\s+and\s+(?:a\s+)?half\b", re.I)
 UNIT_AND_A_HALF = re.compile(rf"\b(?:a\s+)?{UNITS}\s+and\s+(?:a\s+)?half\b", re.I)
 UNIT_AND_FRACTION = re.compile(rf"\b(?:a\s+)?{UNITS}\s+and\s+(\d+(?:\.\d+)?)\b", re.I)
 SLASH_FRACTION = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
+MIXED_GLYPH = re.compile(rf"\b(\d+)\s*([{''.join(UNICODE_FRACTIONS)}])")
+MIXED_SLASH = re.compile(r"\b(\d+)\s+(\d+)\s*/\s*(\d+)\b")
 # "half a serving", "two a slice" -- the article between count and unit is noise,
 # but it stops the quantity parser from seeing them as one phrase.
 NUM_A_UNIT = re.compile(
@@ -186,6 +188,14 @@ def preprocess(text):
 
     # "\u2153bell peper" -> "0.333 bell peper". Spaces on both sides because the
     # glyph is regularly typed flush against the next word.
+    # "1½ tbsp", "1 1/2 cups": one amount. Read apart, the 1 joined the food's
+    # name and a tester's 1½ tbsp of peanut butter came out as half a tablespoon.
+    t = MIXED_GLYPH.sub(
+        lambda m: f" {float(m.group(1)) + UNICODE_FRACTIONS[m.group(2)]:.4g} ", t)
+    t = MIXED_SLASH.sub(
+        lambda m: m.group(0) if float(m.group(3)) == 0 or float(m.group(2)) >= float(m.group(3))
+        else f" {float(m.group(1)) + float(m.group(2)) / float(m.group(3)):.4g} ", t)
+
     for glyph, value in UNICODE_FRACTIONS.items():
         if glyph in t:
             t = t.replace(glyph, f" {value:.4g} ")

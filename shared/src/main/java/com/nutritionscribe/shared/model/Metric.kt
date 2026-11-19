@@ -42,7 +42,9 @@ enum class Metric(
     /** Shorter name for tight rows ("Sat. fat"). */
     val shortLabel: String = label,
 ) {
-    CALORIES("calories", "Calories", "kcal", GoalDirection.REACH, 2200.0),
+    // Stay under by default (review Hi2): most people log to keep calories in check,
+    // and "reach" praised a day 300 over. Someone gaining gets REACH (CalorieAim).
+    CALORIES("calories", "Calories", "kcal", GoalDirection.LIMIT, 2200.0),
     PROTEIN("protein", "Protein", "g", GoalDirection.REACH, 160.0),
     CARBS("carbs", "Carbohydrates", "g", GoalDirection.REACH, 250.0, shortLabel = "Carbs"),
     FAT("fat", "Fat", "g", GoalDirection.REACH, 70.0),

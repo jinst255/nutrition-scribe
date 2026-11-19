@@ -61,11 +61,7 @@ import java.time.temporal.TemporalAdjusters
 internal fun StreakStrip(streak: Streak.Result, today: LocalDate, onOpen: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val days = streak.current
-    Row(
-        Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
+    val streakPart: @Composable () -> Unit = {
         Row(
             Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable(onClickLabel = "Open the streak", onClick = onOpen)
                 .semantics { contentDescription = "Streak: $days ${if (days == 1) "day" else "days"}. Open the streak" },
@@ -80,19 +76,38 @@ internal fun StreakStrip(streak: Streak.Result, today: LocalDate, onOpen: () -> 
                 Text("streak · " + today.format(DateTimeFormatter.ofPattern("EEE, MMM d")), style = MaterialTheme.typography.bodySmall, color = scheme.secondary)
             }
         }
-        Spacer(Modifier.weight(1f))
-        val monday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+    }
+    val weekPart: @Composable () -> Unit = {
+        val first = com.nutritionscribe.shared.model.Weeks.firstDay()
+        val letters = com.nutritionscribe.shared.model.Weeks.letters(first)
         Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            (0L..6L).forEach { i ->
-                val d = monday.plusDays(i)
+            com.nutritionscribe.shared.model.Weeks.daysOf(today, first).forEachIndexed { i, d ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
-                        "MTWTFSS"[i.toInt()].toString(), fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                        letters[i], fontSize = com.nutritionscribe.app.ui.common.cappedSp(11f), fontWeight = FontWeight.SemiBold,
                         color = if (d == today) scheme.onBackground else scheme.secondary,
                     )
                     DayDot(streak.state(d), d == today, d.isAfter(today), size = 22)
                 }
             }
+        }
+    }
+    // At large text the streak and the week don't fit side by side (the days ran off
+    // the screen at 200%): the week goes under the streak.
+    if (androidx.compose.ui.platform.LocalDensity.current.fontScale >= 1.3f) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            streakPart()
+            weekPart()
+        }
+    } else {
+        Row(
+            Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            streakPart()
+            Spacer(Modifier.weight(1f))
+            weekPart()
         }
     }
 }
@@ -202,12 +217,13 @@ private fun Legend(filled: Boolean, text: String) {
 @Composable
 private fun MonthGrid(month: YearMonth, streak: Streak.Result, today: LocalDate) {
     val first = month.atDay(1)
-    val lead = first.dayOfWeek.value - 1
+    val weekStart = com.nutritionscribe.shared.model.Weeks.firstDay()
+    val lead = com.nutritionscribe.shared.model.Weeks.lead(first, weekStart)
     val cells = List(lead) { null } + (1..month.lengthOfMonth()).map { month.atDay(it) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth()) {
-            "MTWTFSS".forEach {
-                Text(it.toString(), modifier = Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 12.sp,
+            com.nutritionscribe.shared.model.Weeks.letters(weekStart).forEach {
+                Text(it, modifier = Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.secondary)
             }
         }

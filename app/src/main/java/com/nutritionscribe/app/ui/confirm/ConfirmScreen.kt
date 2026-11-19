@@ -3,6 +3,9 @@ package com.nutritionscribe.app.ui.confirm
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
@@ -29,9 +32,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -87,6 +92,8 @@ object LogSession {
     fun start(r: Resolver.Resolution, tag: String?, how: String) {
         clear()
         resolution = r
+        // "Made chili, added…": the card is this week's batch (its title says so).
+        recipe = r.batchOf?.let { RecipeMode(it.name, it.key) }
         this.tag = tag
         this.how = how
     }
@@ -98,6 +105,28 @@ object LogSession {
         how = "scan"
     }
 
+    /** The card saves a recipe (or this week's batch of one) instead of logging. */
+    data class RecipeMode(val name: String, val batchOf: String? = null)
+    var recipe: RecipeMode? = null
+
+    /** A new recipe from lines already worked out: an entry's, or the ingredients they gave. */
+    fun startRecipe(drafts: List<ItemDraft>, name: String) {
+        clear()
+        startDrafts = drafts
+        recipe = RecipeMode(name)
+        tag = java.util.UUID.randomUUID().toString()
+        how = "recipe"
+    }
+
+    /** A new recipe from the ingredients as worked out from their words. */
+    fun startRecipe(r: Resolver.Resolution, name: String) {
+        clear()
+        resolution = r
+        recipe = RecipeMode(name)
+        tag = java.util.UUID.randomUUID().toString()
+        how = "recipe"
+    }
+
     fun startFix(entry: Entry?) {
         clear()
         editing = entry
@@ -105,8 +134,32 @@ object LogSession {
         how = "fix"
     }
 
+    /**
+     * The AI's answer for the card that opened on the local one: null while it is
+     * asked (or when nothing was), then the answer. See [awaitAi].
+     */
+    val aiAnswer = kotlinx.coroutines.flow.MutableStateFlow<Resolver.Resolution?>(null)
+    var aiWaiting by androidx.compose.runtime.mutableStateOf(false)
+        private set
+    private var aiJob: kotlinx.coroutines.Job? = null
+
+    /** Ask the AI about [text] in the background; the card picks the answer up from [aiAnswer]. */
+    fun awaitAi(text: String, tag: String?, how: String) {
+        aiJob?.cancel()
+        aiAnswer.value = null
+        aiWaiting = true
+        aiJob = ServiceLocator.backgroundScope.launch {
+            val r = runCatching { ServiceLocator.logPipeline.resolve(text, tag = tag, how = how) }.getOrNull()
+            // The answer first: a Log it tap waiting on it (LogGate) must see it, not
+            // "checking stopped" with nothing to log.
+            if (r != null && resolution?.text == text) aiAnswer.value = r
+            aiWaiting = false
+        }
+    }
+
     fun clear() {
-        resolution = null; editing = null; timestamp = null; startDrafts = null; tag = null; how = "typed"; scanEntry = null
+        resolution = null; editing = null; timestamp = null; startDrafts = null; tag = null; how = "typed"; scanEntry = null; recipe = null
+        aiJob?.cancel(); aiJob = null; aiAnswer.value = null; aiWaiting = false
     }
 }
 
@@ -141,7 +194,108 @@ class ConfirmViewModel : ViewModel() {
     var saveAsMine by mutableStateOf(false)
     var mineName by mutableStateOf("")
 
+    /** Saving a recipe or a batch of one, not logging what was eaten. */
+    var recipeMode by mutableStateOf(LogSession.recipe ?: LogSession.resolution?.batchOf?.let { LogSession.RecipeMode(it.name, it.key) })
+        private set
+    var recipeName by mutableStateOf(recipeMode?.name.orEmpty())
+    /** "8", "8 servings", "1.8 kg": see [com.nutritionscribe.shared.resolve.Recipes.yieldOf]. */
+    var recipeMakes by mutableStateOf(LogSession.resolution?.batchOf?.recipe?.let { r ->
+        r.servings?.let { com.nutritionscribe.shared.resolve.Units.format(it) } ?: r.potGrams?.let { "${it.toInt()} g" }
+    }.orEmpty())
+    var keepChange by mutableStateOf(false)
+    var logServing by mutableStateOf(false)
+    /** The recipe this batch is of: lines not in it are marked new. */
+    val batchBase: List<com.nutritionscribe.shared.resolve.MealPart>? = LogSession.resolution?.batchOf?.parts
+
+    fun isNewInBatch(d: ItemDraft): Boolean {
+        val base = batchBase ?: return false
+        val k = com.nutritionscribe.shared.resolve.PersonalKeys.of(d.name)
+        return base.none { com.nutritionscribe.shared.resolve.PersonalKeys.of(it.name) == k }
+    }
+
+    /** "Save as a recipe instead": these lines are a pot, eaten a portion at a time. */
+    fun makeRecipe() {
+        recipeMode = LogSession.RecipeMode(mineName.ifBlank { text.substringBefore(",").take(40) })
+        recipeName = recipeMode!!.name
+        events.event("confirm_make_recipe", "lines" to drafts.size)
+    }
+
+    fun saveRecipe(onDone: () -> Unit) {
+        val mode = recipeMode ?: return
+        if (drafts.isEmpty() || recipeName.isBlank()) return
+        val (servings, pot) = com.nutritionscribe.shared.resolve.Recipes.yieldOf(recipeMakes)
+        busy = true
+        val (stamp, unspecified) = LogSession.timestamp?.let { it to false } ?: LogDay.stamp()
+        viewModelScope.launch {
+            pipeline.saveRecipe(
+                name = recipeName.trim(),
+                items = drafts.map { d -> d.toConfirmed().let { if (d.key in oneOff) it.copy(unchangedMemory = true) else it } },
+                servings = servings, potGrams = pot, batchOf = mode.batchOf, keep = keepChange,
+                logServing = logServing, timestamp = stamp, timeUnspecified = unspecified, tag = tag,
+            )
+            LogSession.clear()
+            busy = false
+            onDone()
+        }
+    }
+
+    /** They tapped Log it while the AI was checking: what to do once it has logged (see [LogGate]). */
+    var logWhenChecked by mutableStateOf<(() -> Unit)?>(null)
+        private set
+
+    fun tapLog(onDone: () -> Unit) {
+        when (LogGate.onTap(LogSession.aiWaiting && aiReady == null, handEdited, editing != null)) {
+            LogGate.Tap.WAIT_FOR_AI -> { logWhenChecked = onDone; events.event("confirm_log_waits") }
+            LogGate.Tap.LOG_NOW -> log(onDone)
+        }
+    }
+
+    /** "Log these now": what's shown, without waiting. */
+    fun logShownNow() {
+        val after = logWhenChecked ?: return
+        logWhenChecked = null
+        events.event("confirm_log_shown_now")
+        log(after)
+    }
+
+    /** The AI gave up (offline, an error): stop waiting; they decide. */
+    fun stopWaiting() { if (logWhenChecked != null && LogSession.aiAnswer.value == null) { logWhenChecked = null; events.event("confirm_log_wait_ended") } }
+
+    /** The AI's answer came after they changed a line: offered, never forced over their edit. */
+    var aiReady by mutableStateOf<Resolver.Resolution?>(null)
+        private set
+
+    fun useAi() {
+        val r = aiReady ?: return
+        aiReady = null
+        events.event("confirm_ai_used", "after_edit" to true)
+        takeAi(r)
+    }
+
+    fun dismissAi() { aiReady = null; events.event("confirm_ai_kept_own") }
+
+    private fun takeAi(r: Resolver.Resolution) {
+        aiProblem = r.aiProblem
+        drafts.clear()
+        drafts.addAll(r.items.map { ItemDraft.from(it) })
+        suggested = drafts.map { it.toConfirmed() }
+        handEdited = false
+    }
+
     init {
+        // The card opened on the local answer; the AI's replaces it when it comes,
+        // unless they have already changed something, when it is offered instead.
+        if (LogSession.resolution != null) viewModelScope.launch {
+            LogSession.aiAnswer.collect { r ->
+                if (r == null) return@collect
+                LogSession.aiAnswer.value = null
+                events.event("confirm_ai_arrived", "hand_edited" to handEdited, "lines" to r.items.size, "log_waiting" to (logWhenChecked != null))
+                if (handEdited) aiReady = r else takeAi(r)
+                val after = logWhenChecked
+                logWhenChecked = null
+                if (after != null && LogGate.logOnArrival(true, handEdited)) log(after)
+            }
+        }
         events.startFlow(how, onlyIfIdle = true)
         events.event("confirm_open", "how" to how, "tag" to tag, "text" to text, "fixing" to editing?.id,
             "lines" to drafts.map { mapOf("said" to it.item.said, "name" to it.name, "status" to it.status, "nutrients" to it.nutrients) })
@@ -157,12 +311,19 @@ class ConfirmViewModel : ViewModel() {
     /** Remembered lines they took off the card: those words meant something else. */
     private val forgetKeys = mutableSetOf<String>()
 
+    /** Takes a line off and says so, with Undo (review L3). */
     fun remove(i: Int) {
         if (i !in drafts.indices) return
-        events.event("confirm_remove", "index" to i, "line" to lineOf(drafts[i]))
-        if (drafts[i].status == Resolver.Status.REMEMBERED) forgetKeys += drafts[i].key
-        drafts.removeAt(i)
+        val line = drafts[i]
+        events.event("confirm_remove", "index" to i, "line" to lineOf(line))
+        val forgot = line.status == Resolver.Status.REMEMBERED && forgetKeys.add(line.key)
+        val undo = Undoable.remove(drafts, i) ?: return
         handEdited = true
+        com.nutritionscribe.app.ui.common.AppMessages.sayWithAction("Removed ${com.nutritionscribe.app.ui.common.shownFoodName(line.name)}", "Undo") {
+            events.event("confirm_remove_undo", "line" to lineOf(line))
+            undo()
+            if (forgot) forgetKeys.remove(line.key)
+        }
     }
 
     fun note(action: String, vararg detail: Pair<String, Any?>) = events.event("confirm_$action", *detail)
@@ -270,7 +431,11 @@ class ConfirmViewModel : ViewModel() {
         val (i, c) = LogSession.scanned ?: return
         LogSession.scanned = null
         events.event("confirm_scan_result", "index" to i, "candidate" to mapOf("id" to c.id, "name" to c.name, "brand" to c.brand))
-        if (i in drafts.indices) { drafts[i] = drafts[i].withCandidate(c); handEdited = true }
+        if (i in drafts.indices) {
+            val (merged, filled) = drafts[i].withLabelScan(c)
+            drafts[i] = merged; handEdited = true
+            if (filled.isNotEmpty()) lastChange = "Filled in ${filled.mapNotNull { com.nutritionscribe.shared.model.Metric.fromKey(it)?.label?.lowercase() }.joinToString(", ")} from its label"
+        }
         else if (i < 0) { drafts.add(ItemDraft.fromCandidate(c)); handEdited = true }
     }
 
@@ -282,7 +447,7 @@ class ConfirmViewModel : ViewModel() {
             // Before confirming, so the lines kept are what is learned afresh.
             val keep = drafts.map { it.key }.toSet()
             (forgetKeys - keep).takeIf { it.isNotEmpty() }?.let { pipeline.forget(null, it, "removed_from_card") }
-            pipeline.confirm(
+            val logged = pipeline.confirm(
                 text = text,
                 items = drafts.map { d -> d.toConfirmed().let { if (d.key in oneOff) it.copy(unchangedMemory = true) else it } },
                 timestamp = stamp,
@@ -293,6 +458,8 @@ class ConfirmViewModel : ViewModel() {
                 how = how,
                 suggested = suggested,
             )
+            // Home's Logged card (Undo, Fix) after this way of logging too (review F5).
+            if (editing == null && !LogDay.isPast) com.nutritionscribe.app.ui.home.LastLogged.show(logged, "checked first", undoable = true)
             LogSession.clear()
             if (editing == null) LogDay.today()
             busy = false
@@ -322,6 +489,18 @@ internal suspend fun applyChangeTo(drafts: List<ItemDraft>, said: String, tag: S
     for (i in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Remove>().map { it.line }.distinct().sortedDescending()) {
         out.getOrNull(i)?.let { notes += "removed ${short(it.name)}"; out.removeAt(i) }
     }
+    // "that bacon is low sodium bacon", "it was Great Value": the same line, the food it really was.
+    for (s in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Swap>()) {
+        val d = out.getOrNull(s.line) ?: continue
+        val q = com.nutritionscribe.shared.resolve.Changes.swapQuery(s.text, d.amount, d.item.unit)
+        val found = pipeline.resolveItem(q, tag = tag, why = "swap").firstOrNull()?.let { ItemDraft.from(it) }
+        if (found == null) { notes += "couldn't find ${s.text}"; continue }
+        out[s.line] = found
+        notes += "${short(d.name)} → ${short(found.name)}"
+    }
+    changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Unclear>().firstOrNull()?.let {
+        notes += "which food was \"${it.text}\" about? Try \"the bacon was ${it.text}\""
+    }
     for (a in changes.filterIsInstance<com.nutritionscribe.shared.resolve.Changes.Change.Add>()) {
         val found = pipeline.resolveItem(a.text, tag = tag, why = "add").map { ItemDraft.from(it) }
         out.addAll(found)
@@ -330,6 +509,45 @@ internal suspend fun applyChangeTo(drafts: List<ItemDraft>, said: String, tag: S
     val note = if (notes.isEmpty()) "Nothing changed. Try \"2 slices\", \"remove the cheese\" or \"add a cup of milk\"."
     else notes.joinToString(" · ").replaceFirstChar { it.uppercase() }
     return out to note
+}
+
+/**
+ * The AI's fix for "Something's wrong with this entry" applied to [drafts]: the
+ * new lines, and what changed in words. A food is looked up the way a spoken
+ * change is, so their own scanned labels come first.
+ */
+internal suspend fun applyFixTo(drafts: List<ItemDraft>, fix: com.nutritionscribe.shared.resolve.EntryFix.Fix, tag: String?): Pair<List<ItemDraft>, List<String>> {
+    val pipeline = ServiceLocator.logPipeline
+    val out: MutableList<ItemDraft?> = drafts.toMutableList()
+    val notes = mutableListOf<String>()
+    fun short(n: String) = n.substringAfter(" — ").substringBefore(",").take(28)
+    for (a in fix.actions) when (a) {
+        is com.nutritionscribe.shared.resolve.EntryFix.Action.Amount -> out.getOrNull(a.line)?.let { d ->
+            val nd = if (a.unit != null && a.unit != d.item.unit) d.withAmountIn(a.amount, a.unit) else d.withAmount(a.amount)
+            out[a.line] = nd
+            notes += "${short(nd.name)}: ${com.nutritionscribe.shared.resolve.Units.format(nd.amount)} ${nd.unitLabel}"
+        }
+        is com.nutritionscribe.shared.resolve.EntryFix.Action.Food -> out.getOrNull(a.line)?.let { d ->
+            val q = com.nutritionscribe.shared.resolve.EntryFix.query(a.food, a.amount ?: d.amount, a.unit ?: d.item.unit.takeIf { a.amount == null })
+            val found = pipeline.resolveItem(q, tag = tag, why = "ai_fix").firstOrNull()?.let { ItemDraft.from(it) }
+            if (found != null) { out[a.line] = found; notes += "${short(d.name)} → ${short(found.name)}" }
+        }
+        is com.nutritionscribe.shared.resolve.EntryFix.Action.Numbers -> out.getOrNull(a.line)?.let { d ->
+            var nd = d
+            a.nutrients.forEach { (k, v) -> nd = nd.withNutrient(k, v) }
+            out[a.line] = nd
+            notes += "${short(d.name)}: new numbers"
+        }
+        is com.nutritionscribe.shared.resolve.EntryFix.Action.Remove -> out.getOrNull(a.line)?.let { d ->
+            out[a.line] = null; notes += "removed ${short(d.name)}"
+        }
+        is com.nutritionscribe.shared.resolve.EntryFix.Action.Add -> {
+            val found = pipeline.resolveItem(com.nutritionscribe.shared.resolve.EntryFix.query(a.food, a.amount, a.unit), tag = tag, why = "ai_fix")
+                .map { ItemDraft.from(it) }
+            out.addAll(found); found.forEach { notes += "added ${short(it.name)}" }
+        }
+    }
+    return out.filterNotNull() to notes
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -357,8 +575,9 @@ fun ConfirmScreen(
     val fresh = drafts.count { it.status != Resolver.Status.REMEMBERED }
     val total = sumNutrients(drafts.map { it.nutrients })
 
+    Column(Modifier.fillMaxSize()) {
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
@@ -377,6 +596,9 @@ fun ConfirmScreen(
                 }
                 Text(
                     when {
+                        viewModel.recipeMode?.batchOf != null -> "This week's ${viewModel.recipeMode!!.name}. What's different from the recipe is marked; " +
+                            "leftovers use this batch for ${com.nutritionscribe.shared.resolve.Recipes.BATCH_DAYS} days."
+                        viewModel.recipeMode != null -> "A recipe: check each ingredient once. Amounts are for the whole pot; you log a portion of it later."
                         viewModel.editing != null -> "Fix it once and it stays fixed: the next time you log this, it uses what you set here."
                         fresh == 0 -> "All of these are your usual."
                         else -> "First time for ${if (fresh == 1) "this" else "these"} — check once. After this ${if (fresh == 1) "it logs" else "they log"} without asking."
@@ -387,9 +609,29 @@ fun ConfirmScreen(
                     Text("The AI helper couldn't be reached ($it), so these came from the built-in food list.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
+                // Opened on the local answer; the AI's is on its way (see LogSession.awaitAi).
+                if (LogSession.aiWaiting && viewModel.aiReady == null) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        androidx.compose.material3.CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Text("Checking with AI… these are the built-in list's numbers until then.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                    }
+                }
+                viewModel.aiReady?.let {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("The AI's answer is ready. You've changed things, so it waits for you.",
+                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { viewModel.dismissAi() }) { Text("Keep mine") }
+                        TextButton(onClick = { viewModel.useAi() }) { Text("Use it") }
+                    }
+                }
             }
         }
         itemsIndexed(drafts, key = { i, d -> "$i-${d.key}" }) { i, d ->
+            if (viewModel.isNewInBatch(d)) {
+                Text("New this batch", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary)
+            }
             DraftCard(
                 draft = d,
                 tracked = tracked,
@@ -419,9 +661,13 @@ fun ConfirmScreen(
         }
         item {
             HorizontalDivider()
-            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Total", fontWeight = FontWeight.SemiBold)
-                Text(numbersLine(total, tracked), fontWeight = FontWeight.SemiBold)
+            if (viewModel.recipeMode != null) {
+                RecipeFields(viewModel)
+                Spacer(Modifier.padding(bottom = 16.dp))
+                return@item
+            }
+            if (drafts.size > 1 && viewModel.editing == null) {
+                TextButton(onClick = { viewModel.makeRecipe() }) { Text("This is a pot I'll eat from — save as a recipe") }
             }
             if (drafts.size > 1) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -441,18 +687,41 @@ fun ConfirmScreen(
                         color = MaterialTheme.colorScheme.secondary)
                 }
             }
-            Button(
-                onClick = { viewModel.log(onLogged) },
-                enabled = !viewModel.busy && drafts.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-            ) {
-                if (viewModel.busy) CircularProgressIndicator(modifier = Modifier.width(18.dp), strokeWidth = 2.dp)
-                else Text(if (viewModel.editing != null) "Save fix" else "Log it")
-            }
             // Right where a fix happens: the note travels with the entry as it was.
             viewModel.editing?.let { com.nutritionscribe.app.ui.entry.ReportProblem(it) }
-            Spacer(Modifier.padding(bottom = 24.dp))
+            Spacer(Modifier.padding(bottom = 16.dp))
         }
+    }
+    // The total and the one button, pinned (review F4): a long list no longer hides Log it.
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp).navigationBarsPadding()) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Total", fontWeight = FontWeight.SemiBold)
+                Text(numbersLine(total, tracked), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End, modifier = Modifier.weight(1f))
+            }
+            val recipe = viewModel.recipeMode
+            val checking = LogSession.aiWaiting && viewModel.aiReady == null
+            val waiting = viewModel.logWhenChecked != null
+            LaunchedEffect(LogSession.aiWaiting) { if (!LogSession.aiWaiting) viewModel.stopWaiting() }
+            Button(
+                onClick = { if (recipe != null) viewModel.saveRecipe(onLogged) else viewModel.tapLog(onLogged) },
+                enabled = !viewModel.busy && !waiting && drafts.isNotEmpty() && (recipe == null || viewModel.recipeName.isNotBlank()),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).heightIn(min = 48.dp),
+            ) {
+                if (viewModel.busy) CircularProgressIndicator(modifier = Modifier.width(18.dp), strokeWidth = 2.dp)
+                else Text(LogGate.label(checking, viewModel.handEdited, waiting, when {
+                    recipe?.batchOf != null -> "Save this batch"
+                    recipe != null -> "Save recipe"
+                    viewModel.editing != null -> "Save fix"
+                    else -> "Log it"
+                }))
+            }
+            if (waiting) TextButton(onClick = { viewModel.logShownNow() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Log these now, without waiting")
+            }
+        }
+    }
     }
 
     editingIndex?.let { i ->
@@ -508,6 +777,53 @@ fun ConfirmScreen(
             onDone = { viewModel.applyChange(it); adding = false },
             onDismiss = { adding = false },
         )
+    }
+}
+
+/** Name, how much it makes, and for a batch whether the change is kept. */
+@Composable
+private fun RecipeFields(viewModel: ConfirmViewModel) {
+    val batch = viewModel.recipeMode?.batchOf != null
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!batch) {
+            OutlinedTextField(
+                value = viewModel.recipeName,
+                onValueChange = { viewModel.recipeName = it },
+                label = { Text("Recipe name") },
+                placeholder = { Text("Mom's chili") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        OutlinedTextField(
+            value = viewModel.recipeMakes,
+            onValueChange = { viewModel.recipeMakes = it },
+            label = { Text("Makes") },
+            placeholder = { Text("8 servings, or the pot's weight: 1.8 kg") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        val (servings, pot) = com.nutritionscribe.shared.resolve.Recipes.yieldOf(viewModel.recipeMakes)
+        val total = sumNutrients(viewModel.drafts.map { it.nutrients })["calories"]
+        Text(
+            when {
+                total == null -> "Servings or the pot's weight, whichever you know."
+                servings != null -> "About ${(total / servings).toInt()} kcal a serving."
+                pot != null -> "About ${(total / pot * 100).toInt()} kcal per 100 g. Log it by weight or by the bowl."
+                else -> "Servings or the pot's weight, whichever you know. Left empty, it guesses from the ingredients' weight."
+            },
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
+        )
+        if (batch) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = viewModel.keepChange, onCheckedChange = { viewModel.keepChange = it })
+                Text("Keep this change in the recipe", modifier = Modifier.clickable { viewModel.keepChange = !viewModel.keepChange })
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = viewModel.logServing, onCheckedChange = { viewModel.logServing = it })
+            Text("I'm having a serving now — log it", modifier = Modifier.clickable { viewModel.logServing = !viewModel.logServing })
+        }
     }
 }
 
@@ -600,12 +916,12 @@ private fun DraftCard(
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
-                    Text(if (unknown) "“${draft.item.said}”" else draft.name,
+                    Text(if (unknown) "“${draft.item.said}”" else com.nutritionscribe.app.ui.common.shownFoodName(draft.name),
                         style = MaterialTheme.typography.titleSmall)
                     Text(
                         // The amount is on the stepper below; here, only where it came from.
                         listOfNotNull(
-                            if (draft.status == Resolver.Status.REMEMBERED) "Your usual" else ItemDraft.label(draft.candidate?.origin),
+                            if (draft.status == Resolver.Status.REMEMBERED) "Your usual" else ItemDraft.label(draft.candidate),
                             draft.grams.takeIf { unknown }?.let { draft.amountText(it) },
                         ).joinToString(" · "),
                         style = MaterialTheme.typography.labelSmall,
@@ -837,7 +1153,8 @@ private fun TextPrompt(title: String, hint: String, onDone: (String) -> Unit, on
 
 internal fun numbersLine(n: Map<String, Double>, tracked: List<Metric>): String {
     val show = (listOf(Metric.CALORIES, Metric.PROTEIN) + tracked).distinct()
-    return show.mapNotNull { m -> n[m.key]?.let { "${fmt(it)} ${if (m == Metric.CALORIES) "kcal" else "${m.unit} ${m.label.lowercase().take(7)}"}" } }
+    // The short label ("carbs", "sat. fat"), never the first 7 letters ("carbohy", review F7).
+    return show.mapNotNull { m -> n[m.key]?.let { "${fmt(it)} ${if (m == Metric.CALORIES) "kcal" else "${m.unit} ${m.shortLabel.lowercase()}"}" } }
         .joinToString(" · ").ifBlank { "no numbers yet" }
 }
 

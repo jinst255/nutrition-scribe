@@ -37,6 +37,12 @@ object PriceBook {
 
     private val FALLBACK = TokenRate(2.00, 0.20, 12.00)
 
+    /**
+     * One web search, on top of the call's tokens (OpenAI: $10 per 1,000 calls, the
+     * pages read billed as input tokens; checked 2026-11-14).
+     */
+    const val WEB_SEARCH_PER_CALL = 0.01
+
     fun rateFor(model: String): TokenRate =
         tokenRates[model] ?: tokenRates.entries.firstOrNull { model.startsWith(it.key) }?.value ?: FALLBACK
 
@@ -58,7 +64,8 @@ object PriceBook {
     fun rows(): List<Pair<String, String>> =
         tokenRates.filterKeys { it == "gpt-6-luna" || it == "claude-haiku-5-5" }.map { (m, r) ->
             m to "\$${fmt(r.input)} in · \$${fmt(r.output)} out per 1M tokens"
-        } + ("gpt-4o-mini-transcribe" to "\$${fmt(perMinute.getValue("gpt-4o-mini-transcribe"))} per minute of speech")
+        } + ("gpt-4o-mini-transcribe" to "\$${fmt(perMinute.getValue("gpt-4o-mini-transcribe"))} per minute of speech") +
+            ("Web search" to "\$${fmt(WEB_SEARCH_PER_CALL)} per search, plus the pages it reads as input tokens")
 
     private fun fmt(v: Double) = if (v >= 0.1) "%.2f".format(java.util.Locale.ROOT, v) else "%.3f".format(java.util.Locale.ROOT, v)
 }

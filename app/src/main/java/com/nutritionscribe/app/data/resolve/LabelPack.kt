@@ -137,7 +137,7 @@ class LabelPack(private val context: Context) {
     private fun install(raw: InputStream, notify: Boolean = true): Status {
         val tmp = File(context.filesDir, "$FILE_NAME.part")
         try {
-            // Accept the pack gzipped (the 12 MB download) or as-is.
+            // Accept the pack gzipped (the ~22 MB download) or as-is.
             val buffered = BufferedInputStream(raw)
             buffered.mark(2)
             val magic = ByteArray(2).also { buffered.read(it) }

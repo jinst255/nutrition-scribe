@@ -195,4 +195,121 @@ class MetricHistoryTest {
         assertEquals(t + 1.0, MetricHistory.pan(vp, 5.0, recent, t).endDay, 0.001)
         assertTrue(vp.spanDays >= 7.0)
     }
+
+    /**
+     * Review Hi3: History's key always listed five colours ("Past your line",
+     * "No line set"…) whatever the cards showed. It lists only the ones in use.
+     */
+    @Test
+    fun `the history key lists only the colours the cards use`() {
+        val days = listOf(DayValue(1, 160.0), DayValue(2, 90.0), DayValue(3, 999.0))
+        val inUse = MetricHistory.standingsInUse(listOf(protein to days), full = setOf(1L, 2L))
+        // Day 3 is not a full day (today, or half-logged): it isn't coloured, so it doesn't count.
+        assertEquals(setOf(Standing.IN_RANGE, Standing.LOW), inUse)
+    }
+
+    @Test
+    fun `no cards or no full days means an empty key`() {
+        assertEquals(emptySet<Standing>(), MetricHistory.standingsInUse(emptyList(), setOf(1L)))
+        assertEquals(emptySet<Standing>(), MetricHistory.standingsInUse(listOf(protein to listOf(DayValue(1, 160.0))), emptySet()))
+    }
+
+    @Test
+    fun `days with nothing recorded or too little data are not coloured`() {
+        val days = listOf(DayValue(1, null), DayValue(2, 3000.0, patchy = true))
+        assertEquals(emptySet<Standing>(), MetricHistory.standingsInUse(listOf(sodium to days), setOf(1L, 2L)))
+    }
+
+    @Test
+    fun `a metric with no goal or lines shows as no line set`() {
+        val plain = MetricGoal(Metric.CARBS, enabled = false)
+        assertEquals(setOf(Standing.NOT_JUDGED), MetricHistory.standingsInUse(listOf(plain to listOf(DayValue(1, 200.0))), setOf(1L)))
+    }
+
+    /**
+     * Review Hi1: History said "5 full days" with nothing to say why a day that was
+     * logged didn't count, or what the hollow bars meant.
+     */
+    @Test
+    fun `the days line counts logged days and says why some are hollow`() {
+        val today = LocalDate.of(2026, 11, 14)
+        val d = { n: Int -> today.minusDays(n.toLong()).toEpochDay() }
+        val logged = setOf(d(1), d(2), d(3), d(4))
+        assertEquals("4 days logged · 3 averaged; the rest had under half your calories logged, so their bars are hollow",
+            MetricHistory.daysLine(7, today, logged, setOf(d(1), d(2), d(3))))
+        assertEquals("4 days logged · today joins once it's over", MetricHistory.daysLine(7, today, logged, logged))
+        assertEquals("1 day logged · today joins once it's over", MetricHistory.daysLine(7, today, setOf(d(1)), setOf(d(1))))
+        assertEquals("No days logged in the last 7 days", MetricHistory.daysLine(7, today, emptySet(), emptySet()))
+    }
+
+    @Test
+    fun `days outside the range are not counted`() {
+        val today = LocalDate.of(2026, 11, 14)
+        val logged = setOf(today.minusDays(30).toEpochDay())
+        assertEquals("No days logged in the last 7 days", MetricHistory.daysLine(7, today, logged, logged))
+    }
+
+    /** On the emulator, three entries today and nothing before: it said "No days logged". */
+    @Test
+    fun `only today logged says so`() {
+        val today = LocalDate.of(2026, 11, 14)
+        assertEquals("Only today so far · it joins once it's over",
+            MetricHistory.daysLine(14, today, setOf(today.toEpochDay()), emptySet()))
+    }
+
+    /**
+     * Owner, 11-04: "this line isn't actually correct on days I don't need plasma,
+     * or if I were to change my goals." Each day is judged by its own target now.
+     */
+    @Test
+    fun `a past day is judged by the target it had then`() {
+        val goal = MetricGoal(Metric.PROTEIN, enabled = true, target = 160.0)
+        val raised = listOf(com.nutritionscribe.shared.model.GoalTimeline.Change("protein", 200, 140.0, 160.0))
+        // 150 g on day 150 met the 140 g target of the time; today's 160 g would call it short.
+        assertEquals(140.0, MetricHistory.goalOn(goal, 150, raised).target!!, 0.0)
+        assertEquals(Standing.IN_RANGE, MetricHistory.standing(MetricHistory.goalOn(goal, 150, raised), 150.0))
+        assertEquals(160.0, MetricHistory.goalOn(goal, 250, raised).target!!, 0.0)
+    }
+
+    @Test
+    fun `the plasma extra is only added on donation days, and only to protein`() {
+        val protein = MetricGoal(Metric.PROTEIN, enabled = true, target = 160.0)
+        val extra = { day: Long -> if (day == 10L) 18.0 else 0.0 }
+        assertEquals(178.0, MetricHistory.goalOn(protein, 10, emptyList(), extra).target!!, 0.0)
+        assertEquals(160.0, MetricHistory.goalOn(protein, 11, emptyList(), extra).target!!, 0.0)
+        val calories = MetricGoal(Metric.CALORIES, enabled = true, target = 2200.0)
+        assertEquals(2200.0, MetricHistory.goalOn(calories, 10, emptyList(), extra).target!!, 0.0)
+    }
+
+    @Test
+    fun `a metric that isn't a goal keeps its line`() {
+        val iron = MetricGoal(Metric.IRON, enabled = false, target = 8.0)
+        assertEquals(8.0, MetricHistory.goalOn(iron, 10, listOf(com.nutritionscribe.shared.model.GoalTimeline.Change("iron", 50, 18.0, 8.0))).target!!, 0.0)
+    }
+
+    @Test
+    fun `a week bar's target is the mean of its days`() {
+        val goal = MetricGoal(Metric.PROTEIN, enabled = true, target = 160.0)
+        val plasma = { day: Long -> if (day in 3L..4L) 21.0 else 0.0 }
+        val t = MetricHistory.bucketTarget(0, 6) { MetricHistory.goalOn(goal, it, emptyList(), plasma) }!!
+        assertEquals(160.0 + 42.0 / 7, t, 1e-9)
+    }
+
+    /** Owner, 11-10: a hatched stub "seemed pretty high, why is it greyed out?" The key now says. */
+    @Test
+    fun `the key explains the hatched stub`() {
+        assertTrue(MetricHistory.PATCHY_KEY.startsWith("Hatched"))
+    }
+
+    /** On the emulator the card said "11 of 12 days at 160 g" while judging by each day's own target. */
+    @Test
+    fun `when the target moved, the card counts days that met their own goal`() {
+        val goal = MetricGoal(Metric.PROTEIN, enabled = true, target = 160.0)
+        val days = listOf(DayValue(1, 150.0), DayValue(2, 165.0), DayValue(3, 120.0))
+        val raisedOnDay3 = listOf(com.nutritionscribe.shared.model.GoalTimeline.Change("protein", 3, 140.0, 160.0))
+        val line = cardStatus(goal, days, setOf(1L, 2L, 3L)) { MetricHistory.goalOn(goal, it, raisedOnDay3) }
+        assertEquals("2 of 3 days met that day's goal", line)
+        // Steady target: the old wording, with the number.
+        assertEquals("1 of 3 days at 160 g or more", cardStatus(goal, days, setOf(1L, 2L, 3L)))
+    }
 }

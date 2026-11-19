@@ -46,6 +46,7 @@ enum class UsageKind(val label: String) {
     FOOD_LOOKUP("Food lookups"),
     SPEECH("Speech to text"),
     ASK("Ask chat"),
+    WEB_SEARCH("Web searches"),
     OTHER("Other"),
 }
 

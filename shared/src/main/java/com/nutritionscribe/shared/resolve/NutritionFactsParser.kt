@@ -77,6 +77,8 @@ object NutritionFactsParser {
         val asRead: Double? = null,
     )
 
+    private val FOOTER_KEY = Regex("(?:calories per gram:?\\s*)?(?:fat\\s*9|carb[a-z]*\\s*4|prot[a-z]*\\s*4)")
+
     private val FIELDS: List<Pair<Regex, Metric>> = listOf(
         Regex("\\bcalories\\b") to Metric.CALORIES,
         Regex("\\bsaturated\\s*fat\\b|\\bsat\\.?\\s*fat\\b") to Metric.SATURATED_FAT,
@@ -90,7 +92,8 @@ object NutritionFactsParser {
         Regex("\\btotal\\s*carb(?:ohydrate|\\.)?s?\\b|carbohydrates?\\b|\\btotal\\s*ca\\S{0,4}\\.") to Metric.CARBS,
         Regex("\\bdietary\\s*fiber\\b|\\bf[i1]?ber\\b|\\bfibre\\b") to Metric.FIBER,
         Regex("\\btotal\\s*sugars?\\b|\\btota?l?\\s*sug[a-z]{1,2}s\\b|(?<!added\\s)\\bsugars?\\b") to Metric.SUGAR,
-        Regex("\\bprot[eo]in\\b") to Metric.PROTEIN,
+        // "Proteln/Proteina 19" as the phone read a tortilla bag: missed, the footer's "Protein 4" was taken.
+        Regex("\\bprot[eo][il1]n\\b") to Metric.PROTEIN,
         Regex("\\bcaffeine\\b") to Metric.CAFFEINE,
         // The micronutrients a US label has to print.
         Regex("\\bcholesterol\\b|\\bcholest\\.?\\b") to Metric.CHOLESTEROL,
@@ -108,6 +111,16 @@ object NutritionFactsParser {
         Regex("\\bmagnesium\\b") to Metric.MAGNESIUM,
         Regex("\\bzinc\\b") to Metric.ZINC,
         Regex("\\bselenium\\b") to Metric.SELENIUM,
+        // The rest of a detailed panel (owner, 10-28: a protein powder's were missed).
+        // "B1" must not take "B12": the \\b after the digit sees to that.
+        Regex("\\bthiamin(?:e)?\\b|\\bvit(?:amin|\\.)?\\s*b\\s?1\\b") to Metric.THIAMIN,
+        Regex("\\bribofla[vy]in\\b|\\bvit(?:amin|\\.)?\\s*b\\s?2\\b") to Metric.RIBOFLAVIN,
+        Regex("\\bniacin\\b|\\bvit(?:amin|\\.)?\\s*b\\s?3\\b") to Metric.NIACIN,
+        Regex("\\bvit(?:amin|\\.)?\\s*b\\s?6\\b") to Metric.VITAMIN_B6,
+        Regex("\\bphosphorus\\b") to Metric.PHOSPHORUS,
+        Regex("\\bcopper\\b") to Metric.COPPER,
+        Regex("\\bmanganese\\b") to Metric.MANGANESE,
+        Regex("\\bcholine\\b") to Metric.CHOLINE,
     )
 
     /** One line as the text recogniser returned it, with its box on the photo. */
@@ -200,6 +213,9 @@ object NutritionFactsParser {
             // The ingredients and directions beside the panel name nutrients too ("water,
             // sugar, yeast", "folic acid), let product stand 2"): never a value.
             if (looksLikeIngredients(line)) continue
+            // The footnote's key, "Calories per gram: Fat 9 • Carbohydrates 4 • Protein 4",
+            // split onto lines of their own: never the food's numbers.
+            if (FOOTER_KEY.matches(line.trim())) continue
             val servingAt = SERVING_SIZE.find(line)
             if (servingText == null && servingAt != null) {
                 val rest = line.substring(servingAt.range.last + 1).trim().trimStart(':', ' ').trim()

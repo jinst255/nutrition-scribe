@@ -43,8 +43,12 @@ data class PersonalFood(
     val askKind: String = ASK_WHEN_DIFFERENT,
     /** The photo of its label they scanned, a file name in the app's labels folder. */
     val photo: String? = null,
+    /** Set for a recipe: a pot eaten a portion at a time. See [Recipes]. */
+    val recipe: Recipe? = null,
 ) {
-    val isMeal: Boolean get() = parts.isNotEmpty()
+    /** Several foods logged together as one. A recipe is not: it is logged a portion at a time. */
+    val isMeal: Boolean get() = parts.isNotEmpty() && recipe == null
+    val isRecipe: Boolean get() = recipe != null
 
     /** This kind and the others they have had, the one they have now first. */
     val allKinds: List<FoodCandidate> get() = listOfNotNull(candidate) + kinds

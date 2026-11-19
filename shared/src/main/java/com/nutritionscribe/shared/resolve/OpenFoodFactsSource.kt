@@ -58,6 +58,17 @@ class OpenFoodFactsSource(private val get: (String) -> Pair<Int, String> = ::htt
             Triple("vitamin-k_100g", Metric.VITAMIN_K, 1_000_000.0),
             Triple("vitamin-b12_100g", Metric.VITAMIN_B12, 1_000_000.0),
             Triple("vitamin-b9_100g", Metric.FOLATE, 1_000_000.0),
+            // The rest of a detailed label (owner, 10-28: a protein powder's page had
+            // these and they were borrowed from the food list instead). Grams on the page.
+            Triple("trans-fat_100g", Metric.TRANS_FAT, 1.0),
+            Triple("added-sugars_100g", Metric.ADDED_SUGAR, 1.0),
+            Triple("phosphorus_100g", Metric.PHOSPHORUS, 1000.0),
+            Triple("copper_100g", Metric.COPPER, 1000.0),
+            Triple("manganese_100g", Metric.MANGANESE, 1000.0),
+            Triple("vitamin-b1_100g", Metric.THIAMIN, 1000.0),
+            Triple("vitamin-b2_100g", Metric.RIBOFLAVIN, 1000.0),
+            Triple("vitamin-pp_100g", Metric.NIACIN, 1000.0),
+            Triple("vitamin-b6_100g", Metric.VITAMIN_B6, 1000.0),
         )
 
         fun parse(code: String, body: String): FoodCandidate? {

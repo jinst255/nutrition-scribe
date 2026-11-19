@@ -117,6 +117,8 @@ object FoodQuery {
     private val LEADING_NUMBER =
         Regex("^(?:\\d|(?:${NUMBER_WORDS.keys.joinToString("|")})\\b)", RegexOption.IGNORE_CASE)
     private val SLASH_FRACTION = Regex("\\b(\\d+)\\s*/\\s*(\\d+)\\b")
+    private val MIXED_GLYPH = Regex("\\b(\\d+)\\s*([${UNICODE_FRACTIONS.keys.joinToString("")}])")
+    private val MIXED_SLASH = Regex("\\b(\\d+)\\s+(\\d+)\\s*/\\s*(\\d+)\\b")
     private val UNIT_AND_A_HALF =
         Regex("\\b(?:a\\s+)?${UNITS}\\s+and\\s+(?:a\\s+)?half\\b", RegexOption.IGNORE_CASE)
     private val UNIT_AND_FRACTION =
@@ -178,6 +180,17 @@ object FoodQuery {
      */
     fun normaliseNumbers(text: String): String {
         var t = text
+
+        // "1½ tbsp", "1 1/2 cups": one amount. Read apart, the 1 joined the food's
+        // name and a tester's 1½ tbsp of peanut butter came out as half a tablespoon.
+        t = MIXED_GLYPH.replace(t) { m ->
+            " ${trim(m.groupValues[1].toDouble() + UNICODE_FRACTIONS.getValue(m.groupValues[2][0]))} "
+        }
+        t = MIXED_SLASH.replace(t) { m ->
+            val n = m.groupValues[2].toDouble()
+            val d = m.groupValues[3].toDouble()
+            if (d == 0.0 || n >= d) m.value else " ${trim(m.groupValues[1].toDouble() + n / d)} "
+        }
 
         // "⅓bell peper" -> "0.3333 bell peper". Spaces on both sides because the
         // glyph is regularly typed flush against the next word.

@@ -90,6 +90,8 @@ private object Routes {
     const val FIX = "fix/{entryId}"
     const val SCAN = "scan/{index}"
     const val MY_FOODS = "my_foods"
+    /** Check it once in recipe mode; back to wherever it was opened from. */
+    const val RECIPE = "recipe"
     const val SPENDING = "spending"
     const val IDEAS = "ideas"
     const val FEEDBACK = "feedback?checkin={checkin}&kind={kind}"
@@ -145,7 +147,9 @@ private fun NutritionScribeApp() {
     val settings = ServiceLocator.settingsRepository
     val onboarded by settings.isOnboarded.collectAsState(initial = null)
     // Test versions ask whose copy this is, once at first open and once after each update.
-    val testing = androidx.compose.runtime.remember { com.nutritionscribe.app.ui.feedback.isTestBuild(ServiceLocator.appContext) }
+    val testing = androidx.compose.runtime.remember(com.nutritionscribe.app.ui.feedback.BetaMode.left.value) {
+        com.nutritionscribe.app.ui.feedback.isTestBuild(ServiceLocator.appContext)
+    }
     val version = androidx.compose.runtime.remember { com.nutritionscribe.app.ui.onboarding.appVersionCode(ServiceLocator.appContext) }
     val name by settings.testerName.collectAsState(initial = null)
     val confirmed by settings.nameConfirmedVersion.collectAsState(initial = null)
@@ -180,7 +184,9 @@ private fun titleFor(route: String?, args: Bundle?): String = when (route) {
         ?.takeIf { it != com.nutritionscribe.shared.model.LogDays.today() }
         ?.let { "Add to " + it.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d")) }
         ?: "Log food"
-    Routes.REVIEW -> "Check it once"
+    // Review L6: "Check it once" read as a promise it would never ask again.
+    Routes.REVIEW -> "Check before logging"
+    Routes.RECIPE -> com.nutritionscribe.app.ui.confirm.LogSession.recipe?.let { if (it.batchOf != null) "This week's batch" else "New recipe" } ?: "Recipe"
     Routes.DAY -> args?.getString("date")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
         ?.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, MMM d")) ?: "Day"
     Routes.FIX -> "Edit entry"
@@ -275,7 +281,8 @@ private fun CompactTabBar(tabs: List<BottomTab>, selected: (BottomTab) -> Boolea
                     }
                     Text(
                         tab.label,
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelMedium.copy(fontSize = com.nutritionscribe.app.ui.common.cappedSp(12f)),
+                        maxLines = 1,
                         fontWeight = if (on) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Medium,
                         color = if (on) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 2.dp),
@@ -313,8 +320,32 @@ private fun MainNavScaffold() {
     // them, so it gets a back arrow and the tab bar steps aside.
     val onTab = tabs.any { it.route == currentDestination?.route }
 
-    com.nutritionscribe.app.ui.feedback.HoldToFeedback(screen = { titleFor(currentDestination?.route, backStackEntry?.arguments) + " (${currentDestination?.route})" }) {
+    val shakeOn by ServiceLocator.settingsRepository.shakeToReport.collectAsState(initial = false)
+    val betaLeft = com.nutritionscribe.app.ui.feedback.BetaMode.left.value == true
+    com.nutritionscribe.app.ui.feedback.ShakeToReport(enabled = shakeOn && !betaLeft, screen = { com.nutritionscribe.app.ui.feedback.ShakeReport.screenName(currentDestination?.route, titleFor(currentDestination?.route, backStackEntry?.arguments)) }) {
+    // Review L4: one place for short messages, in place of Toasts.
+    val snackbar = androidx.compose.runtime.remember { androidx.compose.material3.SnackbarHostState() }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        val host: kotlinx.coroutines.CoroutineScope = this
+        com.nutritionscribe.app.ui.common.AppMessages.messages.collect { m ->
+            snackbar.currentSnackbarData?.dismiss()
+            host.launch {
+                val r = snackbar.showSnackbar(m.text, actionLabel = m.action, withDismissAction = m.action != null,
+                    duration = if (m.long || m.action != null) androidx.compose.material3.SnackbarDuration.Long else androidx.compose.material3.SnackbarDuration.Short)
+                if (r == androidx.compose.material3.SnackbarResult.ActionPerformed) m.onAction?.invoke()
+            }
+        }
+    }
     Scaffold(
+        // Above a screen's own pinned bar: on the check card it covered "Log it".
+        snackbarHost = {
+            val lift = when (currentDestination?.route) {
+                Routes.REVIEW, Routes.RECIPE -> 120.dp
+                Routes.HOME -> 76.dp
+                else -> 0.dp
+            }
+            androidx.compose.material3.SnackbarHost(snackbar, Modifier.padding(bottom = lift))
+        },
         topBar = {
             val dispatcher = androidx.activity.compose.LocalOnBackPressedDispatcherOwner.current
             // Home opens on its own streak strip, which carries the date.
@@ -441,6 +472,12 @@ private fun MainNavScaffold() {
                     onScan = { i -> navController.navigate(Routes.scan(i)) },
                 )
             }
+            composable(Routes.RECIPE) {
+                com.nutritionscribe.app.ui.confirm.ConfirmScreen(
+                    onLogged = { navController.popBackStack() },
+                    onScan = { i -> navController.navigate(Routes.scan(i)) },
+                )
+            }
             composable(
                 Routes.FIX,
                 arguments = listOf(navArgument("entryId") { type = NavType.StringType }),
@@ -486,7 +523,7 @@ private fun MainNavScaffold() {
                             scope.launch {
                                 val d = com.nutritionscribe.app.ui.confirm.ItemDraft.fromCandidate(candidate)
                                 ServiceLocator.logPipeline.remember(d.name, listOf(d.toConfirmed().copy(unchangedMemory = false)), "scan")
-                                android.widget.Toast.makeText(ServiceLocator.appContext, "Saved ${d.name} to My foods", android.widget.Toast.LENGTH_SHORT).show()
+                                com.nutritionscribe.app.ui.common.AppMessages.say("Saved ${d.name} to My foods")
                                 navController.popBackStack()
                             }
                         } else if (index == Routes.SCAN_NEW) {
@@ -504,15 +541,16 @@ private fun MainNavScaffold() {
                 val scope = androidx.compose.runtime.rememberCoroutineScope()
                 val context = androidx.compose.ui.platform.LocalContext.current
                 com.nutritionscribe.app.ui.myfoods.MyFoodsScreen(
+                    onRecipe = { navController.navigate(Routes.RECIPE) },
                     onLog = { phrase ->
                         com.nutritionscribe.app.ui.confirm.LogDay.today()
                         scope.launch {
                             when (val out = com.nutritionscribe.app.ui.addentry.LogFlow.submit(phrase, "my_foods")) {
                                 is com.nutritionscribe.app.ui.addentry.LogFlow.Outcome.Logged ->
-                                    android.widget.Toast.makeText(context, "Logged ${out.entry.name}", android.widget.Toast.LENGTH_SHORT).show()
+                                    com.nutritionscribe.app.ui.common.AppMessages.logged("Logged ${com.nutritionscribe.app.ui.common.shownFoodName(out.entry.name)}", listOf(out.entry))
                                 com.nutritionscribe.app.ui.addentry.LogFlow.Outcome.Review -> navController.navigate(Routes.REVIEW)
                                 is com.nutritionscribe.app.ui.addentry.LogFlow.Outcome.Failed ->
-                                    android.widget.Toast.makeText(context, out.message, android.widget.Toast.LENGTH_LONG).show()
+                                    com.nutritionscribe.app.ui.common.AppMessages.say(out.message, long = true)
                             }
                         }
                     },
@@ -536,6 +574,9 @@ private fun MainNavScaffold() {
                     onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
                     onOpenGoals = { navController.navigate(Routes.GOALS) },
                     onOpenNutrient = { m, have, target -> navController.navigate(Routes.nutrient(m, have, target, day)) },
+                    onAdd = { d -> navController.navigate(Routes.addEntry(d)) },
+                    // Steps replace this page, so Back still goes to where the day was opened from.
+                    onGoTo = { d -> navController.navigate(Routes.day(d)) { popUpTo(Routes.DAY) { inclusive = true } } },
                 )
             }
             composable(
@@ -579,6 +620,7 @@ private fun MainNavScaffold() {
                     onBack = { navController.popBackStack() },
                     onFix = { navController.navigate(Routes.fix(id)) },
                     onScan = { i -> navController.navigate(Routes.scan(i)) },
+                    onRecipe = { navController.navigate(Routes.RECIPE) },
                 )
             }
             composable(Routes.GOALS) { GoalsScreen(onStreak = { navController.navigate(Routes.STREAK) }) }

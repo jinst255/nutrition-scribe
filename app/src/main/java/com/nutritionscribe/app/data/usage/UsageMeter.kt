@@ -64,12 +64,20 @@ class UsageMeter(
             cached = n(usage, "cache_read_input_tokens")
             input = n(usage, "input_tokens") + cached + n(usage, "cache_creation_input_tokens")
             output = n(usage, "output_tokens")
+        } else if (url.endsWith("/responses")) {
+            // The Responses API (web search) names them differently.
+            input = n(usage, "input_tokens")
+            cached = n(usage?.get("input_tokens_details") as? JsonObject, "cached_tokens")
+            output = n(usage, "output_tokens")
         } else {
             input = n(usage, "prompt_tokens")
             cached = n(usage?.get("prompt_tokens_details") as? JsonObject, "cached_tokens")
             output = n(usage, "completion_tokens")
         }
-        val cost = PriceBook.tokenCost(model.stripDate(), input, cached, output)
+        // Each search the model ran is billed on top of the tokens.
+        val searches = (response?.get("output") as? kotlinx.serialization.json.JsonArray).orEmpty()
+            .count { ((it as? JsonObject)?.get("type") as? JsonPrimitive)?.content == "web_search_call" }
+        val cost = PriceBook.tokenCost(model.stripDate(), input, cached, output) + searches * PriceBook.WEB_SEARCH_PER_CALL
         val row = AiUsageRow(
             timestampEpochMillis = System.currentTimeMillis(),
             provider = provider,
@@ -89,7 +97,7 @@ class UsageMeter(
             "ai_call",
             "kind" to kind, "url" to url, "status" to status, "ms" to millis, "model" to model,
             "input_tokens" to input, "cached_tokens" to cached, "output_tokens" to output,
-            "cost_usd" to cost, "tag" to row.tag,
+            "cost_usd" to cost, "tag" to row.tag, "web_searches" to searches,
             "request" to (request ?: requestBody.take(20_000)),
             "response" to (response ?: responseBody.take(20_000)),
         )
@@ -121,6 +129,21 @@ class UsageMeter(
             val t0 = System.currentTimeMillis()
             try {
                 val (status, text) = OpenAiItemLookup.HttpTransport.post(url, headers, body)
+                recordHttp(url, body, status, text, System.currentTimeMillis() - t0, kind)
+                status to text
+            } catch (e: java.io.IOException) {
+                events.event("ai_call_failed", "url" to url, "ms" to System.currentTimeMillis() - t0, "error" to e,
+                    "request" to runCatching { Json.parseToJsonElement(body) }.getOrNull())
+                throw e
+            }
+        }
+
+    /** Ask's streamed answers, metered from the finished response the stream ends with. */
+    fun streamTransport(kind: UsageKind = UsageKind.ASK): com.nutritionscribe.shared.resolve.AskStream.StreamTransport =
+        com.nutritionscribe.shared.resolve.AskStream.StreamTransport { url, headers, body, onData ->
+            val t0 = System.currentTimeMillis()
+            try {
+                val (status, text) = com.nutritionscribe.shared.resolve.AskStream.HttpSse.stream(url, headers, body, onData)
                 recordHttp(url, body, status, text, System.currentTimeMillis() - t0, kind)
                 status to text
             } catch (e: java.io.IOException) {

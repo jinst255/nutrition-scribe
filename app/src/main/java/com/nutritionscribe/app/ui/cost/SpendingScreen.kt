@@ -102,11 +102,16 @@ private fun axisUsd(v: Double, step: Double): String = when {
     else -> String.format(Locale.US, "$%.0f", v)
 }
 
-/** The series and their colours: categorical slots 1 to 3, validated on this app's surfaces in both modes. */
+/**
+ * The series and their colours, validated on this app's surfaces in both modes
+ * (2026-11-14, with web searches added as aqua: worst adjacent CVD ΔE 20.3 light /
+ * 15.9 dark; aqua is 2.8:1 on white, so the legend always labels it).
+ */
 private enum class Series(val kinds: Set<String>, val label: String, val light: Color, val dark: Color) {
     LOOKUP(setOf(UsageKind.FOOD_LOOKUP.name, UsageKind.OTHER.name), "Food lookups", Color(0xFF2A78D6), Color(0xFF3987E5)),
     SPEECH(setOf(UsageKind.SPEECH.name), "Speech to text", Color(0xFFEB6834), Color(0xFFD95926)),
     ASK(setOf(UsageKind.ASK.name), "Ask chat", Color(0xFF8A5CC8), Color(0xFF9D74DB)),
+    WEB(setOf(UsageKind.WEB_SEARCH.name), "Web searches", Color(0xFF1BAF7A), Color(0xFF199E70)),
 }
 
 private fun Series.of(row: AiUsageRow) = row.kind in kinds
@@ -175,7 +180,7 @@ fun SpendingScreen(onOpenEntry: (String) -> Unit) {
         Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Nothing spent yet", style = MaterialTheme.typography.titleLarge)
             Text(
-                "With Highest quality mode on, every AI food lookup and every spoken entry sent for transcription shows up here, " +
+                "With offline mode off, every AI food lookup, web search and every spoken entry sent for transcription shows up here, " +
                     "with what it cost. Foods you've logged before never call the AI, so they're always free.",
                 color = MaterialTheme.colorScheme.secondary,
             )

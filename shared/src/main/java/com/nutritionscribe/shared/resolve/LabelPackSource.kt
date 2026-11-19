@@ -6,6 +6,16 @@ import kotlin.math.abs
 import kotlin.math.ln
 
 /**
+ * What the app tells people about the label pack, in one place. Settings said
+ * "About 40 MB" in one row and "about 70 MB" in another (review V3); the pack
+ * unpacks to about 71 MB. LabelPackFactsTest checks this against a real pack.
+ */
+object LabelPackFacts {
+    const val UNPACKED_MB = 70
+    const val SIZE_TEXT = "about $UNPACKED_MB MB"
+}
+
+/**
  * Real package labels: the optional label pack (built by tools/build_label_pack.py
  * from USDA Branded Foods — what manufacturers themselves submitted).
  *

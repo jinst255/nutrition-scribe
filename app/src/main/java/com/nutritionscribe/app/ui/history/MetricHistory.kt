@@ -170,6 +170,64 @@ object MetricHistory {
         com.nutritionscribe.shared.model.Limits.judge(value, goal, dayOver = true)
 
     /**
+     * [goal] as it stood on [day]: the target it had then (GoalTimeline), plus the
+     * plasma extra for protein on a donation day and the day after. A metric that
+     * isn't a goal keeps its reference line as it is.
+     */
+    fun goalOn(
+        goal: MetricGoal,
+        day: Long,
+        changes: List<com.nutritionscribe.shared.model.GoalTimeline.Change>,
+        plasmaExtra: (Long) -> Double = { 0.0 },
+    ): MetricGoal {
+        if (!goal.enabled) return goal
+        val t = com.nutritionscribe.shared.model.GoalTimeline.targetOn(goal.metric.key, day, goal.target, changes) ?: return goal.copy(target = null)
+        val extra = if (goal.metric == com.nutritionscribe.shared.model.Metric.PROTEIN) plasmaExtra(day) else 0.0
+        return goal.copy(target = t + extra)
+    }
+
+    /** The key's line for a hatched stub (owner, 11-10: it looked like a greyed-out high bar). */
+    const val PATCHY_KEY = "Hatched: logged, but too little of the day's food lists it"
+
+    /** One target for a week or a month bar: the mean of its days' targets. */
+    fun bucketTarget(start: Long, end: Long, goalOn: (Long) -> MetricGoal): Double? {
+        val ts = (start..end).mapNotNull { goalOn(it).target }
+        return if (ts.isEmpty()) null else ts.average()
+    }
+
+    /**
+     * History's count line (review Hi1). "5 full days" was jargon, and nothing said
+     * why a logged day was missing from it. Now it counts the days with entries,
+     * and says how many of them are averaged and why the rest are hollow.
+     * [logged] and [full] are epoch days; the range is the [range] days before [today].
+     */
+    fun daysLine(range: Int, today: LocalDate, logged: Set<Long>, full: Set<Long>): String {
+        val days = (1..range).map { today.minusDays(it.toLong()).toEpochDay() }
+        val nLogged = days.count { it in logged }
+        val nFull = days.count { it in full }
+        val loggedText = if (nLogged == 1) "1 day logged" else "$nLogged days logged"
+        return when {
+            // On the emulator, with three entries today, it said "No days logged".
+            nLogged == 0 && today.toEpochDay() in logged -> "Only today so far · it joins once it's over"
+            nLogged == 0 -> "No days logged in the last $range days"
+            nFull == nLogged -> "$loggedText · today joins once it's over"
+            else -> "$loggedText · $nFull averaged; the rest had under half your calories logged, so their bars are hollow"
+        }
+    }
+
+    /**
+     * Which colours the cards on screen actually use, so History's key lists only
+     * those (review Hi3: it always listed all five, "Past your line" included for
+     * people with no lines). Only finished, full days are coloured.
+     */
+    fun standingsInUse(
+        cards: List<Pair<MetricGoal, List<DayValue>>>,
+        full: Set<Long>,
+        goalOn: (MetricGoal, Long) -> MetricGoal = { g, _ -> g },
+    ): Set<Standing> =
+        cards.flatMap { (g, days) -> days.filter { it.epochDay in full && it.value != null && !it.patchy }.map { standing(goalOn(g, it.epochDay), it.value!!) } }.toSet()
+
+    /**
      * The days that count toward an average: over, and at least half the calorie
      * target logged (or counted anyway by the person). Today is left out until it
      * ends, and so is a day with a breakfast and nothing else: it made every

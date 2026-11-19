@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -83,7 +84,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class FoodFilter(val label: String) { ALL("All"), MEALS("Meals"), KINDS("With kinds") }
+private enum class FoodFilter(val label: String) { ALL("All"), RECIPES("Recipes"), MEALS("Meals"), KINDS("With kinds") }
 private enum class FoodSort(val label: String) { USED("Most used"), RECENT("Recent"), NAME("A–Z") }
 
 /**
@@ -96,6 +97,8 @@ private enum class FoodSort(val label: String) { USED("Most used"), RECENT("Rece
 fun MyFoodsScreen(
     onLog: (String) -> Unit = {},
     onScanToSave: () -> Unit = {},
+    /** Check it once in recipe mode, set up in LogSession. */
+    onRecipe: () -> Unit = {},
     startOnLabels: Boolean = false,
 ) {
     val store = ServiceLocator.personalStore
@@ -120,7 +123,17 @@ fun MyFoodsScreen(
         val f = all.firstOrNull { it.key == key }
         if (f == null) { open = null; return@let }
         BackHandler { open = null }
-        FoodPage(f, onLog = { open = null; onLog(f.phrase) }, onClose = { open = null })
+        FoodPage(f, onLog = { open = null; onLog(f.phrase) }, onClose = { open = null }, onEditRecipe = {
+            val res = ServiceLocator.logPipeline
+            com.nutritionscribe.app.ui.confirm.LogSession.startRecipe(
+                com.nutritionscribe.shared.resolve.Recipes.activeParts(f, System.currentTimeMillis()).map { p ->
+                    com.nutritionscribe.app.ui.confirm.ItemDraft.from(res.partLine(p))
+                }, f.name)
+            com.nutritionscribe.app.ui.confirm.LogSession.recipe = com.nutritionscribe.app.ui.confirm.LogSession.RecipeMode(f.name)
+            events.event("recipe_edit_open", "key" to f.key)
+            open = null
+            onRecipe()
+        })
         return
     }
 
@@ -144,7 +157,7 @@ fun MyFoodsScreen(
             }
             val shown = all
                 .filter { query.isBlank() || "${it.name} ${it.phrase} ${it.candidate?.brand.orEmpty()}".contains(query.trim(), ignoreCase = true) }
-                .filter { when (filter) { FoodFilter.ALL -> true; FoodFilter.MEALS -> it.isMeal; FoodFilter.KINDS -> it.allKinds.size > 1 } }
+                .filter { when (filter) { FoodFilter.ALL -> true; FoodFilter.RECIPES -> it.isRecipe; FoodFilter.MEALS -> it.isMeal; FoodFilter.KINDS -> it.allKinds.size > 1 } }
                 .let { list -> when (sort) {
                     FoodSort.USED -> list.sortedByDescending { it.timesUsed }
                     FoodSort.RECENT -> list.sortedByDescending { it.updatedAt }
@@ -160,11 +173,14 @@ fun MyFoodsScreen(
                 }
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FoodFilter.entries.forEach { f -> FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) }) }
-                        Spacer(Modifier.weight(1f))
+                        // The chips scroll in their own space: with Recipes added, the sort button was
+                        // squeezed to nothing and its text stood one letter a line, a tall gap above and below.
+                        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FoodFilter.entries.forEach { f -> FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label, maxLines = 1) }) }
+                        }
                         Box {
                             TextButton(onClick = { sortOpen = true }) {
-                                Text(sort.label); Icon(Icons.Filled.ArrowDropDown, null)
+                                Text(sort.label, maxLines = 1, softWrap = false); Icon(Icons.Filled.ArrowDropDown, null)
                             }
                             DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
                                 FoodSort.entries.forEach { s -> DropdownMenuItem(text = { Text(s.label) }, onClick = { sort = s; sortOpen = false }) }
@@ -186,7 +202,7 @@ fun MyFoodsScreen(
                                 ) {
                                     FoodThumb(f, Modifier.size(44.dp))
                                     Column(Modifier.weight(1f)) {
-                                        Text(f.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(com.nutritionscribe.app.ui.common.shownFoodName(f.name), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(rowSub(f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 1,
                                             overflow = TextOverflow.Ellipsis)
                                     }
@@ -218,7 +234,9 @@ fun MyFoodsScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         AddOption(Icons.Outlined.Mic, "Say or type it", "Saves it without logging it. Several foods are saved as a meal") { adding = false; addHow = "say" }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        AddOption(Icons.Outlined.Keyboard, "Enter the numbers myself", "From a recipe or a website") { adding = false; addHow = "numbers" }
+                        AddOption(Icons.Outlined.Keyboard, "Enter the numbers myself", "From a package or a website") { adding = false; addHow = "numbers" }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        AddOption(Icons.Outlined.Layers, "A recipe", "Type, say or photograph the ingredients; log it a bowl at a time") { adding = false; addHow = "recipe" }
                     }
                 }
             }
@@ -230,13 +248,31 @@ fun MyFoodsScreen(
             scope.launch {
                 val items = ServiceLocator.logPipeline.resolveItem(text, why = "my_foods_add").filter { it.nutrients.isNotEmpty() }
                 if (items.isEmpty()) {
-                    android.widget.Toast.makeText(context, "Couldn't work that out. Try other words, or enter the numbers.", android.widget.Toast.LENGTH_LONG).show()
+                    com.nutritionscribe.app.ui.common.AppMessages.say("Couldn't work that out. Try other words, or enter the numbers.", long = true)
                 } else {
                     ServiceLocator.logPipeline.remember(text, items.map { com.nutritionscribe.app.data.resolve.LogPipeline.confirmedFrom(it).copy(unchangedMemory = false) }, "said")
-                    android.widget.Toast.makeText(context, "Saved to My foods. Say “$text” to log it.", android.widget.Toast.LENGTH_LONG).show()
+                    com.nutritionscribe.app.ui.common.AppMessages.say("Saved to My foods. Say “$text” to log it.", long = true)
                 }
             }
         }, onDismiss = { addHow = null })
+        "recipe" -> NewRecipeDialog(onNext = { name, ingredients ->
+            addHow = "recipe_working"
+            scope.launch {
+                val tag = java.util.UUID.randomUUID().toString()
+                val r = ServiceLocator.logPipeline.resolve(ingredients, tag = tag, how = "recipe")
+                com.nutritionscribe.app.ui.confirm.LogSession.startRecipe(r, name)
+                com.nutritionscribe.app.ui.confirm.LogSession.tag = tag
+                addHow = null
+                onRecipe()
+            }
+        }, onDismiss = { addHow = null })
+        // Looking up every ingredient takes a few seconds; the screen said nothing meanwhile.
+        "recipe_working" -> AlertDialog(
+            onDismissRequest = {},
+            confirmButton = {},
+            title = { Text("Working out the ingredients…") },
+            text = { androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth()) },
+        )
         "numbers" -> NumbersDialog(null, onSave = { f ->
             addHow = null
             scope.launch { withContext(Dispatchers.IO) { store.put(f) } }
@@ -248,7 +284,11 @@ fun MyFoodsScreen(
 private fun isLabel(f: PersonalFood) = !f.isMeal && (f.candidate?.origin == Origin.LABEL || f.candidate?.id?.startsWith("kindguess:") == true)
 
 private fun rowSub(f: PersonalFood): String = listOfNotNull(
-    if (f.isMeal) "Meal · ${f.parts.size} parts" else usual(f),
+    when {
+        f.isRecipe -> recipeLine(f)
+        f.isMeal -> "Meal · ${f.parts.size} parts"
+        else -> usual(f)
+    },
     f.nutrients[Metric.CALORIES.key]?.let { "${Math.round(it)} kcal" },
     f.nutrients[Metric.PROTEIN.key]?.let { "${fmt1(it)} g protein" },
 ).joinToString(" · ")
@@ -268,7 +308,7 @@ private fun FoodThumb(f: PersonalFood, modifier: Modifier) {
     when {
         f.photo != null -> LabelPhoto(f.photo, modifier.clip(RoundedCornerShape(10.dp)))
         else -> Box(modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
-            if (f.isMeal) Icon(Icons.Outlined.Layers, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+            if (f.isMeal || f.isRecipe) Icon(Icons.Outlined.Layers, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             else Text(f.name.trim().take(1).uppercase(), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         }
     }
@@ -292,7 +332,7 @@ private fun AddOption(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FoodPage(f: PersonalFood, onLog: () -> Unit, onClose: () -> Unit) {
+private fun FoodPage(f: PersonalFood, onLog: () -> Unit, onClose: () -> Unit, onEditRecipe: () -> Unit = {}) {
     val store = ServiceLocator.personalStore
     val events = ServiceLocator.debugEvents
     val scope = rememberCoroutineScope()
@@ -311,7 +351,7 @@ private fun FoodPage(f: PersonalFood, onLog: () -> Unit, onClose: () -> Unit) {
         }
         if (f.photo != null) LabelPhoto(f.photo, Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(16.dp)))
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(if (f.isMeal) "Meal · ${f.parts.size} parts" else usual(f) ?: "One serving", style = MaterialTheme.typography.titleSmall,
+            Text(if (f.isRecipe) recipeLine(f) + " · per serving" else if (f.isMeal) "Meal · ${f.parts.size} parts" else usual(f) ?: "One serving", style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.weight(1f))
             Text(listOfNotNull(if (f.timesUsed == 1) "Used once" else "Used ${f.timesUsed} times", lastUsed(f.updatedAt)).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
@@ -336,20 +376,22 @@ private fun FoodPage(f: PersonalFood, onLog: () -> Unit, onClose: () -> Unit) {
                 }
             }
         }
-        if (f.isMeal) {
-            SectionLabel("Parts", Modifier.padding(top = 6.dp))
+        if (f.isRecipe) RecipeBatch(f)
+        if (f.isMeal || f.isRecipe) {
+            SectionLabel(if (f.isRecipe) "Ingredients, for the whole pot" else "Parts", Modifier.padding(top = 6.dp))
             Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(horizontal = 14.dp)) {
-                    f.parts.forEachIndexed { i, p ->
+                    val shownParts = if (f.isRecipe) com.nutritionscribe.shared.resolve.Recipes.activeParts(f, System.currentTimeMillis()) else f.parts
+                    shownParts.forEachIndexed { i, p ->
                         if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         Row(Modifier.fillMaxWidth().heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Column(Modifier.weight(1f)) {
-                                Text(p.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(p.name.replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 p.grams?.let { Text("${Math.round(it)} g", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary) }
                             }
                             Text(p.nutrients[Metric.CALORIES.key]?.let { "${Math.round(it)} kcal" } ?: "—", style = NumberStyle)
-                            if (f.parts.size > 1) TextButton(onClick = {
+                            if (f.isMeal && f.parts.size > 1) TextButton(onClick = {
                                 val kept = f.parts - p
                                 events.event("my_meal_part_removed", "key" to f.key, "part" to p.name)
                                 scope.launch { withContext(Dispatchers.IO) {
@@ -361,9 +403,11 @@ private fun FoodPage(f: PersonalFood, onLog: () -> Unit, onClose: () -> Unit) {
                     }
                 }
             }
-            Text("Say “${f.phrase}” to log all of it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            Text(if (f.isRecipe) "Say “a bowl of ${f.name.lowercase()}”, “half a serving” or “300 g” to log a portion. " +
+                "Say “made ${f.name.lowercase()}, added …” when a batch is different."
+                else "Say “${f.phrase}” to log all of it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
-        if (!f.isMeal) KindSettings(f)
+        if (!f.isMeal && !f.isRecipe) KindSettings(f)
         SectionLabel("You call it", Modifier.padding(top = 6.dp))
         Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
             Text("“${f.phrase}”", modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
@@ -373,7 +417,7 @@ private fun FoodPage(f: PersonalFood, onLog: () -> Unit, onClose: () -> Unit) {
             Button(onClick = { events.event("my_food_log_now", "key" to f.key); onLog() }, modifier = Modifier.heightIn(min = 48.dp)) {
                 Icon(Icons.Filled.Add, null, Modifier.size(18.dp)); Text(" Log now")
             }
-            OutlinedButton(onClick = { if (isLabel(f)) editLabel = true else editing = true }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Edit") }
+            OutlinedButton(onClick = { if (f.isRecipe) onEditRecipe() else if (isLabel(f)) editLabel = true else editing = true }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Edit") }
         }
         TextButton(onClick = { forget = true }) { Text("Forget this food", color = MaterialTheme.colorScheme.error) }
     }
@@ -404,6 +448,104 @@ private fun FoodPage(f: PersonalFood, onLog: () -> Unit, onClose: () -> Unit) {
             dismissButton = { TextButton(onClick = { forget = false }) { Text("Cancel") } },
         )
     }
+}
+
+private fun recipeLine(f: PersonalFood): String {
+    val now = System.currentTimeMillis()
+    val n = com.nutritionscribe.shared.resolve.Recipes.servings(f, now)
+    val batch = if (com.nutritionscribe.shared.resolve.Recipes.activeBatch(f, now) != null) " · this week's batch" else ""
+    return "Recipe · makes ${com.nutritionscribe.shared.resolve.Units.format(n)}$batch"
+}
+
+/** This week's batch, when it differs: what changed, and keep it or go back to the recipe. */
+@Composable
+private fun RecipeBatch(f: PersonalFood) {
+    val now = System.currentTimeMillis()
+    val batch = com.nutritionscribe.shared.resolve.Recipes.activeBatch(f, now) ?: return
+    val store = ServiceLocator.personalStore
+    val events = ServiceLocator.debugEvents
+    val scope = rememberCoroutineScope()
+    val made = java.time.Instant.ofEpochMilli(batch.madeAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+    val until = made.plusDays(com.nutritionscribe.shared.resolve.Recipes.BATCH_DAYS.toLong())
+    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("This week's batch", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onTertiaryContainer)
+            Text("Made ${made.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d"))}" +
+                (if (batch.changes.isNotEmpty()) ": ${batch.changes.joinToString(", ")}." else ".") +
+                " Servings use it until ${until.format(java.time.format.DateTimeFormatter.ofPattern("EEE"))}, then the recipe again.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onTertiaryContainer)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    events.event("recipe_keep_batch", "key" to f.key, "changes" to batch.changes)
+                    scope.launch { withContext(Dispatchers.IO) { store.put(com.nutritionscribe.shared.resolve.Recipes.keepBatch(f, System.currentTimeMillis())) } }
+                }) { Text("Keep this change") }
+                OutlinedButton(onClick = {
+                    events.event("recipe_drop_batch", "key" to f.key)
+                    scope.launch { withContext(Dispatchers.IO) { store.put(com.nutritionscribe.shared.resolve.Recipes.dropBatch(f, System.currentTimeMillis())) } }
+                }) { Text("Back to the recipe") }
+            }
+        }
+    }
+}
+
+/**
+ * A new recipe: its name and ingredients, typed, said, or read off a photo of the
+ * recipe card on the phone (nothing leaves it). The ingredients then go to Check it once.
+ */
+@Composable
+private fun NewRecipeDialog(onNext: (String, String) -> Unit, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var ingredients by remember { mutableStateOf("") }
+    var saying by remember { mutableStateOf(false) }
+    var reading by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val events = ServiceLocator.debugEvents
+    val pick = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        reading = true
+        runCatching {
+            val image = com.google.mlkit.vision.common.InputImage.fromFilePath(context, uri)
+            com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+                .process(image)
+                .addOnSuccessListener { text ->
+                    val found = com.nutritionscribe.shared.resolve.Recipes.cardIngredients(text.text)
+                    events.event("recipe_card_read", "lines" to text.text.lines().size, "ingredients" to found.size)
+                    if (found.isEmpty()) note = "Couldn't find ingredient lines on that photo. Type them, or try a closer photo."
+                    else { ingredients = (ingredients.lines().filter { it.isNotBlank() } + found).joinToString("\n"); note = "Read ${found.size} lines. Check them, then Next." }
+                    if (name.isBlank()) text.text.lines().firstOrNull { it.isNotBlank() && it.length < 40 && !it.first().isDigit() }?.let { name = it.trim() }
+                    reading = false
+                }
+                .addOnFailureListener { note = "Couldn't read that photo."; reading = false }
+        }.onFailure { note = "Couldn't open that photo."; reading = false }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New recipe") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, placeholder = { Text("Mom's chili") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = ingredients, onValueChange = { ingredients = it }, label = { Text("Ingredients, for the whole pot") },
+                    placeholder = { Text("1 lb ground beef\n2 cans kidney beans\nabout half a zucchini") },
+                    trailingIcon = { androidx.compose.material3.IconButton(onClick = { saying = true }) { Icon(Icons.Outlined.Mic, "Say them") } },
+                    minLines = 4, maxLines = 8, modifier = Modifier.fillMaxWidth())
+                OutlinedButton(onClick = { pick.launch("image/*") }, enabled = !reading) {
+                    Icon(Icons.Outlined.CameraAlt, null, Modifier.size(18.dp)); Text(if (reading) " Reading…" else " From a photo of the card")
+                }
+                Text(note ?: "Rough amounts are fine (“about half a zucchini”). You check each one on the next screen.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onNext(name.trim(), ingredients.lines().map { it.trim() }.filter { it.isNotBlank() }.joinToString(", ")) },
+                enabled = name.isNotBlank() && ingredients.isNotBlank()) { Text("Next") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+    if (saying) com.nutritionscribe.app.ui.speech.VoiceDialog(title = "Say the ingredients", tag = null,
+        onResult = { ingredients = listOf(ingredients, it).filter { s -> s.isNotBlank() }.joinToString("\n"); saying = false },
+        onDismiss = { saying = false })
 }
 
 private fun lastUsed(at: Long): String? {

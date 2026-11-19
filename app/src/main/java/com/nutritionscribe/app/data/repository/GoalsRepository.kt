@@ -88,6 +88,13 @@ class GoalsRepository(
         dao.upsertAll(rows.map { it.toRow() })
     }
 
+    /** After a profile save: calories point the way the aim does (review Hi2). */
+    suspend fun matchCaloriesTo(aim: com.nutritionscribe.shared.model.TargetCalculator.Aim) {
+        val existing = find(Metric.CALORIES) ?: return
+        val adjusted = com.nutritionscribe.shared.model.CalorieAim.adjust(existing, aim)
+        if (adjusted != existing) dao.upsert(adjusted.toRow())
+    }
+
     suspend fun setEnabled(metric: Metric, enabled: Boolean) {
         val existing = find(metric) ?: MetricGoal.default(metric)
         dao.upsert(existing.copy(enabled = enabled).toRow())
@@ -96,6 +103,8 @@ class GoalsRepository(
     suspend fun setTarget(metric: Metric, target: Double?) {
         val existing = find(metric) ?: MetricGoal.default(metric)
         dao.upsert(existing.copy(target = target).toRow())
+        // History judges each past day by the target it had then (owner, 11-04).
+        settings.recordGoalChange(metric.key, com.nutritionscribe.shared.model.LogDays.today().toEpochDay(), existing.target, target)
         mirrorProteinToLegacySettings(metric, target = target)
     }
 

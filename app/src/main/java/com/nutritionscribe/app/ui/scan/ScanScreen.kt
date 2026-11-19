@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CropFree
@@ -77,6 +78,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -290,6 +292,21 @@ fun ScanScreen(
         val inPack = pack.source()?.byBarcode(code)
         if (inPack != null) {
             events.event("scan_barcode", "code" to code, "source" to "pack", "ms" to System.currentTimeMillis() - t0, "candidate" to describe(inPack))
+            // "Crackers" is no name for Goldfish (owner, 10-29): Open Food Facts may know
+            // what it is called. Only the barcode is sent; the pack's numbers stay.
+            if (com.nutritionscribe.shared.resolve.ShortName.isGeneric(inPack.name, inPack.brand)) {
+                status = "Finding its name…"
+                scope.launch {
+                    val online = withContext(Dispatchers.IO) {
+                        kotlinx.coroutines.withTimeoutOrNull(3_000) { runCatching { ServiceLocator.openFoodFacts.byBarcode(code) }.getOrNull() }
+                    }
+                    val better = online?.name?.takeIf { !com.nutritionscribe.shared.resolve.ShortName.isGeneric(it, inPack.brand) }
+                    events.event("scan_name_lookup", "code" to code, "pack_name" to inPack.name, "found" to better)
+                    status = null
+                    deliver(if (better != null) inPack.copy(name = better) else inPack, "barcode")
+                }
+                return
+            }
             deliver(inPack, "barcode")
             return
         }
@@ -334,9 +351,18 @@ fun ScanScreen(
             val found = withContext(Dispatchers.IO) { frontAnswer(big.map { it.text to it.height }) }
             matching = false
             if (found == null || done || sheet != null || frontDone) return@launch
-            // Only a strong match is offered at all (notes S22, S34): a wrong question costs more than none.
-            if (found.sure || found.yours) guesses = listOf(found.candidate) + found.others.take(2)
-            if (found.sure || found.newKind != null || found.yours) {
+            // Their own label, found by its front, is asked about (it was right 9 times of 9).
+            // The label pack's guess never is: "almost always wrong … correct one time" in
+            // two weeks (owner, 10-27), 27 give-ups. It is only a choice in the list,
+            // beside reading the barcode or the label.
+            if (FrontOffer.of(found.yours, found.newKind != null) == FrontOffer.CHOICES) {
+                guesses = listOf(found.candidate) + found.others.take(2)
+                events.event("scan_front_choices", "candidate" to describe(found.candidate), "others" to found.others.take(2).map { it.name },
+                    "ms" to System.currentTimeMillis() - openedAt)
+                return@launch
+            }
+            if (found.yours) guesses = listOf(found.candidate) + found.others.take(2)
+            if (found.newKind != null || found.yours) {
                 events.event("scan_front", "sure" to found.sure, "yours" to found.yours, "new_kind" to found.newKind,
                     "candidate" to describe(found.candidate), "words" to found.words, "kinds" to found.kinds.map { Kinds.label(it) },
                     "ms" to System.currentTimeMillis() - openedAt)
@@ -521,8 +547,8 @@ fun ScanScreen(
         LaunchedEffect(focusAt) { if (focusAt != null) { delay(900); focusAt = null } }
         Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(16.dp))) {
             CameraView(
-                onBarcode = ::onBarcode,
-                onText = ::onText,
+                onBarcode = { onBarcode(it) },
+                onText = { l, f -> onText(l, f) },
                 onReady = { c, cam -> capture = c; camera = cam },
                 onFocus = { at -> focusAt = at; events.event("scan_focus") },
             )
@@ -621,6 +647,18 @@ fun ScanScreen(
                             sheet = FrontSheet.Found(FrontAnswer(c, false, false, emptyList(), emptyList(), null, siblingsOf(c)), null)
                         }, label = { Text(shortName(c), maxLines = 1) })
                     }
+                }
+            }
+        } else if (guesses.isNotEmpty() && (mode == ScanMode.AUTO || mode == ScanMode.FRONT)) {
+            // The front's guesses, as choices only (never "is this it?"): the barcode or
+            // the label stays the sure way.
+            SectionLabel("Is it one of these? The barcode or label is surer")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                guesses.take(3).forEach { c ->
+                    FilterChip(selected = false, onClick = {
+                        events.event("scan_front_picked", "id" to c.id, "from" to "choices")
+                        sheet = FrontSheet.Found(FrontAnswer(c, false, false, emptyList(), emptyList(), null, siblingsOf(c)), null)
+                    }, label = { Text(shortName(c), maxLines = 1) })
                 }
             }
         } else if (mode == ScanMode.AUTO) {
@@ -1196,8 +1234,12 @@ private fun PanelForm(
     onUse: (FoodCandidate) -> Unit,
     onRetake: () -> Unit,
 ) {
+    // Its many number boxes: with the keyboard up the form scrolls to Use these (same fix as Tell us).
+    com.nutritionscribe.app.ui.common.ScreenKeyboardFit()
     val events = ServiceLocator.debugEvents
     var name by remember { mutableStateOf(nameHint.orEmpty()) }
+    var nameMissing by remember { mutableStateOf(false) }
+    val nameFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     var serving by remember { mutableStateOf(panel.servingGrams?.let { it.toInt().toString() }.orEmpty()) }
     val values = remember {
         mutableStateMapOf<Metric, String>().apply {
@@ -1211,7 +1253,7 @@ private fun PanelForm(
     LaunchedEffect(Unit) {
         if (fromFront) return@LaunchedEffect
         matches = withContext(Dispatchers.IO) {
-            runCatching { ServiceLocator.labelPack.source()?.byPanel(panel.perServing, panel.servingGrams).orEmpty() }.getOrDefault(emptyList())
+            runCatching { ServiceLocator.labelPack.source()?.byPanel(panel.perServing, panel.servingGrams, limit = 8).orEmpty() }.getOrDefault(emptyList())
         }
         events.event("scan_panel_matches", "n" to matches.size, "names" to matches.map { ItemDraft.withBrand(it, " ") },
             "hint" to nameHint)
@@ -1244,6 +1286,13 @@ private fun PanelForm(
     val liquid = Liquids.isLiquid(name, panel.servingText)
 
     fun use() {
+        // Sam: Done stayed grey with no name and no hint why. Now it says what's missing.
+        if (name.isBlank()) {
+            nameMissing = true
+            runCatching { nameFocus.requestFocus() }
+            events.event("scan_use_no_name")
+            return
+        }
         if (issues.isNotEmpty() && !warned) {
             warned = true
             showAll = true
@@ -1328,7 +1377,7 @@ private fun PanelForm(
         m == Metric.CALORIES || m == Metric.PROTEIN || m in tracked.map { it.metric } || m.key in doubtful
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // The photo the numbers came from, to check a box against.
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -1355,17 +1404,21 @@ private fun PanelForm(
         }
         // Named, it can be logged again by name and its other vitamins found; three
         // "Scanned label" chips in Log again were no use to anyone.
-        OutlinedTextField(value = name, onValueChange = { name = it; picked = null }, label = { Text("What is it?") },
+        OutlinedTextField(value = name, onValueChange = { name = it; picked = null; nameMissing = false }, label = { Text("What is it?") },
             placeholder = { Text("e.g. Food Club creamy peanut butter") }, singleLine = true,
+            isError = nameMissing && name.isBlank(),
             supportingText = { Text(when {
+                nameMissing && name.isBlank() -> "Give it a name first, so you can log it again by name"
                 fromFront && name == nameHint -> "Filled in from the front"
                 matches.isNotEmpty() && name.isBlank() -> "Tap one below if it's that, or type it"
                 else -> "Brand and product, so you can find it again"
             }) },
-            modifier = Modifier.fillMaxWidth())
+            modifier = Modifier.fillMaxWidth().focusRequester(nameFocus))
         if (matches.isNotEmpty()) {
+            // Sam: three names was too few to find his. Up to 8, four at first.
+            var allMatches by remember { mutableStateOf(false) }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                matches.forEach { c ->
+                (if (allMatches) matches else matches.take(4)).forEach { c ->
                     val label = ItemDraft.withBrand(c, " ")
                     FilterChip(
                         selected = picked?.id == c.id,
@@ -1383,6 +1436,10 @@ private fun PanelForm(
                         },
                         label = { Text(label, maxLines = 2) },
                     )
+                }
+                if (!allMatches && matches.size > 4) {
+                    androidx.compose.material3.AssistChip(onClick = { allMatches = true; events.event("scan_matches_more", "n" to matches.size) },
+                        label = { Text("${matches.size - 4} more") })
                 }
             }
         }
@@ -1433,7 +1490,7 @@ private fun PanelForm(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = ::use, enabled = values.isNotEmpty() && name.isNotBlank()) { Text(if (warned) "Use anyway" else "Use these") }
+            Button(onClick = { use() }, enabled = values.isNotEmpty()) { Text(if (warned) "Use anyway" else "Use these") }
             OutlinedButton(onClick = onRetake) { Text("Retake") }
         }
     }

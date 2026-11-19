@@ -25,6 +25,7 @@ object Liquids {
         "pudding", "ice", "yogurt", "cheese", "butter", "candy", "chip", "chips", "biscuit", "cracker",
         "crackers", "mix", "gummies", "gummy", "bites", "muffin", "roll", "rolls", "bun", "dust", "leaves",
         "bag", "bags", "concentrate", "frozen", "popsicle", "pop-tart", "lollipop", "corn",
+        "oatmeal", "porridge", "oats", "grits", "rice", "pasta", "noodles", "chili", "stew", "casserole", "salad", "beans",
     )
 
     /** What can follow the drink word: "milk whole", "coke zero", "coffee black". */
@@ -34,9 +35,11 @@ object Liquids {
     /** "milk chocolate" is chocolate; "chocolate milk" is milk. The last word decides. */
     fun isLiquid(name: String, servingText: String? = null): Boolean {
         val serving = servingText.orEmpty().lowercase()
-        if (Regex("\\d\\s*(?:ml|mlt|fl\\.?\\s*oz|floz)\\b").containsMatchIn(serving)) return true
         val words = Regex("[a-z]+").findAll(name.lowercase()).map { it.value }.toList()
-        if (words.isEmpty() || words.any { it in SOLID_WORDS }) return false
+        // A food first: the AI's "1 bowl (240 ml)" made a bowl of oatmeal "234 mL · 7.9 fl oz".
+        if (words.any { it in SOLID_WORDS }) return false
+        if (Regex("\\d\\s*(?:ml|mlt|fl\\.?\\s*oz|floz)\\b").containsMatchIn(serving)) return true
+        if (words.isEmpty()) return false
         val last = words.last()
         // "iced tea", "oat milk", "a Premier Protein shake"; "tea biscuit" is out above.
         return last in DRINK_WORDS || (words.size >= 2 && words[words.size - 2] in DRINK_WORDS && last in TRAILING)

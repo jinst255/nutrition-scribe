@@ -31,28 +31,29 @@ if you like; the app will keep working.
 
 ### First time you open it
 
-It asks for an API key. **You almost certainly want to tap "Skip — I'll enter it
-myself."**
+It asks your name, what to track and, if you like, your body details for
+targets. Then it offers a place to paste an AI key. **You can skip that.**
 
-- **With a key** (a paid thing you'd have to set up with OpenAI), you just say or
-  type *"two eggs and a protein shake"* and the app works out the protein for you.
-- **Without one** (skip), you type the food and its protein in grams yourself —
-  read it off the package, or look it up once. Everything else is identical:
-  history, charts, exporting your data.
+- **Without a key** the app runs in offline mode: say, type or scan what you
+  ate and it's looked up in the food list and label database built into the app.
+  Everything else works the same: history, charts, recipes, exporting.
+- **With a key** (OpenAI or Anthropic, a paid account you set up yourself),
+  unusual foods, restaurant meals and long sentences are worked out more
+  accurately, and you can use Ask to plan meals or ask about your log.
 
-The app remembers what you log often, so after a few days your regular foods
-become one-tap buttons and manual entry stops being annoying.
-
-You can add a key later in Settings if you ever want to. Nothing is lost by
-skipping.
+The app remembers what you log, so after a few days your usual foods log in one
+go without asking. You can add a key any time in Settings › AI.
 
 ### Things worth knowing
 
 - **Your food log lives only on your phone.** There's no account and no cloud
   backup. If you lose the phone, the log goes with it — use Settings → Export and
   import now and then to save a copy.
-- **Nothing is sent anywhere** unless you set up an API key. If you do, the text
-  of what you ate is sent to OpenAI to be looked up, and nothing else.
+- **Almost nothing is sent anywhere** without an API key: a barcode the app
+  doesn't know is looked up on Open Food Facts (just the number). With a key,
+  what you say or type to log goes to OpenAI or Anthropic to be looked up, and
+  Ask sends your question with today's log. Settings › AI › Run in offline mode
+  stops all of that.
 - **Tap a point on the History chart** to jump the list to that day.
 - **The little + next to a date** adds an entry to that day — useful when you
   forget to log until the next morning.

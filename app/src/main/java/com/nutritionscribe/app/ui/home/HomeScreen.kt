@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.home
 
+import com.nutritionscribe.app.ui.common.shownName
+
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -136,6 +138,9 @@ class HomeViewModel : ViewModel() {
 
     private val all: Flow<List<Entry>> = dao.observeAll().map { rows -> rows.map { it.toEntry() } }
 
+    /** The newest entry of all time (null before the first): Home's "Last:" line and the streak's wait. */
+    val lastEntry: Flow<Entry?> = all.map { list -> list.maxByOrNull { it.timestampEpochMillis } }
+
     val todayEntries: Flow<List<Entry>> = all.map { list ->
         val start = com.nutritionscribe.shared.model.LogDays.start(com.nutritionscribe.shared.model.LogDays.today())
         list.filter { it.timestampEpochMillis >= start }.sortedBy { it.timestampEpochMillis }
@@ -155,7 +160,7 @@ class HomeViewModel : ViewModel() {
     val streak: Flow<com.nutritionscribe.shared.model.Streak.Result> = kotlinx.coroutines.flow.combine(all, goals, streakSettings) { list, g, st ->
         val today = com.nutritionscribe.shared.model.LogDays.today()
         val counted = com.nutritionscribe.shared.model.Streak.countedDays(list, st.rule, g, today)
-        com.nutritionscribe.shared.model.Streak.compute(counted, today, st.restDays)
+        com.nutritionscribe.shared.model.Streak.compute(counted, today, st.restDays, com.nutritionscribe.shared.model.Weeks.firstDay())
     }
 
     private val chatDao = ServiceLocator.database.chatDao()
@@ -232,10 +237,21 @@ class HomeViewModel : ViewModel() {
         viewModelScope.launch {
             val s = ServiceLocator.settingsRepository
             s.setAiConsent(kind, agreed)
-            // Saying no to the lookup provider is saying no to Highest quality mode;
+            // Saying no to the lookup provider is saying yes to offline mode;
             // Settings should show it off, not on-but-silent.
             if (!agreed && kind == s.backend.first()) s.setLookupSource(com.nutritionscribe.app.data.repository.LookupSource.OFFLINE)
         }
+    }
+
+    /** Home's "add your height…" card: false until known, so it never flashes at launch. */
+    val profileNudgeDue: Flow<Boolean> = kotlinx.coroutines.flow.combine(
+        ServiceLocator.settingsRepository.profile,
+        ServiceLocator.settingsRepository.profileNudgeClosed,
+    ) { p, (closes, at) -> ProfileNudge.due(p != null, closes, at, System.currentTimeMillis()) }
+
+    fun closeProfileNudge() {
+        ServiceLocator.debugEvents.event("profile_nudge_close")
+        viewModelScope.launch { ServiceLocator.settingsRepository.closeProfileNudge(System.currentTimeMillis()) }
     }
 
     /** A week after install (or after the last send): time to send the debug log back. */
@@ -321,6 +337,9 @@ fun HomeScreen(
     viewModel: HomeViewModel = viewModel(),
 ) {
     val entries by viewModel.todayEntries.collectAsState(initial = emptyList())
+    // Starts as "unknown" so the streak doesn't flicker away on every launch.
+    val lastEntry by viewModel.lastEntry.map<Entry?, Entry?> { it }.collectAsState(initial = null)
+    val lastKnown by viewModel.lastEntry.map { true }.collectAsState(initial = false)
     val goals by viewModel.goals.collectAsState(initial = emptyList())
     val glance by viewModel.needsGlance.collectAsState(initial = emptyList())
     val unprocessedCount by viewModel.unprocessedCount.collectAsState(initial = 0)
@@ -332,6 +351,7 @@ fun HomeScreen(
     val plasmaHidden by viewModel.plasmaHidden.collectAsState(initial = null)
     val consentAsk by viewModel.consentAsk.collectAsState(initial = null)
     val logDue by viewModel.logDue.collectAsState(initial = false)
+    val nudgeDue by viewModel.profileNudgeDue.collectAsState(initial = false)
     val ideas by viewModel.ideas.collectAsState(initial = null)
     val streak by viewModel.streak.collectAsState(initial = com.nutritionscribe.shared.model.Streak.compute(emptySet(), com.nutritionscribe.shared.model.LogDays.today(), 1))
     val streakSettings by viewModel.streakSettings.collectAsState(initial = null)
@@ -376,11 +396,9 @@ fun HomeScreen(
     Scaffold(
         bottomBar = {
             Column {
-            AskBar(latestChat) { continueChat ->
-                ServiceLocator.debugEvents.event("ask_bar_tap", "continue" to continueChat)
-                com.nutritionscribe.app.ui.ask.AskState.chatId.value = if (continueChat) latestChat?.id else null
-                onAsk()
-            }
+            // Review F10/H3: Ask is a fourth dock button, not a bar of its own, and only
+            // when it can work (a key, agreed, not offline).
+            val askShown by ServiceLocator.askShownFlow.collectAsState(initial = ServiceLocator.askShown())
             LogDock(
                 voice = voice,
                 mode = micMode,
@@ -389,19 +407,43 @@ fun HomeScreen(
                 onHint = { hint = it },
                 onTypeIt = { ServiceLocator.debugEvents.startFlow("type"); ServiceLocator.debugEvents.event("dock_type"); onTypeIt() },
                 onScan = { ServiceLocator.debugEvents.startFlow("scan"); ServiceLocator.debugEvents.event("dock_scan"); onScan() },
+                onAsk = if (!askShown) null else ({
+                    // A chat from the last few hours carries on; an older one, a new chat.
+                    val continueChat = latestChat?.let { System.currentTimeMillis() - it.updatedAt < 3 * 60 * 60 * 1000L } == true
+                    ServiceLocator.debugEvents.event("ask_dock_tap", "continue" to continueChat)
+                    com.nutritionscribe.app.ui.ask.AskState.chatId.value = if (continueChat) latestChat?.id else null
+                    onAsk()
+                }),
             )
             }
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-        when (streakSettings?.show) {
+        when (streakSettings?.show?.takeIf { !lastKnown || HomeTop.showStreak(lastEntry != null) }) {
             true -> StreakStrip(streak, today) { ServiceLocator.debugEvents.event("streak_open", "days" to streak.current); streakOpen = true }
             false -> Text(
                 today.format(DateTimeFormatter.ofPattern("EEEE, MMM d")),
                 style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.secondary,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             )
-            null -> Spacer(Modifier.height(64.dp))
+            null -> if (lastKnown && lastEntry == null) {
+                // Review H4: before the first entry, a welcome line, not "0 days".
+                Text(
+                    "Log your first meal: ${if (micMode == MicMode.HOLD) "hold Say" else "tap Say"} and tell it what you ate, like \u201ctwo eggs and toast\u201d.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+            } else Spacer(Modifier.height(64.dp))
+        }
+        // Review H1: what was logged last, at the top, one tap from its page.
+        val zoneNow = java.time.ZoneId.systemDefault()
+        HomeTop.lastLine(lastEntry, lastEntry?.let { com.nutritionscribe.app.ui.common.logAgainName(it) }.orEmpty(), zoneNow, today)?.let { line ->
+            Text(
+                line, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().clickable(onClickLabel = "Open") { lastEntry?.let { onOpenEntry(it.id) } }
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+            )
         }
         Box(Modifier.fillMaxSize()) {
             val list = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -418,7 +460,7 @@ fun HomeScreen(
                 if (unprocessedCount > 0) item {
                     Notice(
                         if (unprocessedCount == 1) "1 entry needs attention" else "$unprocessedCount entries need attention",
-                        MaterialTheme.colorScheme.errorContainer, onOpenUnprocessed,
+                        MaterialTheme.colorScheme.errorContainer, onClick = onOpenUnprocessed,
                     )
                 }
                 if (glance.isNotEmpty()) item {
@@ -428,10 +470,11 @@ fun HomeScreen(
                         MaterialTheme.colorScheme.secondaryContainer,
                     ) { onFixEntry(glance.first()) }
                 }
-                if (profile == null) item {
+                if (nudgeDue) item {
                     Notice(
                         "Add your height, weight and activity in Goals, so these bars show what you need.",
                         MaterialTheme.colorScheme.secondaryContainer,
+                        onClose = viewModel::closeProfileNudge,
                     ) { ServiceLocator.debugEvents.event("profile_nudge_tap"); onOpenGoals() }
                 }
                 duePlan?.let { plan ->
@@ -441,11 +484,15 @@ fun HomeScreen(
                             onYes = { viewModel.answerPlan(plan, null, onReview) },
                             onPart = { partOf = plan },
                             onElse = { viewModel.skipPlan(plan, "something_else"); onTypeIt() },
+                            onNo = {
+                                viewModel.skipPlan(plan, "no")
+                                com.nutritionscribe.app.ui.common.AppMessages.say("OK, nothing logged for it.")
+                            },
                             onNotNow = { viewModel.skipPlan(plan, "not_now") },
                         )
                     }
                 }
-                if (logDue) item {
+                if (logDue && com.nutritionscribe.app.ui.feedback.BetaMode.left.value != true) item {
                     LogReminder(
                         onSend = { ServiceLocator.debugEvents.event("check_in_open", "where" to "home_reminder"); onCheckIn() },
                         onLater = viewModel::snoozeLog,
@@ -564,7 +611,7 @@ private fun LogReminder(onSend: () -> Unit, onLater: () -> Unit) {
 }
 
 @Composable
-private fun Notice(text: String, color: Color, onClick: () -> Unit) {
+private fun Notice(text: String, color: Color, onClose: (() -> Unit)? = null, onClick: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = color,
@@ -573,7 +620,13 @@ private fun Notice(text: String, color: Color, onClick: () -> Unit) {
         Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
+            if (onClose != null) {
+                androidx.compose.material3.IconButton(onClick = onClose) {
+                    Icon(Icons.Filled.Close, contentDescription = "Not now", tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(20.dp))
+                }
+            } else {
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
+            }
         }
     }
 }
@@ -939,10 +992,11 @@ private fun NutrientRow(
         row.percent -> "${formatAmount(amount, metric, withUnit = false)} of ${formatAmount(target, metric)}"
         else -> limitSub(state, goal, metric) ?: if (estimated) "estimated" else null
     }
+    val met = !unknown && com.nutritionscribe.shared.model.Limits.met(amount, target, direction, isGoal)
     BarRow(
         label = metric.shortLabel, bold = isGoal, bar = bar, fill = fill, unknown = unknown, value = value,
-        valueWidth = valueWidth, sub = sub,
-        description = "${metric.label}: ${if (unknown) "not enough data today" else value}${sub?.let { ", $it" } ?: ""}",
+        valueWidth = valueWidth, sub = sub, met = met,
+        description = "${metric.label}: ${if (unknown) "not enough data today" else value}${if (met) ", reached" else ""}${sub?.let { ", $it" } ?: ""}",
         onClick = { onOpen(metric) },
     )
 }
@@ -1191,15 +1245,30 @@ private fun LogAgainSection(choices: List<LogAgain.Choice>, onLog: (Entry) -> Un
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             chips.forEach { c ->
-                Surface(
-                    shape = RoundedCornerShape(17.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    modifier = Modifier.height(36.dp).clip(RoundedCornerShape(17.dp)).clickable { onLog(c.entry) }
-                        .semantics { contentDescription = "Log ${c.entry.name} again" },
-                ) {
-                    Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
-                        Text(shortName(c.entry), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                // "4 squares": all 4 again, or just 1 more (owner, 10-31).
+                val one = remember(c.entry) { LogAgain.oneOf(c.entry) }
+                var asking by remember { mutableStateOf(false) }
+                Box {
+                    Surface(
+                        shape = RoundedCornerShape(17.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.height(36.dp).clip(RoundedCornerShape(17.dp)).clickable { if (one != null) asking = true else onLog(c.entry) }
+                            .semantics { contentDescription = "Log ${c.entry.name} again" },
+                    ) {
+                        Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                            Text(shortName(c.entry), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                        }
+                    }
+                    if (one != null) androidx.compose.material3.DropdownMenu(expanded = asking, onDismissRequest = { asking = false }) {
+                        val item = c.entry.items.single()
+                        val unit = item.unit ?: "piece"
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("All ${com.nutritionscribe.shared.resolve.Units.format(item.amount ?: 1.0)} again") },
+                            onClick = { asking = false; onLog(c.entry) })
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Just 1 more $unit") },
+                            onClick = { asking = false; ServiceLocator.debugEvents.event("log_again_one", "entry_id" to c.entry.id); onLog(one) })
                     }
                 }
             }
@@ -1208,12 +1277,7 @@ private fun LogAgainSection(choices: List<LogAgain.Choice>, onLog: (Entry) -> Un
     }
 }
 
-/** "Banana" for "Banana, raw"; "Yogurt + Banana" for a two-food entry, not just its first word. */
-private fun shortName(entry: Entry): String {
-    val base = if (entry.items.size > 1) entry.items.joinToString(" + ") { it.name.substringBefore(",").trim() }
-    else entry.name.substringBefore(",")
-    return if (base.length > 28) base.take(26).trimEnd() + "…" else base
-}
+private fun shortName(entry: Entry): String = com.nutritionscribe.app.ui.common.logAgainName(entry)
 
 @Composable
 private fun MoreFoods(choices: List<LogAgain.Choice>, onLog: (Entry) -> Unit) {
@@ -1330,7 +1394,7 @@ private fun TodayCard(entries: List<Entry>, lead: Metric, micMode: MicMode, onOp
             }
             if (entries.isEmpty()) {
                 Text(
-                    "Nothing logged yet today. ${if (micMode == MicMode.HOLD) "Hold" else "Tap"} Say below and tell it what you ate, or scan or type it.",
+                    "Nothing logged yet today. ${if (micMode == MicMode.HOLD) "Hold" else "Tap"} \u201cSay\u201d below and tell it what you ate, or scan or type it.",
                     style = MaterialTheme.typography.bodyMedium, color = scheme.secondary, modifier = Modifier.padding(vertical = 10.dp),
                 )
             }
@@ -1347,7 +1411,7 @@ private fun TodayCard(entries: List<Entry>, lead: Metric, micMode: MicMode, onOp
                         style = NumberStyle.copy(fontSize = 12.5.sp), color = scheme.secondary, modifier = Modifier.width(64.dp),
                     )
                     Column(Modifier.weight(1f)) {
-                        Text(e.name, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(e.shownName(), style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
                         val sub = when {
                             e.needsConfirm -> "needs a look"
                             e.nutrients.isEmpty() -> "no numbers yet"
@@ -1379,6 +1443,7 @@ private fun LogDock(
     onHint: (String) -> Unit,
     onTypeIt: () -> Unit,
     onScan: () -> Unit,
+    onAsk: (() -> Unit)? = null,
 ) {
     val listening = voice.isActive
     Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
@@ -1396,13 +1461,16 @@ private fun LogDock(
             // behind another. Scan and Type wait while a lookup is still running:
             // leaving then dropped what had just been said.
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).height(androidx.compose.foundation.layout.IntrinsicSize.Min),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 MicButton(
                     voice, mode, onHint = onHint,
-                    modifier = Modifier.weight(1f).height(56.dp),
-                    caption = when {
+                    modifier = Modifier.weight(if (onAsk != null) 1.3f else 1f).heightIn(min = 52.dp),
+                    // Four buttons at large text: the short words, or "Hold to say" ran off both edges.
+                    caption = if (onAsk != null && androidx.compose.ui.platform.LocalDensity.current.fontScale >= 1.25f) {
+                        if (listening) "Stop" else "Say"
+                    } else when {
                         listening && mode == MicMode.HOLD -> "Let go"
                         listening -> "Tap to stop"
                         mode == MicMode.HOLD -> "Hold to say"
@@ -1411,6 +1479,7 @@ private fun LogDock(
                 )
                 DockButton("Scan", Icons.Filled.QrCodeScanner, enabled = !busy && !listening, onClick = onScan, modifier = Modifier.weight(1f))
                 DockButton("Type", Icons.Filled.Keyboard, enabled = !busy && !listening, onClick = onTypeIt, modifier = Modifier.weight(1f))
+                if (onAsk != null) DockButton("Ask", Icons.Outlined.AutoAwesome, enabled = !listening, onClick = onAsk, modifier = Modifier.weight(1f))
             }
         }
     }
@@ -1428,7 +1497,7 @@ private fun DockButton(
     val content = if (enabled) scheme.onSecondaryContainer else scheme.onSurface.copy(alpha = 0.38f)
     Box(
         modifier
-            .height(56.dp)
+            .heightIn(min = 52.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(if (enabled) scheme.secondaryContainer else scheme.surfaceContainerHighest)
             .clickable(enabled = enabled, onClickLabel = label, onClick = onClick),
@@ -1436,7 +1505,7 @@ private fun DockButton(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(24.dp))
-            Text(label, style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1)
+            Text(label, style = MaterialTheme.typography.labelLarge.copy(fontSize = com.nutritionscribe.app.ui.common.cappedSp(14f)), color = content, maxLines = 1)
         }
     }
 }
@@ -1477,30 +1546,6 @@ private fun ListeningOverlay(
 }
 
 /**
- * The Ask bar, just above the dock: the chat opens full screen from here. With a
- * recent chat it offers Continue; the plain bar starts a new one.
- */
-@Composable
-private fun AskBar(latest: com.nutritionscribe.app.data.chat.ChatRow?, onOpen: (continueChat: Boolean) -> Unit) {
-    val scheme = MaterialTheme.colorScheme
-    Box(Modifier.fillMaxWidth().background(scheme.background).padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 2.dp)) {
-        Surface(
-            shape = RoundedCornerShape(24.dp),
-            color = scheme.surface,
-            border = androidx.compose.foundation.BorderStroke(1.dp, scheme.outline),
-            modifier = Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(24.dp)).clickable(onClickLabel = "Open Ask") { onOpen(latest != null) },
-        ) {
-            Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = scheme.primary, modifier = Modifier.size(18.dp))
-                Text(latest?.title ?: "Ask what to eat, or about your day", style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
-                    color = if (latest != null) scheme.onSurface else scheme.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (latest != null) Text("Continue", style = MaterialTheme.typography.labelMedium, color = scheme.secondary)
-            }
-        }
-    }
-}
-
-/**
  * "Did you have the tuna wrap for lunch?": the only way a plan from Ask becomes a
  * log. One tap, never in the way: × puts it away.
  */
@@ -1511,6 +1556,7 @@ private fun PlanCheck(
     onYes: () -> Unit,
     onPart: () -> Unit,
     onElse: () -> Unit,
+    onNo: () -> Unit,
     onNotNow: () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -1528,9 +1574,12 @@ private fun PlanCheck(
                 IconButton(onClick = onNotNow) { Icon(Icons.Filled.Close, contentDescription = "Not now", tint = scheme.secondary, modifier = Modifier.size(16.dp)) }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(end = 10.dp)) {
-                androidx.compose.material3.Button(onClick = onYes) { Text("Yes, log it") }
-                OutlinedButton(onClick = onPart) { Text("Part of it") }
-                OutlinedButton(onClick = onElse) { Text("Something else") }
+                for (a in PlanAnswers.ALL) when (a) {
+                    PlanAnswers.Answer.YES -> androidx.compose.material3.Button(onClick = onYes) { Text(a.label) }
+                    PlanAnswers.Answer.PART -> OutlinedButton(onClick = onPart) { Text(a.label) }
+                    PlanAnswers.Answer.NO -> OutlinedButton(onClick = onNo) { Text(a.label) }
+                    PlanAnswers.Answer.ELSE -> OutlinedButton(onClick = onElse) { Text(a.label) }
+                }
             }
         }
     }

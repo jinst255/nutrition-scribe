@@ -131,6 +131,9 @@ object ItemParser {
         Regex("\\bpbjs?\\b") to "peanut butter and jelly sandwich",
         Regex("\\bpeanut butter and (?:jelly|jam)(?! sandwich)\\b") to "peanut butter and jelly sandwich",
         Regex("\\bpb\\b") to "peanut butter",
+        // A bowl of oats is oatmeal: as raw oats weighed by a cooked bowl it was 886 kcal.
+        // "A cup of oats" stays: that is how recipes measure them dry.
+        Regex("\\bbowls? of (?:(?:rolled|quick|old[- ]fashioned|instant|overnight|steel[- ]cut)\\s+)?oats\\b") to "bowl of oatmeal",
         Regex("\\bveggies\\b") to "vegetables",
         Regex("\\bveggie\\b") to "vegetable",
         Regex("\\boj\\b") to "orange juice",
@@ -231,6 +234,12 @@ object ItemParser {
         "milk", "halfnhalf", "whipped cream",
     )
 
+    /** ", and the brand is Nuvara", ". Brand was Nature Valley": the brand of the food before it. */
+    private val BRAND_SAID = Regex("\\s*(?:[,.;]\\s*|\\s+and\\s+)(?:and\\s+)?(?:the\\s+)?brand(?:\\s+name)?\\s+(?:is|was|=|:)\\s+([a-z0-9&'\\- ]+?)\\s*(?=[,.;]|\\s+and\\s|$)")
+
+    /** ", it's made by Nature Valley", ". It's from Nature Valley." */
+    private val BRAND_BY = Regex("\\s*(?:[,.;]\\s*|\\s+and\\s+)(?:it's|it is|it was|its|they're|they are|that's|that was)\\s+(?:made by|by|from)\\s+(?:the brand\\s+)?([a-z0-9&'\\- ]+?)\\s*(?=[,.;]|$)")
+
     /**
      * Split and read every food in [raw].
      *
@@ -245,6 +254,17 @@ object ItemParser {
     ): List<Item> {
         brandCheck = isBrandWord
         var text = normaliseText(raw)
+
+        // "…raspberry lemonade from Zestline and the brand is Nuvara": whose brand it is,
+        // said after the food. It was a food of its own (the brand matched a honey);
+        // now it rides on the food before it as a marker readFragment takes out.
+        text = BRAND_SAID.replace(text) { m -> " \u0007${m.groupValues[1].trim()}\u0007 " }
+        text = BRAND_BY.replace(text) { m ->
+            val b = m.groupValues[1].trim()
+            if (Regex("^(?:yesterday|today|tonight|this|last|earlier|before|the store|the fridge|home|my|a |an |the )").containsMatchIn(b)) m.value
+            else " \u0007$b\u0007 "
+        }
+
 
         // "bag of veggies (⅓ bell pepper, several baby carrots, 1.5 stalks of celery)":
         // the brackets ARE the bag. Logging both would count the vegetables twice.
@@ -407,6 +427,9 @@ object ItemParser {
         // "half and half" is a cream, not two halves.
         t = Regex("\\bhalf\\s*(?:and|&|n)\\s*half\\b").replace(t, " halfnhalf ")
         t = FoodQuery.normaliseNumbers(t)
+        // "a sandwich bag of baby carrots": the bag is how much, not a food (it logged a blank sandwich).
+        t = Regex("\\b(?:sandwh?ich|ziploc?k?|zip[- ]?lock|snack|lunch|plastic|paper|sandwich[- ]size)\\s+bags?\\s+of\\b").replace(t, " bag of ")
+        t = nameNumbers(t)
         // "one and a half cups" must not split on its "and".
         t = Regex("\\b(one|two|three|four|five|\\d+)\\s+and\\s+(?:a|one)\\s+half\\b").replace(t) { m ->
             val n = m.groupValues[1].toDoubleOrNull() ?: NUMBER_WORDS[m.groupValues[1]] ?: 1.0
@@ -421,6 +444,28 @@ object ItemParser {
         t = fatLevels(t)
         return Regex("\\s+").replace(t, " ").trim()
     }
+
+    /**
+     * "1/3 digiorno 4 cheese rising crust pizza", "dave's killer 21 seed bread",
+     * "3 bean chili": the number names the kind of food (four-cheese, 21-seed), so it
+     * goes, rather than being read as four of something. It counts only when it
+     * follows a word of the name (not "had", "and", "of"…), or a dish follows it.
+     * "4 cheese sticks" and "I had 4 cheese sticks" stay counts.
+     */
+    private fun nameNumbers(text: String): String {
+        val kinds = "cheese|bean|grain|seed|layer|meat|berry|veggie|pepper"
+        val dishes = "chili|pizza|bread|burrito|salad|soup|blend|mix|dip|casserole|lasagna|quesadilla|bagel|crackers?|cereal|wrap"
+        var t = Regex("\\b(\\d+)\\s+(?=(?:$kinds)\\s+(?:$dishes)\\b)").replace(text, " ")
+        t = Regex("([a-z']+)\\s+(\\d+)\\s+(?=(?:$kinds)\\b)").replace(t) { m ->
+            if (m.groupValues[1] in NAME_NUMBER_STOPS || m.groupValues[1] in NUMBER_WORDS || m.groupValues[1] in UNITS) m.value
+            else "${m.groupValues[1]} "
+        }
+        return t
+    }
+
+    /** Words after which a number is still a count: "had 4", "and 2", "of 12". */
+    private val NAME_NUMBER_STOPS = setOf("had", "ate", "eat", "and", "of", "with", "a", "an", "the", "about", "maybe", "i", "plus",
+        "then", "also", "around", "like", "or", "some", "just", "only", "another", "got", "made", "drank")
 
     /**
      * How people talk a meal through: "two burritos for breakfast, each consisting
@@ -678,7 +723,12 @@ object ItemParser {
         val little = Regex("(?:^|\\s)(?:a (?:little|tiny|small)(?: bit)?(?: of)?|a bit of|a touch of|just a (?:little|bit)(?: of)?|a (?:dab|drizzle|splash|dash|smear) of)\\s+").containsMatchIn(" $t")
         t = toppingPhrase.replace(" $t", " ").trim()
 
+        // The brand they named after the food (see BRAND_SAID).
+        var declared: String? = null
+        Regex("\u0007([^\u0007]+)\u0007").find(t)?.let { m -> declared = m.groupValues[1]; t = t.removeRange(m.range).trim() }
         t = stripFiller(t)
+        // "a single packet": one packet.
+        t = Regex("(?:^|\\s)(?:a |one )?single\\s+(?=(?:packet|serving|piece|slice|bar|can|bottle|scoop|cup|bag|pouch|stick|egg|cookie|scoop|tablet|gummy)s?\\b)").replace(" $t", " 1 ").trim()
         // "a yogurt cup", "a ramen cup", "a fruit cup": the cup is the container.
         t = Regex("\\b(yogurt|yoghurt|ramen|noodles?|fruit|pudding|applesauce|oatmeal|cheerios|soup)\\s+cups?\\b").replace(t) { "${it.groupValues[1]} container" }
         val (amount0, unit0, size, rest0) = readQuantity(t)
@@ -690,9 +740,9 @@ object ItemParser {
         }
         // "mission brand flour tortillas", "protein pancakes from kodiak": a brand is
         // for the label search, and noise for everything else.
-        var brand = Regex("\\b([a-z']+)\\s+brand\\b").find(rest)?.groupValues?.get(1)
+        var brand = declared ?: Regex("\\b([a-z']+)\\s+brand\\b").find(rest)?.groupValues?.get(1)
         var restNoBrand = rest
-        brand?.let { b -> restNoBrand = Regex("\\b${Regex.escape(b)}\\s+brand\\b").replace(rest, " ") }
+        if (declared == null) brand?.let { b -> restNoBrand = Regex("\\b${Regex.escape(b)}\\s+brand\\b").replace(rest, " ") }
         // A chain: "wendy's baconator", "chick fil a nuggets".
         if (brand == null) {
             RESTAURANTS.firstOrNull { Regex("\\b${Regex.escape(it)}\\b").containsMatchIn(rest) }?.let { chain ->

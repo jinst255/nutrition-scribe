@@ -35,7 +35,8 @@ import kotlinx.coroutines.launch
 object ServiceLocator {
     lateinit var appContext: Context
         private set
-    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** App-wide background work; also the card's AI lookup, which outlives the screen that started it. */
+    val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     lateinit var database: NutritionScribeDatabase
         private set
@@ -78,11 +79,13 @@ object ServiceLocator {
      */
     private val backendCache = MutableStateFlow(AiBackendKind.OPENAI)
     private val lookupSourceCache = MutableStateFlow(LookupSource.AI)
+    private val speechOnPhoneCache = MutableStateFlow(com.nutritionscribe.app.data.speech.SpeechEngine.PHONE_BY_DEFAULT)
     /** The user's AI consent, warm for the same reason: every send checks it. */
     private val consentCache = MutableStateFlow<Set<String>>(emptySet())
     private val profileCache = MutableStateFlow<com.nutritionscribe.shared.model.Profile?>(null)
     /** Advanced › AI models: null is the default for that job. */
     private val modelLookupCache = MutableStateFlow<String?>(null)
+    private val webSearchCache = MutableStateFlow(true)
     private val modelAskCache = MutableStateFlow<String?>(null)
     private val modelSpeechCache = MutableStateFlow<String?>(null)
 
@@ -104,6 +107,17 @@ object ServiceLocator {
         exportImportManager = ExportImportManager(
             appContext, database.entryDao(), database.personalFoodDao(),
             onPersonalFoodsChanged = { personalStore.invalidate() },
+            extras = {
+                com.nutritionscribe.app.data.export.BackupJson.Extras.of(
+                    goalsRepository.goals.first(), settingsRepository.profile.first(), settingsRepository.plasmaDonations.first(),
+                )
+            },
+            restoreExtras = { x ->
+                x.goals().takeIf { it.isNotEmpty() }?.let { goalsRepository.putAll(it) }
+                x.profile?.let { settingsRepository.setProfile(it) }
+                x.plasmaDays().forEach { settingsRepository.setPlasmaDonation(it, true) }
+            },
+            onExported = { settingsRepository.setLastExportAt(System.currentTimeMillis()) },
         )
         foodDatabase = FoodDatabase(appContext)
         goalsRepository = GoalsRepository(database.metricGoalDao(), settingsRepository)
@@ -181,12 +195,16 @@ object ServiceLocator {
             settingsRepository.lookupSource.collect { lookupSourceCache.value = it }
         }
         backgroundScope.launch {
+            settingsRepository.speechOnPhone.collect { speechOnPhoneCache.value = it }
+        }
+        backgroundScope.launch {
             settingsRepository.aiConsent.collect { consentCache.value = it }
         }
         backgroundScope.launch {
             settingsRepository.profile.collect { profileCache.value = it }
         }
         backgroundScope.launch { settingsRepository.modelLookup.collect { modelLookupCache.value = it } }
+        backgroundScope.launch { settingsRepository.webSearch.collect { webSearchCache.value = it } }
         backgroundScope.launch { settingsRepository.modelAsk.collect { modelAskCache.value = it } }
         backgroundScope.launch { settingsRepository.modelSpeech.collect { modelSpeechCache.value = it } }
         backgroundScope.launch {
@@ -215,7 +233,9 @@ object ServiceLocator {
         val key = settingsRepository.getApiKey(kind)?.takeIf { it.isNotBlank() } ?: return null
         return when (kind) {
             AiBackendKind.OPENAI -> com.nutritionscribe.shared.resolve.OpenAiItemLookup(
-                key, model = AiModels.pick(AiJob.LOOKUP, kind, modelLookupCache.value), transport = usageMeter.transport())
+                key, model = AiModels.pick(AiJob.LOOKUP, kind, modelLookupCache.value), transport = usageMeter.transport(),
+                // Searched only when the model flags an item it doesn't know, and costed as a web search.
+                webSearch = webSearchCache.value, webTransport = usageMeter.transport(com.nutritionscribe.app.data.usage.UsageKind.WEB_SEARCH))
             AiBackendKind.ANTHROPIC -> com.nutritionscribe.shared.resolve.AnthropicItemLookup(
                 key, model = AiModels.pick(AiJob.LOOKUP, kind, modelLookupCache.value), transport = usageMeter.transport())
         }
@@ -235,25 +255,44 @@ object ServiceLocator {
             if (kind == AiBackendKind.OPENAI) com.nutritionscribe.shared.resolve.AskClient.Provider.OPENAI else com.nutritionscribe.shared.resolve.AskClient.Provider.ANTHROPIC,
             AiModels.pick(AiJob.ASK, kind, modelAskCache.value),
             usageMeter.transport(com.nutritionscribe.app.data.usage.UsageKind.ASK),
+            stream = usageMeter.streamTransport(com.nutritionscribe.app.data.usage.UsageKind.ASK),
+            webSearch = webSearchCache.value,
         )
     }
 
     /** Why Ask can't run, for its screen, or null when it can. */
+    /**
+     * Ask has a button on Home's dock: a key, the provider agreed to, and not in
+     * offline mode (owner, 10-28: in offline mode the AI features vanish).
+     */
+    fun askShown(): Boolean = lookupSourceCache.value == LookupSource.AI && askBlocked() == null
+
+    /**
+     * [askShown], kept up to date: consent given over Home, a key added, offline mode
+     * switched, and the dock follows. Worked out once, Ask stayed hidden after consent.
+     */
+    val askShownFlow: kotlinx.coroutines.flow.Flow<Boolean> by lazy {
+        kotlinx.coroutines.flow.combine(lookupSourceCache, backendCache, consentCache, settingsRepository.keysChanged) { _, _, _, _ -> askShown() }
+    }
+
     fun askBlocked(): String? {
         val kind = backendCache.value
         val key = settingsRepository.getApiKey(kind)
         return when {
-            key.isNullOrBlank() -> "Ask needs an AI key. Add one in Settings › Advanced › Provider and key."
+            key.isNullOrBlank() -> "Ask needs an AI key. Add one in Settings › AI."
             !aiAllowed(kind) -> "Ask sends your question to ${if (kind == AiBackendKind.OPENAI) "OpenAI" else "Anthropic"}, which you haven't agreed to. You can in Settings › AI."
             else -> null
         }
     }
 
-    /** Highest quality mode's speech, or null: needs the mode on and an OpenAI key. */
+    /** OpenAI speech, or null: speech set to OpenAI, AI on (offline mode off) and an OpenAI key. */
     fun cloudTranscriber(): com.nutritionscribe.app.data.speech.OpenAiTranscriber? {
-        if (lookupSourceCache.value != LookupSource.AI) return null
-        if (!aiAllowed(AiBackendKind.OPENAI)) return null
-        val key = settingsRepository.openAiKey() ?: return null
+        val key = settingsRepository.openAiKey()
+        if (com.nutritionscribe.app.data.speech.SpeechEngine.pick(
+                onPhone = speechOnPhoneCache.value, aiOn = lookupSourceCache.value == LookupSource.AI,
+                openAiAllowed = aiAllowed(AiBackendKind.OPENAI), hasOpenAiKey = !key.isNullOrBlank(),
+            ) != com.nutritionscribe.app.data.speech.SpeechEngine.Engine.OPENAI) return null
+        key ?: return null
         return com.nutritionscribe.app.data.speech.OpenAiTranscriber(key, usageMeter, AiModels.pick(AiJob.SPEECH, AiBackendKind.OPENAI, modelSpeechCache.value))
     }
 
@@ -272,6 +311,7 @@ object ServiceLocator {
             // offset changes (daylight saving, travel) and which days are "today".
             "time_zone" to java.util.TimeZone.getDefault().id,
             "lookup_source" to lookupSourceCache.value,
+            "web_search" to webSearchCache.value,
             "backend" to backendCache.value,
             "has_openai_key" to (settingsRepository.getApiKey(AiBackendKind.OPENAI)?.isNotBlank() == true),
             "has_anthropic_key" to (settingsRepository.getApiKey(AiBackendKind.ANTHROPIC)?.isNotBlank() == true),
@@ -420,7 +460,7 @@ object ServiceLocator {
     }
 
     /** Bump to run [repairSavedFood] again after [com.nutritionscribe.shared.model.NutrientRepair] learns a new fix. */
-    private const val NUTRIENT_REPAIR_VERSION = 1
+    private const val NUTRIENT_REPAIR_VERSION = 2 // 2: foods remembered at the rough volume weight
 
     /**
      * Saved food whose numbers can't all be true (a misread label: 3.5 kcal oats,
@@ -429,6 +469,20 @@ object ServiceLocator {
      */
     private suspend fun repairSavedFood() {
         val changes = mutableListOf<Map<String, Any?>>()
+        for (food in personalStore.all()) {
+            when (val w = com.nutritionscribe.shared.resolve.FoodRepair.roughWeight(food)) {
+                is com.nutritionscribe.shared.resolve.FoodRepair.WeightFix.Fixed -> {
+                    personalStore.put(w.food)
+                    changes += mapOf("food" to food.name, "fixes" to listOf("rough_weight ${food.grams}->${w.food.grams}"))
+                }
+                com.nutritionscribe.shared.resolve.FoodRepair.WeightFix.Forget -> {
+                    personalStore.remove(food.key)
+                    changes += mapOf("food" to food.name, "fixes" to listOf("rough_weight forgotten"))
+                    continue
+                }
+                null -> {}
+            }
+        }
         for (food in personalStore.all()) {
             val (fixed, fixes) = com.nutritionscribe.shared.resolve.FoodRepair.repair(food) ?: continue
             personalStore.put(fixed)

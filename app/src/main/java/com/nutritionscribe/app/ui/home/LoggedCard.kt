@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.home
 
+import com.nutritionscribe.app.ui.common.shownName
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -276,7 +278,7 @@ private fun LoggedCard(
                             fontSize = 12.sp,
                             letterSpacing = 0.3.sp,
                         )
-                        Text(entry.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, lineHeight = 19.sp,
+                        Text(entry.shownName(), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, lineHeight = 19.sp,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(meta(entry), style = NumberStyle.copy(fontSize = 12.5.sp), color = MaterialTheme.colorScheme.secondary)
                     }

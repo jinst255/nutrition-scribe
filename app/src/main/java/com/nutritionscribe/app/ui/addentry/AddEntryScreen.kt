@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.addentry
 
+import com.nutritionscribe.app.ui.common.shownName
+
 import android.content.Intent
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -131,7 +133,7 @@ class AddEntryViewModel : ViewModel() {
     /** A past day's entry logs quietly onto that day; say so before going back. */
     private fun pastDayToast(name: String) {
         val day = com.nutritionscribe.app.ui.confirm.LogDay.label() ?: return
-        android.widget.Toast.makeText(ServiceLocator.appContext, "Added $name to $day", android.widget.Toast.LENGTH_SHORT).show()
+        com.nutritionscribe.app.ui.common.AppMessages.say("Added $name to $day")
     }
 
     fun saveManual(input: ManualEntryInput, onDone: () -> Unit) {
@@ -218,7 +220,7 @@ private suspend fun matchesFor(q: String): List<Match> = kotlinx.coroutines.with
         .filter { f -> val w = (com.nutritionscribe.shared.food.FoodQuery.contentWords(f.name) + com.nutritionscribe.shared.food.FoodQuery.contentWords(f.phrase)).toSet()
             words.all { q1 -> w.any { it.startsWith(q1) } } }
         .sortedByDescending { it.updatedAt }.take(3)
-        .map { f -> Match(f.name, if (f.isMeal) "Your meal" else "Your usual" + (f.candidate?.labelServingText?.let { " · $it" } ?: ""),
+        .map { f -> Match(f.name, if (f.isRecipe) "Your recipe · a serving" else if (f.isMeal) "Your meal" else "Your usual" + (f.candidate?.labelServingText?.let { " · $it" } ?: ""),
             f.nutrients[com.nutritionscribe.shared.model.Metric.CALORIES.key], "Your foods", f.phrase, null) }
     val packed = runCatching { ServiceLocator.labelPack.source()?.search(q, limit = 3).orEmpty() }.getOrDefault(emptyList())
         .map { c -> Match(com.nutritionscribe.app.ui.confirm.ItemDraft.withBrand(c, " "), listOfNotNull(c.brand, c.labelServingText).joinToString(" · "),
@@ -339,7 +341,7 @@ private fun VoiceAddEntry(
                                 if (i > 0) androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                                 androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
-                                        Text(e.name.substringBefore(",").take(40), style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+                                        Text(e.shownName().take(40), style = MaterialTheme.typography.bodyLarge, maxLines = 1)
                                         Text(listOfNotNull(e.items.singleOrNull()?.portion, e.nutrients[com.nutritionscribe.shared.model.Metric.CALORIES.key]?.let { "${Math.round(it)} kcal" })
                                             .joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
                                     }

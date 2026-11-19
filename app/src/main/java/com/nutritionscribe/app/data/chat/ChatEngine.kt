@@ -60,7 +60,15 @@ object ChatEngine {
     fun itemsOf(plan: MealPlanRow): List<PlanItem> =
         runCatching { json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(PlanItem.serializer()), plan.itemsJson) }.getOrDefault(emptyList())
 
+    /** What the answer being written shows: what Ask is doing, and the reply so far (see AskStream). */
+    val progress = kotlinx.coroutines.flow.MutableStateFlow<com.nutritionscribe.shared.resolve.AskStream.Progress?>(null)
+
     suspend fun send(chatId: String?, text: String): Outcome {
+        progress.value = null
+        try { return sendOnce(chatId, text) } finally { progress.value = null }
+    }
+
+    private suspend fun sendOnce(chatId: String?, text: String): Outcome {
         val dao = ServiceLocator.database.chatDao()
         val now = System.currentTimeMillis()
         val id = chatId ?: java.util.UUID.randomUUID().toString()
@@ -72,12 +80,30 @@ object ChatEngine {
         val history = dao.messages(id).takeLast(16).map { AskClient.Turn(it.role, it.text) }
         val (context, today, refs) = context()
         events.event("ask_send", "chat" to id, "text" to text, "turns" to history.size)
+        // The whole log, for the query_log tool: worked out here, only the summary is sent.
+        val zone = ZoneId.systemDefault()
+        val everything = withContext(Dispatchers.IO) { ServiceLocator.database.entryDao().all().map { it.toEntry() } }
+        val queryLog = object : AskClient.Tools {
+            override fun queryLog(request: com.nutritionscribe.shared.model.LogQuery.Request): String =
+                com.nutritionscribe.shared.model.LogQuery.run(everything, request, zone, LogDays.today(zone)).also { answer ->
+                    events.event("ask_query_log", "chat" to id, "metric" to request.metric, "from" to request.from?.toString(), "to" to request.to?.toString(),
+                        "group_by" to request.groupBy.name, "top" to request.top, "lowest" to request.lowest, "lines" to answer.lines().size)
+                }
+
+            override fun findMyFoods(query: String): String =
+                com.nutritionscribe.shared.model.MyFoodsQuery.run(ServiceLocator.personalStore.all(), query).also { answer ->
+                    events.event("ask_find_foods", "chat" to id, "query" to query, "lines" to answer.lines().size)
+                }
+        }
         val reply = try {
-            withContext(Dispatchers.IO) { ServiceLocator.usageMeter.withTag("ask:$id") { client.ask(context, history) } }
+            withContext(Dispatchers.IO) { ServiceLocator.usageMeter.withTag("ask:$id") { client.ask(context, history, queryLog) { p ->
+                // A status never hides an answer already showing.
+                if (p is com.nutritionscribe.shared.resolve.AskStream.Progress.Text || progress.value !is com.nutritionscribe.shared.resolve.AskStream.Progress.Text) progress.value = p
+            } } }
         } catch (e: OpenAiItemLookup.Failure) {
             val msg = when (e) {
                 is OpenAiItemLookup.Failure.NoNetwork -> "No connection. Your question is kept; send it again when you're online."
-                is OpenAiItemLookup.Failure.Auth -> "The AI key was refused. Check it in Settings › Advanced."
+                is OpenAiItemLookup.Failure.Auth -> "The AI key was refused. Check it in Settings › AI."
                 else -> "Ask couldn't answer just now (${e.message}). Try again."
             }
             events.event("ask_failed", "chat" to id, "error" to e)
@@ -148,7 +174,8 @@ object ChatEngine {
         val refs = Metric.entries.associateWith { m -> goals.firstOrNull { it.metric == m && it.enabled }?.target ?: needs.getValue(m) }
         val totals = NutrientDay.totals(todayEntries)
         val amounts = Metric.entries.associateWith { totals[it]?.amount ?: 0.0 }
-        val time = DateTimeFormatter.ofPattern("EEEE h:mm a")
+        // The date too: the log tool takes dates, and "last week" needs a today.
+        val time = DateTimeFormatter.ofPattern("EEEE, yyyy-MM-dd, h:mm a")
         val text = buildString {
             append("Now: ").append(LocalDateTime.now(zone).format(time)).append(".\n")
             profile?.let { append("About them: ${it.sex.name.lowercase()}, ${it.ageYears}, ${Math.round(it.weightKg)} kg, ${it.activity.name.lowercase()} activity, aim ${it.aim.name.lowercase()}.\n") }

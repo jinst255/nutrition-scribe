@@ -28,8 +28,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // Raise both for every APK handed out, so an export says which build it came from.
-        versionCode = 8
-        versionName = "1.6-test"
+        versionCode = 10
+        versionName = "1.8-test"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

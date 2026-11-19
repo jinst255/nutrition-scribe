@@ -63,6 +63,20 @@ class LogPipeline(
         r
     }
 
+    /**
+     * The local answer at once (no AI), and whether the AI would be asked: the card
+     * opens on the first while [resolve] runs (a tester's whole complaint was "Slow").
+     */
+    suspend fun resolveQuick(text: String, how: String): Pair<Resolver.Resolution, Boolean> = withContext(Dispatchers.IO) {
+        val t0 = System.currentTimeMillis()
+        val res = resolver()
+        val r = res.resolveLocalOnly(text)
+        val wants = res.wantsAi(text)
+        events?.event("resolution_quick", "how" to how, "text" to text, "ms" to System.currentTimeMillis() - t0,
+            "silent" to r.silent, "wants_ai" to wants, "items" to r.items.map { describe(it) })
+        r to wants
+    }
+
     /** Resolve one item on its own — a fix, a breakdown part, a retyped name. */
     suspend fun resolveItem(text: String, tag: String? = null, why: String = "item"): List<Resolver.ResolvedItem> = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
@@ -310,6 +324,39 @@ class LogPipeline(
         flagSuspect("logged", text, items.map { Triple(it.name, it.nutrients, it.grams) })
         events?.endFlow("logged", "entry_id" to entry.id, "items" to items.size)
         entry
+    }
+
+    /** A recipe's or meal's part as a card line, to open it back up. */
+    fun partLine(p: MealPart): Resolver.ResolvedItem = resolver().partLine(p)
+
+    /**
+     * Save the card's lines as a recipe, or as this week's batch of one (kept as
+     * the recipe when [keep]). With [logServing], one serving is logged too.
+     */
+    suspend fun saveRecipe(
+        name: String,
+        items: List<Resolver.Confirmed>,
+        servings: Double?,
+        potGrams: Double?,
+        batchOf: String?,
+        keep: Boolean,
+        logServing: Boolean,
+        timestamp: Long,
+        timeUnspecified: Boolean,
+        tag: String?,
+    ): com.nutritionscribe.shared.resolve.PersonalFood = withContext(Dispatchers.IO) {
+        val res = resolver()
+        val food = res.saveRecipe(name, items, servings, potGrams, batchOf, keep)
+        events?.event("recipe_saved", "name" to food.name, "key" to food.key, "batch_of" to batchOf, "keep" to keep,
+            "servings" to servings, "pot_grams" to potGrams, "parts" to food.parts.size, "changes" to food.recipe?.batch?.changes,
+            "per_serving" to food.nutrients, "log_serving" to logServing)
+        if (logServing) {
+            val r = res.resolveLocalOnly("1 serving of ${food.name}")
+            val line = r.items.singleOrNull()?.takeIf { it.choice?.id == "recipe:${food.key}" }
+            if (line != null) confirm(food.name, listOf(line.toConfirmed(unchanged = false)), timestamp, tag = tag, how = "recipe", timeUnspecified = timeUnspecified)
+        }
+        events?.endFlow("recipe_saved")
+        food
     }
 
     /**

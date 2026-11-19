@@ -31,7 +31,9 @@ object NutrientGuide {
         val swaps: List<String> = emptyList(),
         val source: String,
     ) {
-        val isLimit: Boolean get() = metric.direction == GoalDirection.LIMIT
+        // Calories' page is "about the right amount" whichever way the goal points
+        // (stay under by default, reach when gaining: CalorieAim), so never a limit page.
+        val isLimit: Boolean get() = metric.direction == GoalDirection.LIMIT && metric != Metric.CALORIES
         /** Whether the page lists foods rich in it. Calories would just list the densest foods. */
         val listsFoods: Boolean get() = !isLimit && metric != Metric.CALORIES
     }

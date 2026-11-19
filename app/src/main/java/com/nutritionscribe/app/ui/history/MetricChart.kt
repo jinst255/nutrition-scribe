@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.history
 
+import com.nutritionscribe.app.ui.common.shownName
+
 import com.nutritionscribe.app.di.ServiceLocator
 
 import androidx.compose.animation.core.animateFloatAsState
@@ -77,12 +79,31 @@ internal typealias StandingColors = com.nutritionscribe.app.ui.theme.LimitColors
 internal fun standingColors(): StandingColors = com.nutritionscribe.app.ui.theme.limitColors()
 
 /**
+ * The goal as it stood on a day: the target it had then and, for protein, the
+ * plasma extra on a donation day and the day after (owner, 11-04).
+ */
+@Composable
+internal fun rememberGoalOn(): (MetricGoal, Long) -> MetricGoal {
+    val changes by ServiceLocator.settingsRepository.goalChanges.collectAsState(initial = emptyList())
+    val donations by ServiceLocator.settingsRepository.plasmaDonations.collectAsState(initial = emptySet())
+    val profile by ServiceLocator.settingsRepository.profile.collectAsState(initial = null)
+    return remember(changes, donations, profile) {
+        val extra: (Long) -> Double = { day ->
+            profile?.takeIf { it.plasmaDonor }?.let {
+                com.nutritionscribe.shared.model.PlasmaDonation.extraProtein(LocalDate.ofEpochDay(day), donations, it.weightKg)
+            } ?: 0.0
+        }
+        { g, day -> MetricHistory.goalOn(g, day, changes, extra) }
+    }
+}
+
+/**
  * A card's days as small bars, coloured by how each day did. Today and half-logged
  * days are drawn hollow: they aren't judged or averaged until they're complete.
  * The full chart it opens draws the same bars, bigger (note S19).
  */
 @Composable
-internal fun DayStrip(days: List<DayValue>, goal: MetricGoal, full: Set<Long>, today: Long, modifier: Modifier = Modifier) {
+internal fun DayStrip(days: List<DayValue>, goal: MetricGoal, full: Set<Long>, today: Long, modifier: Modifier = Modifier, goalOn: (Long) -> MetricGoal = { goal }) {
     val colors = standingColors()
     val hollow = MaterialTheme.colorScheme.outline
     val patchy = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
@@ -104,7 +125,7 @@ internal fun DayStrip(days: List<DayValue>, goal: MetricGoal, full: Set<Long>, t
                     hollow, Offset(x + 0.75.dp.toPx(), top + 0.75.dp.toPx()), Size(w - 1.5.dp.toPx(), h - 1.5.dp.toPx()), r,
                     style = Stroke(width = 1.5.dp.toPx()),
                 )
-                else -> drawRoundRect(colors.of(MetricHistory.standing(goal, v)), Offset(x, top), Size(w, h), r)
+                else -> drawRoundRect(colors.of(MetricHistory.standing(goalOn(d.epochDay), v)), Offset(x, top), Size(w, h), r)
             }
         }
     }
@@ -235,7 +256,9 @@ fun MetricChartScreen(
             }
         }
 
+        val goalOnDay = rememberGoalOn()
         InteractiveChart(
+            goalOn = { day -> goalOnDay(goal, day) },
             buckets = buckets,
             viewport = viewport,
             goal = goal,
@@ -251,7 +274,8 @@ fun MetricChartScreen(
             modifier = Modifier.fillMaxWidth().height(230.dp).padding(top = 8.dp),
         )
         if (days.isNotEmpty()) {
-            Legend(goal, colors, Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp, start = 16.dp, end = 16.dp))
+            Legend(goal, colors, Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp, start = 16.dp, end = 16.dp),
+                hasPatchy = days.any { it.patchy })
         }
         Text(
             if (days.isEmpty()) {
@@ -301,7 +325,7 @@ fun MetricChartScreen(
  */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun Legend(goal: MetricGoal, colors: StandingColors, modifier: Modifier = Modifier) {
+private fun Legend(goal: MetricGoal, colors: StandingColors, modifier: Modifier = Modifier, hasPatchy: Boolean = false) {
     val limit = goal.effectiveDirection == GoalDirection.LIMIT
     val scored = goal.enabled && goal.target != null
     val items = buildList {
@@ -313,7 +337,8 @@ private fun Legend(goal: MetricGoal, colors: StandingColors, modifier: Modifier 
             if (scored && limit) add(colors.over to "Over target")
             if (goal.ceilingValue != null) add(colors.past to "▲ Past your line")
         }
-        add(androidx.compose.ui.graphics.Color.Transparent to "Hollow: today or half-logged")
+        add(androidx.compose.ui.graphics.Color.Transparent to "Hollow: today, or under half your calories logged (not averaged)")
+        if (hasPatchy) add(androidx.compose.ui.graphics.Color.Transparent to MetricHistory.PATCHY_KEY)
     }
     androidx.compose.foundation.layout.FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         items.forEach { (c, text) ->
@@ -355,8 +380,12 @@ internal fun InteractiveChart(
     modifier: Modifier = Modifier,
     /** Days that count; the rest (today, half-logged) are drawn hollow. Every day counts when null. */
     full: Set<Long>? = null,
+    /** The goal as it stood each day (its target then, plasma days included): owner, 11-04. */
+    goalOn: (Long) -> MetricGoal = { goal },
 ) {
     val measurer = rememberTextMeasurer()
+    fun targetOf(b: Bucket): Double? =
+        if (b.days == 1L) goalOn(b.startEpochDay).target else MetricHistory.bucketTarget(b.startEpochDay, b.endEpochDay, goalOn)
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val ruleColor = MaterialTheme.colorScheme.outline
@@ -370,7 +399,7 @@ internal fun InteractiveChart(
 
     val visible = buckets.filter { it.endEpochDay + 1 > viewport.startDay && it.startEpochDay < viewport.endDay }
     val peak = visible.mapNotNull { it.value }.maxOrNull() ?: 0.0
-    val lines = listOfNotNull(goal.target, goal.floorValue, goal.ceilingValue)
+    val lines = listOfNotNull(goal.target, goal.floorValue, goal.ceilingValue) + visible.mapNotNull { targetOf(it) }
     // Animate the scale so dragging into a taller stretch eases up instead of jumping.
     val top by animateFloatAsState(
         targetValue = niceCeiling(max(peak, lines.maxOrNull() ?: 0.0).coerceAtLeast(1.0) * 1.1).toFloat(),
@@ -412,7 +441,9 @@ internal fun InteractiveChart(
                     val w = x(b.endEpochDay + 1.0) - x0
                     val inset = w * barGap / 2
                     val barW = max(w - inset * 2, 1.5.dp.toPx())
-                    val h = plotH * 0.22f
+                    // Owner, 11-10: "the bar seemed pretty high, why is it greyed out?" A stub
+                    // at 22% of the chart read as a tall bar; it's a short marker now.
+                    val h = minOf(plotH * 0.06f, 10.dp.toPx())
                     val yTop = y(0.0) - h
                     clipRect(left = x0 + inset, top = yTop, right = x0 + inset + barW, bottom = y(0.0)) {
                         var sx = x0 + inset - h
@@ -429,7 +460,7 @@ internal fun InteractiveChart(
                 val w = (x1 - x0)
                 val inset = w * barGap / 2
                 val barW = max(w - inset * 2, 1.5.dp.toPx())
-                val standing = MetricHistory.standing(goal, v)
+                val standing = MetricHistory.standing(goal.copy(target = targetOf(b)), v)
                 val isSel = selected != null && selected.startEpochDay == b.startEpochDay && selected.endEpochDay == b.endEpochDay
                 val alpha = if (selected == null || isSel) 1f else 0.38f
                 val yTop = y(v)
@@ -451,11 +482,18 @@ internal fun InteractiveChart(
             }
 
             // Goal and threshold rules, over the bars so they stay readable.
-            goal.target?.let { t ->
-                drawLine(
-                    ruleColor, Offset(left, y(t)), Offset(left + plotW, y(t)), strokeWidth = 1.5.dp.toPx(),
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())),
-                )
+            // The goal line steps with the target each day had (a goal changed, a plasma day).
+            val dash = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))
+            val steps = visible.mapNotNull { b -> targetOf(b)?.let { Triple(x(b.startEpochDay.toDouble()), x(b.endEpochDay + 1.0), it) } }
+            if (steps.isEmpty()) goal.target?.let { t ->
+                drawLine(ruleColor, Offset(left, y(t)), Offset(left + plotW, y(t)), strokeWidth = 1.5.dp.toPx(), pathEffect = dash)
+            } else {
+                val path = Path()
+                steps.forEachIndexed { i, (x0, x1, t) ->
+                    if (i == 0) path.moveTo(minOf(x0, left), y(t)) else path.lineTo(x0, y(t))
+                    path.lineTo(if (i == steps.lastIndex) maxOf(x1, left + plotW) else x1, y(t))
+                }
+                drawPath(path, ruleColor, style = Stroke(width = 1.5.dp.toPx(), pathEffect = dash))
             }
             listOfNotNull(goal.floorValue, goal.ceilingValue?.takeIf { it != goal.target }).forEach { t ->
                 drawLine(
@@ -699,7 +737,7 @@ private fun SelectionPanel(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(e.name, maxLines = 2)
+                        Text(e.shownName(), maxLines = 2)
                         Text(e.timeLabel(zone), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
                     }
                     Column(horizontalAlignment = Alignment.End) {

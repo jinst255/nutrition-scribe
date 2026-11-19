@@ -260,10 +260,31 @@ fun NutritionScribeTheme(mode: AppThemeMode = AppThemeMode.SYSTEM, content: @Com
         AppThemeMode.LIGHT -> false
         AppThemeMode.DARK -> true
     }
+    // Android 15+ draws the app under the status bar, and nothing set the icons'
+    // colour: on the light theme they stayed white and the clock disappeared.
+    val view = androidx.compose.ui.platform.LocalView.current
+    if (!view.isInEditMode) androidx.compose.runtime.SideEffect {
+        val window = generateSequence(view.context) { (it as? android.content.ContextWrapper)?.baseContext }
+            .filterIsInstance<android.app.Activity>().firstOrNull()?.window ?: return@SideEffect
+        SystemBars.apply(window, view, useDark)
+    }
     MaterialTheme(
         colorScheme = if (useDark) DarkColors else LightColors,
         typography = AppTypography,
         shapes = AppShapes,
         content = content,
     )
+}
+
+
+/** Which colour the status- and nav-bar icons are: dark on the light theme, light on the dark one. */
+object SystemBars {
+    fun darkIcons(useDark: Boolean): Boolean = !useDark
+
+    fun apply(window: android.view.Window, view: android.view.View, useDark: Boolean) {
+        androidx.core.view.WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = darkIcons(useDark)
+            isAppearanceLightNavigationBars = darkIcons(useDark)
+        }
+    }
 }

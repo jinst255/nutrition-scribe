@@ -208,10 +208,22 @@ fun AskScreen(onClose: () -> Unit) {
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(messages, key = { it.id }) { m -> Message(m) }
+                    val lastAsked = messages.lastOrNull { it.role == "user" }?.text
+                    items(messages, key = { it.id }) { m ->
+                        Message(m, onPick = { idea -> send("I'll have the $idea.") },
+                            onRetry = if (m.role == "error" && m.id == messages.last().id && lastAsked != null) ({ send(lastAsked) }) else null)
+                    }
                     if (busy) item(key = "busy") {
-                        Column(Modifier.fillMaxWidth(0.6f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Thinking…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+                        val p by ChatEngine.progress.collectAsState()
+                        Column(Modifier.fillMaxWidth(if (p is com.nutritionscribe.shared.resolve.AskStream.Progress.Text) 0.9f else 0.6f),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            when (val now = p) {
+                                is com.nutritionscribe.shared.resolve.AskStream.Progress.Text ->
+                                    Text(now.text, style = MaterialTheme.typography.bodyMedium)
+                                is com.nutritionscribe.shared.resolve.AskStream.Progress.Status ->
+                                    Text(now.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+                                null -> Text("Sending…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+                            }
                             LinearProgressIndicator(Modifier.fillMaxWidth())
                         }
                     }
@@ -256,7 +268,7 @@ private fun Composer(text: String, onText: (String) -> Unit, busy: Boolean, plac
 }
 
 @Composable
-private fun Message(m: ChatMessageRow) {
+private fun Message(m: ChatMessageRow, onPick: (String) -> Unit = {}, onRetry: (() -> Unit)? = null) {
     val scheme = MaterialTheme.colorScheme
     when (m.role) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -264,7 +276,10 @@ private fun Message(m: ChatMessageRow) {
                 Text(m.text, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp), modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
             }
         }
-        "error" -> Text(m.text, style = MaterialTheme.typography.bodyMedium, color = scheme.error, modifier = Modifier.padding(horizontal = 4.dp))
+        "error" -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(m.text, style = MaterialTheme.typography.bodyMedium, color = scheme.error, modifier = Modifier.weight(1f).padding(horizontal = 4.dp))
+            if (onRetry != null) TextButton(onClick = onRetry) { Text("Try again") }
+        }
         else -> {
             val extra = ChatEngine.extraOf(m)
             Surface(
@@ -273,7 +288,7 @@ private fun Message(m: ChatMessageRow) {
             ) {
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (m.text.isNotBlank()) Text(m.text, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 21.sp))
-                    extra?.let { Extra(it) }
+                    extra?.let { Extra(it, onPick) }
                 }
             }
         }
@@ -281,20 +296,30 @@ private fun Message(m: ChatMessageRow) {
 }
 
 @Composable
-private fun Extra(e: ChatExtra) {
+private fun Extra(e: ChatExtra, onPick: (String) -> Unit) {
     val scheme = MaterialTheme.colorScheme
     if (e.ideas.isNotEmpty()) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // Each idea with what's in it and its numbers, and one tap to plan it (typing "the first one" was the only way).
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             e.ideas.forEachIndexed { i, idea ->
-                Text(buildAnnotatedString {
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append("${i + 1}. ${idea.name}") }
-                    idea.nutrients["calories"]?.let { append(" · ${Math.round(it)} kcal") }
-                }, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp))
+                Surface(shape = RoundedCornerShape(14.dp), color = scheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("${i + 1}. ${idea.name}", style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp), fontWeight = FontWeight.SemiBold)
+                        if (idea.parts.isNotEmpty()) Text(idea.parts.joinToString(" · ") { "${it.name} ${Math.round(it.grams)} g" },
+                            style = MaterialTheme.typography.bodySmall, color = scheme.secondary)
+                        Text(listOfNotNull(
+                            idea.nutrients["calories"]?.let { "${Math.round(it)} kcal" },
+                            idea.nutrients["protein"]?.let { "${Math.round(it)} g protein" },
+                            idea.nutrients["fiber"]?.takeIf { it >= 1 }?.let { "${Math.round(it)} g fiber" },
+                        ).joinToString(" · "), style = NumberStyle.copy(fontSize = 12.5.sp), color = scheme.primary)
+                        TextButton(onClick = { onPick(idea.name) }, modifier = Modifier.align(Alignment.End)) { Text("Plan it") }
+                    }
+                }
             }
         }
     }
     if (e.bars.isNotEmpty() && e.barsFor != null) {
-        Text("Where the ${e.barsFor.replaceFirstChar { it.lowercase() }} puts you today:", style = MaterialTheme.typography.bodySmall, color = scheme.secondary)
+        Text("Where the ${e.barsFor} puts you today:", style = MaterialTheme.typography.bodySmall, color = scheme.secondary)
         e.bars.forEach { b ->
             val m = Metric.fromKey(b.metric) ?: return@forEach
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -408,8 +433,9 @@ private fun AskConsentDialog(onAgree: () -> Unit, onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Each message goes to $who with the rest of the chat and, so the answer fits your day:")
-                Text("• what you've logged today, and today's totals against your goals\n• the foods you log most often\n• About you, if you filled it in (sex, age, weight, activity, aim)")
-                Text("Never your name, your API key or past days' logs. It's charged to your key: with the default model, usually under a tenth of a cent a message.",
+                Text("• what you've logged today, and today's totals against your goals\n• the foods you log most often\n• About you, if you filled it in (sex, age, weight, activity, aim)\n" +
+                    "• when a question needs it: totals from past days worked out on your phone (one nutrient by food, day or week), and your saved foods that match")
+                Text("Never your name, your API key, or your log entry by entry. It's charged to your key: with the default model, usually under a tenth of a cent a message.",
                     color = MaterialTheme.colorScheme.secondary)
                 // The same provider statements as AI privacy (AiConsent), checked against their policies.
                 val policy = com.nutritionscribe.app.data.repository.AiConsent.provider(kind)

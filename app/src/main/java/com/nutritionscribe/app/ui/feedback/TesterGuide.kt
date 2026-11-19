@@ -1,5 +1,6 @@
 package com.nutritionscribe.app.ui.feedback
 
+import androidx.compose.material.icons.outlined.Vibration
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.compose.foundation.BorderStroke
@@ -102,7 +103,7 @@ fun SetupSummary() {
     val context = LocalContext.current
     val testing = remember { isTestBuild(context) }
     val name by settings.testerName.collectAsState(initial = "")
-    val quality by settings.highestQuality.collectAsState(initial = false)
+    val quality by settings.aiOn.collectAsState(initial = false)
     val debug by settings.debugMode.collectAsState(initial = true)
     val pack by ServiceLocator.labelPack.status.collectAsState()
     val hasKey = remember(quality) { settings.hasAnyApiKey() }
@@ -114,7 +115,7 @@ fun SetupSummary() {
         Column {
             if (testing) CheckRow(name.isNotBlank(), "Testing as ${name.ifBlank { "…" }}", "On every note and log you send", first = true)
             CheckRow(hasKey && quality, "AI key",
-                when { hasKey && quality -> "Saved · Highest quality mode is on"; hasKey -> "Saved · Highest quality mode is off"; else -> "None · foods come from the built-in list" },
+                when { hasKey && quality -> "Saved · AI is on"; hasKey -> "Saved · offline mode is on"; else -> "None · foods come from the built-in list" },
                 first = !testing)
             CheckRow(true, "Foods and package labels",
                 if (packOk) "13,400 foods · 230,000 package labels, on this phone" else "13,400 foods · package labels still setting up")
@@ -196,8 +197,8 @@ fun TesterGuideScreen(onLogContents: () -> Unit) {
         }
         SectionLabel("How to tell me")
         TesterCard {
-            PointRow(Icons.Outlined.TouchApp, "Hold anything for a second",
-                "Then tap a reason. The note and a screenshot stay on your phone. Nothing reaches me until you send your log.")
+            PointRow(Icons.Outlined.Vibration, "Shake your phone",
+                "Then tap a reason. The note and a screenshot stay on your phone. Nothing reaches me until you send your log. You can switch shaking off in Settings › Beta testing.")
             PointRow(Icons.Outlined.ChatBubbleOutline, "Or use Beta testing in Settings", "Something's wrong, or an idea.")
         }
         SectionLabel("Your setup")

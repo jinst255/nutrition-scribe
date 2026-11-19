@@ -1,5 +1,11 @@
 package com.nutritionscribe.app.ui.home
 
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.foundation.layout.heightIn
+import com.nutritionscribe.app.ui.common.shownName
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -49,6 +55,9 @@ fun DayScreen(
     onOpenEntry: (String) -> Unit,
     onOpenGoals: () -> Unit,
     onOpenNutrient: (Metric, Double, Double) -> Unit = { _, _, _ -> },
+    /** Review Hi5: add to this day, and step to the day before or after. */
+    onAdd: ((LocalDate) -> Unit)? = null,
+    onGoTo: ((LocalDate) -> Unit)? = null,
 ) {
     val zone = remember { ZoneId.systemDefault() }
     val all by remember { ServiceLocator.database.entryDao().observeAll().map { rows -> rows.map { it.toEntry() } } }
@@ -86,6 +95,23 @@ fun DayScreen(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        if (onGoTo != null || onAdd != null) item {
+            val todayDate = com.nutritionscribe.shared.model.LogDays.today()
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (onGoTo != null) androidx.compose.material3.IconButton(onClick = { onGoTo(DayNav.previous(date)) }) {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Day before")
+                }
+                Text(
+                    date.format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d")),
+                    style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+                val next = DayNav.next(date, todayDate)
+                if (onGoTo != null) androidx.compose.material3.IconButton(onClick = { next?.let(onGoTo) }, enabled = next != null) {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Day after")
+                }
+            }
+        }
         item {
             NutrientPager(
                 totals, goalOf, refs, plasmaExtra,
@@ -107,13 +133,19 @@ fun DayScreen(
         if (entries.isEmpty()) item {
             Text("Nothing logged this day.", color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(vertical = 12.dp))
         }
+        if (onAdd != null) item {
+            androidx.compose.material3.OutlinedButton(onClick = { onAdd(date) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Add, contentDescription = null)
+                Text("  Add to this day")
+            }
+        }
         items(entries, key = { it.id }) { e ->
             Row(
                 Modifier.fillMaxWidth().clickable { onOpenEntry(e.id) }.padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(e.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(e.shownName(), maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(e.timeLabel(zone), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
                 }
                 Text(

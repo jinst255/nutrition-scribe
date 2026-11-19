@@ -157,7 +157,7 @@ fun GoalsScreen(onStreak: () -> Unit = {}, viewModel: GoalsViewModel = viewModel
                         onSave = { p ->
                             ServiceLocator.debugEvents.event("profile_saved", "sex" to p.sex.name, "age" to p.ageYears,
                                 "activity" to p.activity.name, "aim" to p.aim.name, "stage" to p.stage.name, "diet" to p.diet.name, "plasma" to p.plasmaDonor)
-                            scope.launch { settings.setProfile(p) }
+                            scope.launch { settings.setProfile(p); ServiceLocator.goalsRepository.matchCaloriesTo(p.aim) }
                         },
                         onUseForGoals = { p ->
                             val n = com.nutritionscribe.shared.model.Needs.forProfile(p)

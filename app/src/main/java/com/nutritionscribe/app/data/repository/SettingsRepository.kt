@@ -48,7 +48,14 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
 enum class MicMode { TAP, HOLD }
 
 /** How Home orders its rows: goals first (the default), or by how full each bar is. */
-enum class HomeSort(val label: String) { GOALS("Goals first"), LOWEST("Lowest first"), HIGHEST("Highest first") }
+/**
+ * [short] is what the switch beside Home's tabs shows: "Sort: Lowest first" was cut
+ * to "Sort: Lowest" on the owner's phone (11-14, 11-19), with no room left by the
+ * tabs. The icon says "sort"; the word says which.
+ */
+enum class HomeSort(val label: String, val short: String) {
+    GOALS("Goals first", "Goals"), LOWEST("Lowest first", "Lowest"), HIGHEST("Highest first", "Highest")
+}
 
 /**
  * Where a food's nutrition numbers come from.
@@ -120,15 +127,22 @@ class SettingsRepository(
         val GOAL_LINES_V2 = booleanPreferencesKey("goal_lines_v2")
         val SHOW_ADVANCED = booleanPreferencesKey("show_advanced")
         val DEBUG_MODE = booleanPreferencesKey("debug_mode")
+        val SHAKE_TO_REPORT = booleanPreferencesKey("shake_to_report")
+        val SPEECH_ON_PHONE = booleanPreferencesKey("speech_on_phone")
+        val GOAL_CHANGES = androidx.datastore.preferences.core.stringPreferencesKey("goal_changes")
         val PROFILE = stringPreferencesKey("profile_v1")
         val PLASMA_DONATIONS = stringSetPreferencesKey("plasma_donations")
         val IDEAS_DISMISSED = stringSetPreferencesKey("ideas_dismissed")
         val AI_CONSENT = stringSetPreferencesKey("ai_consent")
         val NUTRIENT_REPAIR = intPreferencesKey("nutrient_repair_version")
+        val LAST_EXPORT_AT = androidx.datastore.preferences.core.longPreferencesKey("last_export_at")
+        val WEB_SEARCH = booleanPreferencesKey("web_search")
         val TESTER_NAME = stringPreferencesKey("tester_name")
         val INSTALLED_AT = androidx.datastore.preferences.core.longPreferencesKey("installed_at")
         val LOG_SENT_AT = androidx.datastore.preferences.core.longPreferencesKey("log_sent_at")
         val LOG_SNOOZE_UNTIL = androidx.datastore.preferences.core.longPreferencesKey("log_snooze_until")
+        val PROFILE_NUDGE_CLOSES = intPreferencesKey("profile_nudge_closes")
+        val PROFILE_NUDGE_CLOSED_AT = androidx.datastore.preferences.core.longPreferencesKey("profile_nudge_closed_at")
         val SCAN_GUIDE = booleanPreferencesKey("scan_guide")
         val BETA_NOTES = stringPreferencesKey("beta_notes_v1")
         val GOALS_TIP_CLOSED = booleanPreferencesKey("goals_tip_closed")
@@ -146,7 +160,8 @@ class SettingsRepository(
         val MODEL_LOOKUP = stringPreferencesKey("model_lookup")
         val MODEL_ASK = stringPreferencesKey("model_ask")
         val MODEL_SPEECH = stringPreferencesKey("model_speech")
-        val ASK_CONSENT = booleanPreferencesKey("ask_consent_v1")
+        // v2 (2026-11-14): Ask can now send summaries of past days and saved foods, so it asks again.
+        val ASK_CONSENT = booleanPreferencesKey("ask_consent_v2")
         val HISTORY_COUNTED = stringSetPreferencesKey("history_counted_days")
     }
 
@@ -357,6 +372,32 @@ class SettingsRepository(
     /** Debug mode: a detailed record of everything done and typed, for finding problems. */
     // On unless turned off: a quirk noticed today is only findable if it was
     // recorded today. It stays on the phone either way.
+    /** Every goal target change, so History judges each day by its own target (GoalTimeline). */
+    val goalChanges: Flow<List<com.nutritionscribe.shared.model.GoalTimeline.Change>> =
+        store.data.map { com.nutritionscribe.shared.model.GoalTimeline.decode(it[Keys.GOAL_CHANGES]) }
+
+    suspend fun recordGoalChange(metric: String, day: Long, before: Double?, after: Double?) {
+        store.edit {
+            val now = com.nutritionscribe.shared.model.GoalTimeline.decode(it[Keys.GOAL_CHANGES])
+            it[Keys.GOAL_CHANGES] = com.nutritionscribe.shared.model.GoalTimeline.encode(
+                com.nutritionscribe.shared.model.GoalTimeline.record(now, metric, day, before, after))
+        }
+    }
+
+    /** Shake to report a problem (Settings › Beta testing); on unless switched off. */
+    val shakeToReport: Flow<Boolean> = store.data.map { it[Keys.SHAKE_TO_REPORT] ?: com.nutritionscribe.app.ui.feedback.ShakeReport.DEFAULT_ON }
+
+    suspend fun setShakeToReport(on: Boolean) {
+        store.edit { it[Keys.SHAKE_TO_REPORT] = on }
+    }
+
+    /** Speech to text on the phone (the default) or by OpenAI; see [com.nutritionscribe.app.data.speech.SpeechEngine]. */
+    val speechOnPhone: Flow<Boolean> = store.data.map { it[Keys.SPEECH_ON_PHONE] ?: com.nutritionscribe.app.data.speech.SpeechEngine.PHONE_BY_DEFAULT }
+
+    suspend fun setSpeechOnPhone(on: Boolean) {
+        store.edit { it[Keys.SPEECH_ON_PHONE] = on }
+    }
+
     val debugMode: Flow<Boolean> = store.data.map { it[Keys.DEBUG_MODE] ?: true }
 
     suspend fun setDebugMode(value: Boolean) {
@@ -364,11 +405,11 @@ class SettingsRepository(
     }
 
     /**
-     * Highest quality mode, as the person sees it: AI on, with a key to use. It is
-     * the existing lookup preference under a name that says what it is for, so
-     * nothing already set up changes meaning.
+     * AI on, as the person sees it: not in offline mode, and a key to use (see
+     * [OfflineMode]). It is the existing lookup preference, so nothing already set
+     * up changes meaning.
      */
-    val highestQuality: Flow<Boolean> = lookupSource.map { it == LookupSource.AI && hasAnyApiKey() }
+    val aiOn: Flow<Boolean> = lookupSource.map { !OfflineMode.isOffline(it, hasAnyApiKey()) }
 
     /** Speech goes to OpenAI only with an OpenAI key; an Anthropic key has no speech model. */
     fun openAiKey(): String? = getApiKey(AiBackendKind.OPENAI)?.takeIf { it.isNotBlank() }
@@ -458,6 +499,18 @@ class SettingsRepository(
         store.edit { it[Keys.LOG_SNOOZE_UNTIL] = until }
     }
 
+    /** How often Home's profile card was closed, and when last (review H2). */
+    val profileNudgeClosed: Flow<Pair<Int, Long>> = store.data.map {
+        (it[Keys.PROFILE_NUDGE_CLOSES] ?: 0) to (it[Keys.PROFILE_NUDGE_CLOSED_AT] ?: 0L)
+    }
+
+    suspend fun closeProfileNudge(now: Long) {
+        store.edit {
+            it[Keys.PROFILE_NUDGE_CLOSES] = (it[Keys.PROFILE_NUDGE_CLOSES] ?: 0) + 1
+            it[Keys.PROFILE_NUDGE_CLOSED_AT] = now
+        }
+    }
+
     /** The green box on the scan camera that shows where the label goes. On until they turn it off. */
     val scanGuide: Flow<Boolean> = store.data.map { it[Keys.SCAN_GUIDE] ?: true }
 
@@ -482,6 +535,24 @@ class SettingsRepository(
     }
 
     private val notesJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    /**
+     * Whether a lookup may search the web when it is unsure (a restaurant or brand
+     * item the food list and the model don't know). On unless turned off (owner,
+     * 2026-11-14); only ever used with AI on.
+     */
+    val webSearch: Flow<Boolean> = store.data.map { it[Keys.WEB_SEARCH] ?: true }
+
+    suspend fun setWebSearch(value: Boolean) {
+        store.edit { it[Keys.WEB_SEARCH] = value }
+    }
+
+    /** When a backup was last written (Settings › Back up & restore shows it, and nudges after a month). */
+    val lastExportAt: Flow<Long?> = store.data.map { it[Keys.LAST_EXPORT_AT] }
+
+    suspend fun setLastExportAt(at: Long) {
+        store.edit { it[Keys.LAST_EXPORT_AT] = at }
+    }
 
     /** Which [com.nutritionscribe.shared.model.NutrientRepair] pass has run over saved food. */
     val nutrientRepairVersion: Flow<Int> = store.data.map { it[Keys.NUTRIENT_REPAIR] ?: 0 }

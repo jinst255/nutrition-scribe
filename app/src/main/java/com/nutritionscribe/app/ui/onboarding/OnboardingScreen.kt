@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.onboarding
 
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -61,7 +63,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
 
     // Full-screen steps, laid out like the name step; the rest share the column below.
     if (intro) { TesterIntro(onDone = { intro = false; scope.launch { settings.setTesterIntroSeen() } }); return }
-    if (step == 0) { ReadyToGo(keptKey) { step = 1 }; return }
+    if (step == 0) { ReadyToGo(keptKey, onStart = { step = 1 }); return }
     if (step == 3) {
         AllSet(onStart = {
             scope.launch {
@@ -93,20 +95,17 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 ) {
                     com.nutritionscribe.shared.model.Extras.shown(Metric.MACROS).forEach { metric ->
+                        // Review G7: only the small box toggled; a tap on the name did nothing.
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(
+                                value = metric in selectedMetrics,
+                                role = androidx.compose.ui.semantics.Role.Checkbox,
+                                onValueChange = { on -> selectedMetrics = if (on) selectedMetrics + metric else selectedMetrics - metric },
+                            ),
                         ) {
-                            Checkbox(
-                                checked = metric in selectedMetrics,
-                                onCheckedChange = { on ->
-                                    selectedMetrics = if (on) {
-                                        selectedMetrics + metric
-                                    } else {
-                                        selectedMetrics - metric
-                                    }
-                                },
-                            )
+                            Checkbox(checked = metric in selectedMetrics, onCheckedChange = null)
+                            Spacer(Modifier.width(14.dp))
                             Column {
                                 Text(metric.goalLabel, style = MaterialTheme.typography.bodyLarge)
                                 Text(
@@ -150,11 +149,8 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                         // next screen opens on real numbers rather than blanks.
                         for (metric in selectedMetrics) {
                             targetText.getOrPut(metric) { formatTarget(metric.defaultTarget) }
-                            if (metric.direction == GoalDirection.REACH) {
-                                baselineText.getOrPut(metric) {
-                                    formatTarget(metric.defaultTarget * 0.75)
-                                }
-                            }
+                            // Review Hi2: no baseline is filled in for them. A pre-filled
+                            // 75% saved a floor (red below it) nobody had chosen.
                         }
                         step = 2
                     },
@@ -268,6 +264,7 @@ private fun TargetFields(
                     value = baseline,
                     onValueChange = onBaseline,
                     label = { Text("Baseline") },
+                    placeholder = { Text("optional") },
                     suffix = { Text(metric.unit) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -290,13 +287,15 @@ private fun TargetFields(
 private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
     var open by remember { mutableStateOf(false) }
     var metricUnits by remember { mutableStateOf(false) }
-    var sex by remember { mutableStateOf(TargetCalculator.Sex.MALE) }
-    var age by remember { mutableStateOf("30") }
-    var feet by remember { mutableStateOf("5") }
-    var inches by remember { mutableStateOf("10") }
-    var cm by remember { mutableStateOf("178") }
-    var pounds by remember { mutableStateOf("170") }
-    var kg by remember { mutableStateOf("77") }
+    // Empty, with examples as placeholders: filled in, they were saved as the
+    // person's own body even when untouched (review G3).
+    var sex by remember { mutableStateOf<TargetCalculator.Sex?>(null) }
+    var age by remember { mutableStateOf("") }
+    var feet by remember { mutableStateOf("") }
+    var inches by remember { mutableStateOf("") }
+    var cm by remember { mutableStateOf("") }
+    var pounds by remember { mutableStateOf("") }
+    var kg by remember { mutableStateOf("") }
     var activity by remember { mutableStateOf(TargetCalculator.Activity.LIGHT) }
     var aim by remember { mutableStateOf(TargetCalculator.Aim.MAINTAIN) }
     var done by remember { mutableStateOf(false) }
@@ -334,6 +333,7 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
                     value = age,
                     onValueChange = { age = it },
                     label = { Text("Age") },
+                    placeholder = { Text("30") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.weight(1f),
@@ -344,6 +344,7 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
                         value = cm,
                         onValueChange = { cm = it },
                         label = { Text("Height") },
+                        placeholder = { Text("170") },
                         suffix = { Text("cm") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -354,6 +355,7 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
                         value = feet,
                         onValueChange = { feet = it },
                         label = { Text("Height") },
+                        placeholder = { Text("5") },
                         suffix = { Text("ft") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -363,7 +365,9 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
                     OutlinedTextField(
                         value = inches,
                         onValueChange = { inches = it },
-                        label = { Text(" ") },
+                        // An empty label left the box blank until tapped: nobody knew it was the inches.
+                        label = { Text("in") },
+                        placeholder = { Text("8") },
                         suffix = { Text("in") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -376,6 +380,7 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
                 value = if (metricUnits) kg else pounds,
                 onValueChange = { if (metricUnits) kg = it else pounds = it },
                 label = { Text("Weight") },
+                placeholder = { Text(if (metricUnits) "70" else "155") },
                 suffix = { Text(if (metricUnits) "kg" else "lb") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -411,34 +416,17 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
                 onSelect = { aim = it },
             )
 
+            val body = TargetCalculator.bodyFromTyped(sex, age, metricUnits, feet, inches, cm, pounds, kg, activity, aim)
             Button(
+                enabled = body != null,
                 onClick = {
-                    val heightCm = if (metricUnits) {
-                        cm.toDoubleOrNull() ?: 178.0
-                    } else {
-                        TargetCalculator.feetInchesToCm(
-                            feet.toIntOrNull() ?: 5,
-                            inches.toDoubleOrNull() ?: 10.0,
-                        )
-                    }
-                    val weightKg = if (metricUnits) {
-                        kg.toDoubleOrNull() ?: 77.0
-                    } else {
-                        TargetCalculator.poundsToKg(pounds.toDoubleOrNull() ?: 170.0)
-                    }
-                    val body = TargetCalculator.Body(
-                        sex = sex,
-                        ageYears = age.toIntOrNull()?.coerceIn(13, 100) ?: 30,
-                        heightCm = heightCm,
-                        weightKg = weightKg,
-                        activity = activity,
-                        aim = aim,
-                    )
+                    body ?: return@Button
                     // Kept, so Home's bars scale to this body too (Goals > About you).
                     saveScope.launch {
                         ServiceLocator.settingsRepository.setProfile(
                             com.nutritionscribe.shared.model.Profile(body.sex, body.ageYears, body.heightCm, body.weightKg, body.activity, body.aim),
                         )
+                        ServiceLocator.goalsRepository.matchCaloriesTo(body.aim)
                     }
                     onCalculated(com.nutritionscribe.shared.model.Needs.forProfile(
                         com.nutritionscribe.shared.model.Profile(body.sex, body.ageYears, body.heightCm, body.weightKg, body.activity, body.aim),
@@ -460,14 +448,16 @@ private fun BodyCalculator(onCalculated: (Map<Metric, Double>) -> Unit) {
 }
 
 /** A row of single-choice chips over any small enum. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun <T> LabelledChips(
     options: List<T>,
-    selected: T,
+    selected: T?,
     labelOf: (T) -> String,
     onSelect: (T) -> Unit,
 ) {
-    Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+    // Wrapping: scrolled, "Activ…" and "Gain v…" ran off the edge with no cue (review G4).
+    androidx.compose.foundation.layout.FlowRow(modifier = Modifier.fillMaxWidth()) {
         options.forEach { option ->
             FilterChip(
                 selected = option == selected,

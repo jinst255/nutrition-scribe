@@ -26,6 +26,10 @@ class ExportImportManager(
     /** The user's own foods travel with the log in a JSON backup; see [toJson]. */
     private val personalFoodDao: com.nutritionscribe.app.data.db.PersonalFoodDao? = null,
     private val onPersonalFoodsChanged: () -> Unit = {},
+    /** Goals, About you and plasma days, for a JSON backup (review S2). */
+    private val extras: suspend () -> com.nutritionscribe.app.data.export.BackupJson.Extras? = { null },
+    private val restoreExtras: suspend (com.nutritionscribe.app.data.export.BackupJson.Extras) -> Unit = {},
+    private val onExported: suspend () -> Unit = {},
 ) {
 
     /**
@@ -39,12 +43,15 @@ class ExportImportManager(
     suspend fun exportTo(uri: Uri, format: ExportFormat): TransferResult = try {
         val entries = entryDao.observeAll().first().map { it.toEntry() }
         val text = when (format) {
-            ExportFormat.JSON -> toJson(entries, personalFoodDao?.all().orEmpty())
+            ExportFormat.JSON -> com.nutritionscribe.app.data.export.BackupJson.encode(
+                entries, personalFoodDao?.all().orEmpty().map { kotlinx.serialization.json.Json.parseToJsonElement(it.json) }, extras(),
+            )
             ExportFormat.CSV -> EntryCsv.encode(entries)
         }
         val stream = context.contentResolver.openOutputStream(uri)
             ?: return TransferResult.Failed("Couldn't write to that file.")
         stream.use { it.write(text.toByteArray()) }
+        onExported()
         TransferResult.Exported(entries.size, format)
     } catch (e: Exception) {
         TransferResult.Failed(e.message ?: "Export failed.")
@@ -64,7 +71,10 @@ class ExportImportManager(
                 val first = text.trimStart().firstOrNull()
                 val looksJson = first == '[' || first == '{'
                 val entries = if (looksJson) fromJson(text) else EntryCsv.decode(text)
-                if (looksJson) importPersonalFoods(text)
+                if (looksJson) {
+                    importPersonalFoods(text)
+                    com.nutritionscribe.app.data.export.BackupJson.extrasOf(text)?.let { restoreExtras(it) }
+                }
                 if (entries.isEmpty()) {
                     TransferResult.Failed("No entries found in that file.")
                 } else {
@@ -81,24 +91,6 @@ class ExportImportManager(
             "That doesn't look like a Nutrition Scribe export." +
                 (e.message?.let { " ($it)" } ?: ""),
         )
-    }
-
-    /**
-     * A JSON backup is the log AND what the app has learned from it. Without the
-     * second half, restoring onto a new phone would ask about every food again.
-     * An export with no foods keeps the plain-array shape older versions read.
-     */
-    private fun toJson(entries: List<Entry>, foods: List<com.nutritionscribe.app.data.db.PersonalFoodRow>): String {
-        val list = kotlinx.serialization.json.Json.encodeToJsonElement(
-            kotlinx.serialization.builtins.ListSerializer(Entry.serializer()),
-            entries,
-        )
-        if (foods.isEmpty()) return list.toString()
-        return kotlinx.serialization.json.buildJsonObject {
-            put("format", kotlinx.serialization.json.JsonPrimitive("nutrition-scribe/2"))
-            put("entries", list)
-            put("myFoods", kotlinx.serialization.json.JsonArray(foods.map { kotlinx.serialization.json.Json.parseToJsonElement(it.json) }))
-        }.toString()
     }
 
     private suspend fun importPersonalFoods(text: String) {

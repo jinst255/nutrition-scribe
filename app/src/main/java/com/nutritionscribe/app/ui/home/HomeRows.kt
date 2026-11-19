@@ -1,5 +1,8 @@
 package com.nutritionscribe.app.ui.home
 
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.heightIn
 import com.nutritionscribe.app.ui.common.timeLabel
@@ -111,7 +114,17 @@ internal fun SortSwitch(sort: HomeSort, onSort: (HomeSort) -> Unit, modifier: Mo
     var open by remember { mutableStateOf(false) }
     Box(modifier) {
         TextButton(onClick = { open = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp)) {
-            Text("Sort: ${sort.label}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
+            // At large text the words stood one letter a line beside the tabs (review F9): the icon alone then.
+            if (androidx.compose.ui.platform.LocalDensity.current.fontScale >= 1.25f) {
+                androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.SwapVert, contentDescription = "Sort: ${sort.label}",
+                    tint = MaterialTheme.colorScheme.secondary)
+            } else {
+                androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.SwapVert, contentDescription = null,
+                    tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
+                Text(sort.short, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary,
+                    maxLines = 1, softWrap = false, modifier = Modifier.padding(start = 2.dp)
+                        .semantics { contentDescription = "Sort: ${sort.label}" })
+            }
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             HomeSort.entries.forEach { s ->
@@ -151,8 +164,35 @@ internal fun BarRow(
     onClick: () -> Unit,
     indent: Boolean = false,
     sub: String? = null,
+    /** A goal reached today: a check beside the number (review H5). */
+    met: Boolean = false,
 ) {
     val scheme = MaterialTheme.colorScheme
+    val check: @Composable () -> Unit = {
+        if (met) androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.CheckCircle, contentDescription = null,
+            tint = scheme.primary, modifier = Modifier.size(16.dp))
+    }
+    // Review F9: at 130% text and up, a 100 dp name and a fixed number column cut
+    // "133 g · no limit" off. Large text gets the name and number on one line and
+    // the bar under them, the full width.
+    if (androidx.compose.ui.platform.LocalDensity.current.fontScale >= 1.25f) {
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable(onClick = onClick).padding(vertical = 4.dp)
+                .semantics { contentDescription = description },
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(Modifier.fillMaxWidth().padding(start = if (indent) 10.dp else 0.dp), verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (indent) scheme.secondary else scheme.onBackground, modifier = Modifier.weight(1f))
+                check()
+                Text(value, style = NumberStyle, color = scheme.onBackground, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+            }
+            HomeBar(bar.fraction, fill, unknown, Modifier.fillMaxWidth().padding(start = if (indent) 10.dp else 0.dp), bar.targetTick, bar.lineTick)
+            sub?.let { Text(it, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp), color = scheme.secondary) }
+        }
+        return
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -174,6 +214,7 @@ internal fun BarRow(
             sub?.let { Text(it, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp, fontSize = 11.sp), color = scheme.secondary, maxLines = 2) }
         }
         HomeBar(bar.fraction, fill, unknown, Modifier.weight(1f), bar.targetTick, bar.lineTick)
+        if (met) Box(Modifier.width(16.dp)) { check() }
         Text(
             value,
             style = NumberStyle,

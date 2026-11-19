@@ -182,7 +182,7 @@ private fun LabelCard(f: PersonalFood, modifier: Modifier, onClick: () -> Unit) 
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
             }
         }
-        Text(f.name, fontWeight = FontWeight.SemiBold, fontSize = 14.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(com.nutritionscribe.app.ui.common.shownFoodName(f.name), fontWeight = FontWeight.SemiBold, fontSize = 14.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(look ?: (summary(f) + " \u00B7 " + if (f.timesUsed == 1) "used once" else "used ${f.timesUsed}\u00D7"), fontSize = 12.sp,
             color = if (look != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary, maxLines = 2)
     }

@@ -41,6 +41,13 @@ object Limits {
      */
     data class Bar(val fraction: Float, val targetTick: Float?, val lineTick: Float?)
 
+    /**
+     * A goal to reach that has been reached today: Home marks it with a check (review H5).
+     * Limits are never "met" (staying under is the aim all day), and no target, no check.
+     */
+    fun met(amount: Double, target: Double?, direction: GoalDirection, isGoal: Boolean): Boolean =
+        isGoal && direction == GoalDirection.REACH && target != null && target > 0 && amount >= target
+
     fun bar(amount: Double, target: Double, line: Double?): Bar {
         if (target <= 0) return Bar(0f, null, null)
         if (amount <= target) return Bar((amount / target).toFloat(), null, null)

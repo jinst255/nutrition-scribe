@@ -265,11 +265,16 @@ interface EntryDao {
     )
     fun observeFrequentFoods(limit: Int): Flow<List<FrequentFood>>
 
+    /** What was said and which foods it matched go; the name and the numbers stay (it was renamed "Compacted entry"). */
     @Query(
-        "UPDATE entries SET rawText = '', name = 'Compacted entry', source = '', detailCompacted = 1" +
+        "UPDATE entries SET rawText = '', itemsJson = NULL, detailCompacted = 1" +
             " WHERE timestampEpochMillis < :cutoffEpochMillis AND detailCompacted = 0"
     )
     suspend fun compactDetailBefore(cutoffEpochMillis: Long)
+
+    /** Entries a retention window would reach, for the warning before it is set. */
+    @Query("SELECT COUNT(*) FROM entries WHERE timestampEpochMillis < :cutoffEpochMillis")
+    suspend fun countBefore(cutoffEpochMillis: Long): Int
 
     @Query("DELETE FROM entries WHERE timestampEpochMillis < :cutoffEpochMillis")
     suspend fun deleteBefore(cutoffEpochMillis: Long)

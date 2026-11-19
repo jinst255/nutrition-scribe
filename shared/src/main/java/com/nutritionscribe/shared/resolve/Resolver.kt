@@ -100,9 +100,11 @@ class Resolver(
         /** Set when the AI lookup was wanted but could not be made; the card says so. */
         val aiProblem: String? = null,
         val usedAi: Boolean = false,
+        /** "Made chili, added half a zucchini": these lines are a new batch of this recipe, not something eaten. */
+        val batchOf: PersonalFood? = null,
     ) {
         /** Every part is remembered, so the entry can log with no card at all. */
-        val silent: Boolean get() = meal != null || (items.isNotEmpty() && items.all { it.status == Status.REMEMBERED })
+        val silent: Boolean get() = batchOf == null && (meal != null || (items.isNotEmpty() && items.all { it.status == Status.REMEMBERED }))
         val needsConfirm: List<ResolvedItem> get() = if (meal != null) emptyList() else items.filter { it.status != Status.REMEMBERED }
         val total: Map<String, Double>
             get() = meal?.nutrients ?: sumNutrients(items.map { it.nutrients })
@@ -113,9 +115,13 @@ class Resolver(
     fun resolve(text: String): Resolution {
         if (text.isBlank()) return Resolution(text, emptyList())
 
+        // "Made chili, added half a zucchini": a new batch of their recipe, with the change.
+        batchOf(text)?.let { return it }
         // A saved meal, or the same sentence confirmed before as one food.
         val textKey = PersonalKeys.ofText(text)
-        personal.get(textKey)?.takeIf { it.isMeal }?.let { return Resolution(text, emptyList(), meal = it) }
+        // As its parts: an entry is built from its lines, and a meal with none logged
+        // at 0 kcal (a tester's usual oatmeal, three mornings running).
+        personal.get(textKey)?.takeIf { it.isMeal }?.let { return Resolution(text, it.parts.map(::partItem), meal = it) }
         usualWithSwap(text)?.let { return it }
 
         val items = ItemParser.parse(text, ::isFoodWord) { w -> labels?.isBrandWord(w) == true }
@@ -133,21 +139,9 @@ class Resolver(
         // model was told to leave it out, so it never saw the two burritos.
         // Reading a package aloud ("a chewy snack bar, whole oats and flax ... is what it
         // says") names one product. Pinned, "whole oats" logged their oats beside it.
-        val readsPackage = READS_PACKAGE.containsMatchIn(text.lowercase())
-        fun pinned(i: Int, r: ResolvedItem) = r.status == Status.REMEMBERED &&
-            !(aiMode == AiMode.SENTENCE && ai is SentenceLookup &&
-                (readsPackage || (i > 0 && describesPrevious(r.item.said)) || r.item.little || r.item.group != null))
+        fun pinned(i: Int, r: ResolvedItem) = pinned(text, i, r)
 
-        // Layer 4 fills the cards the user will see anyway — never a remembered item.
-        val fresh = resolved.withIndex().filter {
-            val r = it.value
-            !pinned(it.index, r) && when (aiMode) {
-                AiMode.ALL_NEW, AiMode.SENTENCE -> true
-                AiMode.WEAK_ONLY -> r.weak || r.status == Status.UNKNOWN
-                AiMode.TRUSTED_LOCAL -> r.weak || r.status == Status.UNKNOWN ||
-                    (r.choice?.origin != Origin.CURATED && r.choice?.origin != Origin.LABEL && !isCuratedUsda(r))
-            }
-        }
+        val fresh = freshFor(text, resolved)
         val lookup = ai
         if (lookup == null || fresh.isEmpty()) return Resolution(text, resolved)
         if (aiMode == AiMode.SENTENCE && lookup is SentenceLookup) {
@@ -176,9 +170,72 @@ class Resolver(
         return Resolution(text, resolved, usedAi = true)
     }
 
+    private fun pinned(text: String, i: Int, r: ResolvedItem): Boolean = r.status == Status.REMEMBERED &&
+        !(aiMode == AiMode.SENTENCE && ai is SentenceLookup &&
+            (READS_PACKAGE.containsMatchIn(text.lowercase()) || (i > 0 && describesPrevious(r.item.said)) || r.item.little || r.item.group != null))
+
+    /** Layer 4 fills the cards the user will see anyway — never a remembered item. */
+    private fun freshFor(text: String, resolved: List<ResolvedItem>) = resolved.withIndex().filter {
+        val r = it.value
+        !pinned(text, it.index, r) && when (aiMode) {
+            AiMode.ALL_NEW, AiMode.SENTENCE -> true
+            AiMode.WEAK_ONLY -> r.weak || r.status == Status.UNKNOWN
+            AiMode.TRUSTED_LOCAL -> r.weak || r.status == Status.UNKNOWN ||
+                (r.choice?.origin != Origin.CURATED && r.choice?.origin != Origin.LABEL && !isCuratedUsda(r))
+        }
+    }
+
+    /**
+     * Layers 1–3 only, at once: the card opens on this while the AI is asked (a
+     * tester's one complaint was "Slow": every card waited 1.5 to 7 s for it).
+     */
+    fun resolveLocalOnly(text: String): Resolution = Resolver(personal, usda, labels, null, clock, aiMode).resolve(text)
+
+    /** Whether [resolve] would ask the AI about [text]: is there a line on the card it would fill? */
+    fun wantsAi(text: String): Boolean {
+        if (ai == null || text.isBlank()) return false
+        if (personal.get(PersonalKeys.ofText(text))?.isMeal == true || usualWithSwap(text) != null) return false
+        Recipes.batchSaid(text)?.let { b -> if (Recipes.find(personal.all(), b.name) != null) return b.added?.let { wantsAi(it) } ?: false }
+        val items = ItemParser.parse(text, ::isFoodWord) { w -> labels?.isBrandWord(w) == true }
+        if (items.isEmpty()) return false
+        return freshFor(text, items.map { resolveLocal(it) }).isNotEmpty()
+    }
+
+    /**
+     * "Made chili, added ½ zucchini, no onion": the recipe's ingredients for the
+     * pot, with what was added looked up like any food and what was left out
+     * taken off. The card saves it as this week's batch (see [Recipes.startBatch]).
+     */
+    private fun batchOf(text: String): Resolution? {
+        val said = Recipes.batchSaid(text) ?: return null
+        val recipe = Recipes.find(personal.all(), said.name) ?: return null
+        val base = recipe.parts.filter { p ->
+            said.without.none { w -> FoodQuery.contentWords(w).let { ws -> ws.isNotEmpty() && ws.all { it in FoodQuery.contentWords(p.name) || it in FoodQuery.contentWords(p.said) } } }
+        }.map(::partItem)
+        val added = said.added?.let { resolve(it) }
+        return Resolution(text, base + added?.items.orEmpty(), aiProblem = added?.aiProblem, usedAi = added?.usedAi == true, batchOf = recipe)
+    }
+
+    /** A portion of their recipe, as a remembered line: "a bowl of chili", "half a serving", "300 g". */
+    private fun recipeLine(food: PersonalFood, item: ItemParser.Item): ResolvedItem {
+        val p = Recipes.portion(food, item, clock())
+        return ResolvedItem(
+            item = item.copy(amount = p.amount, unit = p.unit), status = Status.REMEMBERED,
+            choice = FoodCandidate(id = "recipe:${food.key}", name = food.name, origin = Origin.PERSONAL),
+            grams = p.grams, portionNote = p.note, nutrients = p.nutrients, key = food.key, mine = true,
+        )
+    }
+
+    /** One part of a saved meal or recipe, as a remembered line (opening a recipe back up on the card). */
+    fun partLine(p: MealPart): ResolvedItem = partItem(p)
+
     /** One part of a saved meal, as a remembered line. */
     private fun partItem(p: MealPart): ResolvedItem = ResolvedItem(
-        item = ItemParser.Item(said = p.said, food = p.name.lowercase()), status = Status.REMEMBERED,
+        // The amount as it was said ("1 lb", "2 cans"): without it a recipe's lines read "1 whole".
+        item = ItemParser.parse(p.said, ::isFoodWord) { false }.singleOrNull()
+            ?.let { ItemParser.Item(said = p.said, food = p.name.lowercase(), amount = it.amount, unit = it.unit) }
+            ?: ItemParser.Item(said = p.said, food = p.name.lowercase()),
+        status = Status.REMEMBERED,
         choice = FoodCandidate(id = "mine:${PersonalKeys.of(p.name)}", name = p.name, origin = Origin.PERSONAL),
         grams = p.grams, portionNote = "your usual", nutrients = p.nutrients, key = PersonalKeys.of(p.name),
     )
@@ -192,11 +249,14 @@ class Resolver(
     private fun usualWithSwap(text: String): Resolution? {
         val low = ItemParser.normaliseText(text)
         // "typically", "usually" too: "typically protein shake, but with milk…" missed their shake.
-        val m = Regex("\\b(?:typical(?:ly)?|usual(?:ly)?|normal(?:ly)?|regular|standard|same)\\s+(?:my\\s+)?([a-z' ]+?)\\s*,?\\s+(?:except|but|only)\\b(.*)$").find(low) ?: return null
+        // "…, but with water instead of milk", or with no "but" at all: "my typical
+        // protein shake with water instead of milk" came back as nothing (owner, 10-28).
+        val m = Regex("\\b(?:typical(?:ly)?|usual(?:ly)?|normal(?:ly)?|regular|standard|same)\\s+(?:my\\s+)?([a-z' ]+?)\\s*,?\\s+" +
+            "(?:(?:except|but|only)\\b|(?=(?:with|using|made with)\\b.*\\binstead of\\b))(.*)$").find(low) ?: return null
         val tail = m.groupValues[2]
         val swap = Regex("instead of (?:the |my )?([a-z' ]+?)\\s*,?\\s+(?:that )?(?:i |we )?(?:used|had|put|with|it was|went with|use|added)\\s+(?:some |a |an )?([a-z0-9' .]+)").find(tail)
             ?.let { it.groupValues[1] to it.groupValues[2] }
-            ?: Regex("(?:with|used|had)\\s+(?:some |a |an )?([a-z0-9' .]+?)\\s+instead of\\s+(?:the |my )?([a-z' ]+)").find(tail)
+            ?: Regex("(?:with|used|using|had)\\s+(?:some |a |an )?([a-z0-9' .]+?)\\s+instead of\\s+(?:the |my )?([a-z' ]+)").find(tail)
                 ?.let { it.groupValues[2] to it.groupValues[1] }
             ?: Regex("(?:no|without)\\s+(?:the |any )?([a-z' ]+)").find(tail)?.let { it.groupValues[1] to "" }
             ?: return null
@@ -238,6 +298,8 @@ class Resolver(
     /** Layers 1–3 for one item. */
     fun resolveLocal(said: ItemParser.Item): ResolvedItem {
         var item = said
+        // Their recipe: a portion of the pot, never an AI's guess at "a bowl of chili".
+        Recipes.find(personal.all(), listOfNotNull(item.brand, item.food).joinToString(" "))?.let { return recipeLine(it, item) }
         val key = PersonalKeys.of(item)
         remembered(item, key)?.let { return it }
         // "a solid breakfast", "some food at the party" name no food; any match
@@ -468,7 +530,7 @@ class Resolver(
             .mapNotNull { f ->
                 val c = f.candidate!!
                 val names = listOf(f.name, c.name, c.brand.orEmpty())
-                val words = names.flatMap { FoodQuery.contentWords(it) }.toSet()
+                val words = names.flatMap { FoodQuery.contentWords(it) }.toSet() + ownWords(f)
                 if (!said.all { w -> words.any { near(it, w) } }) return@mapNotNull null
                 val heads = listOf(f.name, c.name).mapNotNull { n -> FoodQuery.contentWords(n.substringBefore(",")).lastOrNull() }
                 if (heads.none { h -> said.any { near(it, h) } }) return@mapNotNull null
@@ -510,12 +572,12 @@ class Resolver(
         // scanned last — the brand IS the product there.
         if (said.all { it in PACKAGED_WORDS }) return emptyList()
         return personal.all().asSequence()
-            .filter { !it.isMeal && it.candidate?.origin == Origin.LABEL && it.key != key }
+            .filter { !it.isMeal && isProduct(it.candidate) && it.key != key }
             .filter { f ->
                 // Its name, not the words it was saved under: a whole sentence once
                 // saved as Dole Baby Spinach made "baby carrots" spinach for weeks.
                 val words = (listOf(f.name, f.candidate!!.name, f.candidate.brand.orEmpty())
-                    .flatMap { FoodQuery.contentWords(it) }).map { SAID_ALIASES[it] ?: it }.toSet()
+                    .flatMap { FoodQuery.contentWords(it) } + ownWords(f)).map { SAID_ALIASES[it] ?: it }.toSet()
                 val extra = words - said
                 // "milk" is not their milk chocolate: a word that makes it another food
                 // rules it out. And the thing it IS must be what was said: "cheese" is
@@ -529,6 +591,28 @@ class Resolver(
             .distinctBy { it.candidate?.id ?: it.key }
             .toList()
     }
+
+    /**
+     * A product with a name on the package: a label they scanned or a barcode, or a
+     * branded food found online (the owner's Great Value pumpkin pie, 11-18, wasn't
+     * offered for "pumpkin pie" because it came from a web search). An AI's guess at
+     * a plain food is not a product.
+     */
+    private fun isProduct(c: FoodCandidate?): Boolean = c != null &&
+        (c.origin == Origin.LABEL || (c.id.startsWith("web:") && !c.brand.isNullOrBlank()))
+
+    /**
+     * The words they saved a label under ("low sodium Great Value bacon" for a label
+     * named "Real Bacon Pieces"): theirs, so they count when they say it again. Only
+     * an item's short key, never a sentence's: a whole sentence saved as Dole Baby
+     * Spinach once made "baby carrots" spinach for weeks.
+     */
+    private fun ownWords(f: PersonalFood): Set<String> {
+        val words = f.key.substringBefore('#').split(" ").filter { it.isNotBlank() }
+        return if (words.size <= OWN_WORDS_MAX) words.toSet() else emptySet()
+    }
+
+    private val OWN_WORDS_MAX = 5
 
     private val DISH_HEADS = setOf("burrito", "sandwich", "taco", "pizza", "wrap", "quesadilla", "salad", "soup",
         "casserole", "lasagna", "enchilada", "pie", "muffin", "bagel", "dinner", "meal", "bowl").map { FoodQuery.stem(it) }.toSet()
@@ -601,6 +685,12 @@ class Resolver(
         key: String = PersonalKeys.of(item),
     ): PersonalFood {
         val old = personal.get(key)
+        // A portion of their recipe: the recipe stays as it is, only counted.
+        if (old?.isRecipe == true) {
+            val food = old.copy(timesUsed = old.timesUsed + 1)
+            personal.put(food)
+            return food
+        }
         val unitGrams = (old?.unitGrams ?: emptyMap()).toMutableMap()
         if (grams != null) {
             val per = grams / (item.amount ?: 1.0) / item.scale
@@ -681,6 +771,39 @@ class Resolver(
         if (confirmed.size > 1 && confirmed.all { it.nutrients.isNotEmpty() }) {
             saveMeal(text, confirmed.joinToString(", ") { it.name.substringBefore(",") }, confirmed.map { MealPart(it.name, it.item.said, it.grams, it.nutrients) })
         }
+    }
+
+    /**
+     * Save the card's lines as a recipe ([batchOf] null) or as this week's batch of
+     * the recipe keyed [batchOf], kept as the recipe from now on when [keep]. Each
+     * ingredient is learned like any confirmed food; the list itself is never
+     * remembered as a meal, which would log the whole pot.
+     */
+    fun saveRecipe(
+        name: String,
+        confirmed: List<Confirmed>,
+        servings: Double?,
+        potGrams: Double?,
+        batchOf: String? = null,
+        keep: Boolean = false,
+    ): PersonalFood {
+        for (c in confirmed) {
+            if (c.unchangedMemory || c.nutrients.isEmpty() || c.key.startsWith("recipe:")) continue
+            if (personal.get(c.key)?.isRecipe == true) continue
+            learn(c.item, c.name, c.candidate, c.grams, c.nutrients, c.key)
+        }
+        val parts = confirmed.filter { it.nutrients.isNotEmpty() }.map { MealPart(it.name, it.item.said, it.grams, it.nutrients) }
+        val now = clock()
+        val old = batchOf?.let { personal.get(it) }?.takeIf { it.isRecipe }
+        val food = if (old != null) {
+            val sized = old.copy(recipe = old.recipe!!.copy(servings = servings ?: old.recipe.servings, potGrams = potGrams ?: old.recipe.potGrams))
+            Recipes.startBatch(sized, parts, now).let { if (keep) Recipes.keepBatch(it, now) else it }
+        } else {
+            val prior = personal.get(Recipes.keyFor(name))
+            Recipes.create(name, parts, servings, potGrams, now).copy(timesUsed = prior?.timesUsed ?: 0)
+        }
+        personal.put(food)
+        return food
     }
 
     /**
@@ -890,16 +1013,16 @@ class Resolver(
             val aw = FoodQuery.contentWords(a.name).toSet()
             val match = free.maxByOrNull { l -> FoodQuery.contentWords(l.item.food).count { it in aw } }
                 ?.takeIf { l -> FoodQuery.contentWords(l.item.food).any { it in aw } || (answers.size == 1 && free.size == 1) }
-            if (match != null) {
-                free.remove(match)
-                withAi(match, a)
-            } else {
-                val item = ItemParser.Item(
-                    said = a.name, food = a.name.lowercase(), amount = a.count,
-                    unit = a.unit?.let { ItemParser.UNITS[it.lowercase()] }, brand = a.brand,
-                )
-                withAi(unknown(item, PersonalKeys.of(item)), a)
-            }
+            match?.let { free.remove(it) }
+            // The AI read the part; is it one of theirs? "protein powder serving of whole
+            // milk" was one food to the parser and two to the AI, and neither of the AI's
+            // two was looked for among the labels they had scanned.
+            val item = ItemParser.Item(
+                said = a.name, food = a.name.lowercase(), amount = a.count,
+                unit = a.unit?.let { ItemParser.UNITS[it.lowercase()] }, brand = a.brand,
+            )
+            val theirs = if (match?.mine == true) null else remembered(item, PersonalKeys.of(item))?.takeIf { it.mine }
+            withAi(theirs ?: match ?: unknown(item, PersonalKeys.of(item)), a)
         }
     }
 
@@ -1071,9 +1194,14 @@ data class AiItemAnswer(
     val unit: String? = null,
     /** brand + product + flavour, for finding its real label. */
     val productSearch: String? = null,
+    /** The model was not sure of a restaurant or brand item's real numbers: worth a web search. */
+    val lookUpOnline: Boolean = false,
+    /** The numbers came from a web search (the restaurant's or maker's own page). */
+    val fromWeb: Boolean = false,
 ) {
     fun asCandidate() = FoodCandidate(
-        id = "ai:${name.lowercase().hashCode()}",
+        // "web:" says where the numbers came from, for the card's "Found online".
+        id = (if (fromWeb) "web:" else "ai:") + name.lowercase().hashCode(),
         name = name,
         origin = Origin.AI,
         perServing = nutrients,

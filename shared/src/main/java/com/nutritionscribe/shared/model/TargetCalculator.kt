@@ -64,6 +64,25 @@ object TargetCalculator {
     fun poundsToKg(lb: Double): Double = lb * KG_PER_LB
     fun feetInchesToCm(feet: Int, inches: Double): Double = (feet * 12 + inches) * CM_PER_INCH
 
+    /**
+     * The body as typed into setup, or null until every part is really there.
+     * Setup used to start filled in (a 30-year-old man, 5'10", 170 lb) and saved
+     * that as "About you" for anyone who tapped Fill in my targets without
+     * changing it (review G3). Nothing typed means nothing saved.
+     */
+    fun bodyFromTyped(
+        sex: Sex?, age: String, metric: Boolean, feet: String, inches: String, cm: String, pounds: String, kg: String,
+        activity: Activity, aim: Aim,
+    ): Body? {
+        sex ?: return null
+        val years = age.trim().toIntOrNull()?.takeIf { it in 13..100 } ?: return null
+        val heightCm = if (metric) cm.trim().toDoubleOrNull()?.takeIf { it in 100.0..250.0 }
+        else feet.trim().toIntOrNull()?.takeIf { it in 3..8 }?.let { f -> feetInchesToCm(f, inches.trim().ifEmpty { "0" }.toDoubleOrNull() ?: return null) }
+        val weightKg = if (metric) kg.trim().toDoubleOrNull()?.takeIf { it in 25.0..350.0 }
+        else pounds.trim().toDoubleOrNull()?.takeIf { it in 55.0..770.0 }?.let(::poundsToKg)
+        return Body(sex, years, heightCm ?: return null, weightKg ?: return null, activity, aim)
+    }
+
     /** Mifflin-St Jeor resting energy, kcal/day. */
     fun restingEnergy(body: Body): Double {
         val base = 10 * body.weightKg + 6.25 * body.heightCm - 5 * body.ageYears

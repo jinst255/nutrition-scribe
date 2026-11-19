@@ -101,7 +101,9 @@ import com.nutritionscribe.shared.resolve.Kinds
 import com.nutritionscribe.shared.resolve.Origin
 import com.nutritionscribe.shared.resolve.Units
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
@@ -117,6 +119,16 @@ class EntryDetailViewModel : ViewModel() {
     private val tag = java.util.UUID.randomUUID().toString()
 
     fun entry(id: String) = repository.observeEntries().map { all -> all.firstOrNull { it.id == id } }
+
+    /**
+     * The entry as saved now. A scan coming back used the page's copy from before it
+     * left: on 11-18 the owner's barcode scan made the bread Multi Grain, and the
+     * label scan after it put 100% Whole Wheat back.
+     */
+    suspend fun latest(id: String): Entry? = entry(id).first()
+
+    /** One quick change at a time, each on top of the last. */
+    private val saving = kotlinx.coroutines.sync.Mutex()
 
     var busy by mutableStateOf(false)
         private set
@@ -146,18 +158,22 @@ class EntryDetailViewModel : ViewModel() {
      * Saves [lines] as the entry, at once, and teaches them as a fix does. Returns
      * the entry as it was, for Undo. A line in [oneOff] changes this entry only.
      */
-    suspend fun save(entry: Entry, lines: List<ItemDraft>, why: String, oneOff: Set<String> = emptySet()): Entry {
+    suspend fun save(entry: Entry, lines: List<ItemDraft>, why: String, oneOff: Set<String> = emptySet()): Entry = saving.withLock {
         events.event("entry_quick_change", "entry_id" to entry.id, "why" to why,
             "before" to entry.items.map { mapOf("name" to it.name, "grams" to it.grams, "amount" to it.amount, "unit" to it.unit) },
             "after" to lines.map { mapOf("name" to it.name, "grams" to it.grams, "amount" to it.item.amount, "unit" to it.item.unit) })
-        pipeline.confirm(
-            text = entry.rawText.ifBlank { entry.name },
-            items = lines.map { d -> d.toConfirmed().let { if (d.key in oneOff) it.copy(unchangedMemory = true) else it } },
-            replacing = entry,
-            tag = tag,
-            how = "entry_$why",
-        )
-        return entry
+        // Finished even if the page closes: it ran in the screen's scope, and leaving
+        // for the next scan could cancel it half-way (the Multi Grain bread was lost).
+        withContext(kotlinx.coroutines.NonCancellable) {
+            pipeline.confirm(
+                text = entry.rawText.ifBlank { entry.name },
+                items = lines.map { d -> d.toConfirmed().let { if (d.key in oneOff) it.copy(unchangedMemory = true) else it } },
+                replacing = entry,
+                tag = tag,
+                how = "entry_$why",
+            )
+        }
+        entry
     }
 
     /** Puts back the entry as it was before a quick change, numbers and memory both. */
@@ -278,6 +294,8 @@ fun EntryDetailScreen(
     onBack: () -> Unit = {},
     onFix: () -> Unit = {},
     onScan: (index: Int) -> Unit = {},
+    /** Check it once in recipe mode, set up in LogSession. */
+    onRecipe: () -> Unit = {},
     viewModel: EntryDetailViewModel = viewModel(),
 ) {
     val entry by remember(entryId) { viewModel.entry(entryId) }.collectAsState(initial = null)
@@ -317,15 +335,28 @@ fun EntryDetailScreen(
         }
     }
 
-    // A label scanned from this page's food sheet: it becomes that food.
+    // A label scanned from this page's food sheet. The same product fills in only
+    // what was missing (owner, 10-27: "I didn't want to overwrite everything"), with
+    // "Use all" for when the old numbers were wrong; another product becomes it.
     LaunchedEffect(current.id, LogSession.scanned) {
         val (i, c) = LogSession.scanned ?: return@LaunchedEffect
         if (LogSession.scanEntry != current.id) return@LaunchedEffect
         LogSession.scanned = null; LogSession.scanEntry = null
-        val lines = viewModel.draftsOf(current).toMutableList()
-        if (i in lines.indices) {
-            lines[i] = lines[i].withCandidate(c)
-            undoable(viewModel.save(current, lines, "scan"), "${shortName(c.name)} from its label")
+        val now = viewModel.latest(current.id) ?: current
+        val lines = viewModel.draftsOf(now).toMutableList()
+        if (i !in lines.indices) return@LaunchedEffect
+        val original = lines[i]
+        val (merged, filled) = original.withLabelScan(c)
+        lines[i] = merged
+        val before = viewModel.save(now, lines, "scan")
+        if (merged.candidate?.id == c.id && filled.isEmpty()) { undoable(before, "${shortName(c.name)} from its label"); return@LaunchedEffect }
+        val what = filled.mapNotNull { com.nutritionscribe.shared.model.Metric.fromKey(it)?.label?.lowercase() }
+        val message = if (what.isEmpty()) "Its label agrees: nothing was missing" else "Filled in ${what.joinToString(", ")} from its label"
+        snackbar.currentSnackbarData?.dismiss()
+        if (snackbar.showSnackbar(message, actionLabel = "Use all", duration = androidx.compose.material3.SnackbarDuration.Long) == SnackbarResult.ActionPerformed) {
+            val fresh = viewModel.latest(current.id) ?: now
+            val all = viewModel.draftsOf(fresh).toMutableList().also { if (i in it.indices) it[i] = original.withCandidate(c) }
+            undoable(viewModel.save(fresh, all, "scan_all"), "All of ${shortName(c.name)}'s label numbers")
         }
     }
 
@@ -352,12 +383,24 @@ fun EntryDetailScreen(
                             menu = false
                             ServiceLocator.debugEvents.event("log_again_tap", "where" to "entry_detail", "entry_id" to current.id)
                             scope.launch {
-                                ServiceLocator.logPipeline.logAgain(current)
-                                android.widget.Toast.makeText(context, "Logged again", android.widget.Toast.LENGTH_SHORT).show()
+                                val added = ServiceLocator.logPipeline.logAgain(current)
+                                com.nutritionscribe.app.ui.common.AppMessages.logged("Logged again", listOf(added))
                             }
                         })
                         DropdownMenuItem(text = { Text("Change the time") }, leadingIcon = { Icon(Icons.Filled.Schedule, null) }, onClick = { menu = false; retiming = true })
                         DropdownMenuItem(text = { Text("Rename it") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, onClick = { menu = false; renaming = true })
+                        // A pot they'll eat from all week: its lines become the recipe's ingredients.
+                        if (current.items.size > 1) {
+                            DropdownMenuItem(text = { Text("Save as a recipe") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, null) }, onClick = {
+                                menu = false
+                                ServiceLocator.debugEvents.event("recipe_from_entry", "entry_id" to current.id, "lines" to current.items.size)
+                                com.nutritionscribe.app.ui.confirm.LogSession.startRecipe(
+                                    ServiceLocator.logPipeline.toConfirmed(current).map { com.nutritionscribe.app.ui.confirm.ItemDraft.from(it) },
+                                    com.nutritionscribe.app.ui.common.shownFoodName(current.name).take(40),
+                                )
+                                onRecipe()
+                            })
+                        }
                         if (current.items.isEmpty()) {
                             DropdownMenuItem(text = { Text("Edit the numbers") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, null) }, onClick = { menu = false; editing = true })
                         }
@@ -381,7 +424,7 @@ fun EntryDetailScreen(
                 if (current.needsConfirm) {
                     Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("Logged from your watch on a best guess. Check it once and it's remembered.",
+                            Text("Logged from your watch on a best guess. Check it and it's remembered.",
                                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                             TextButton(onClick = onFix) { Text("Check it") }
                         }
@@ -833,7 +876,7 @@ private fun SwapDialog(start: String, search: suspend (String) -> List<FoodCandi
                         list.take(8).forEach { c ->
                             Column(Modifier.fillMaxWidth().clickable { onPick(c) }.padding(vertical = 8.dp)) {
                                 Text(ItemDraft.withBrand(c, " — "), style = MaterialTheme.typography.bodyMedium)
-                                Text(ItemDraft.label(c.origin), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                                Text(ItemDraft.label(c), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
                             }
                         }
                     }
@@ -1026,53 +1069,131 @@ private fun amountWords(a: Double): String {
 /**
  * "Something's wrong with this one": a note in the debug log with the entry as
  * stored, so the problem can be found by what it is about rather than by when.
+ * With AI on, "Fix it" also has the AI change the entry to match what they said
+ * (owner, 11-18: "AI should be able to go in and fix whatever I say"), with Undo.
  */
 @Composable
 internal fun ReportProblem(entry: Entry) {
     var open by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf("") }
-    val context = androidx.compose.ui.platform.LocalContext.current
+    var fixing by remember { mutableStateOf(false) }
     val reportScope = androidx.compose.runtime.rememberCoroutineScope()
+    val canFix = remember(open) { ServiceLocator.askClient() != null }
     // Outlined, not grey text: it went unnoticed for days as a text link.
     androidx.compose.material3.OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
-        Text("Something's wrong with this entry? Tell us")
+        Text("Something's wrong with this entry?")
+    }
+    fun record(fix: Boolean) {
+        // A report is worth recording even with debug mode off.
+        ServiceLocator.debugEvents.always(
+            "user_report", "note" to note, "entry_id" to entry.id, "fix" to fix,
+            "entry" to kotlinx.serialization.json.Json.encodeToJsonElement(Entry.serializer(), entry),
+            "suspect" to com.nutritionscribe.shared.model.NutrientSanity.codes(entry.nutrients),
+        )
     }
     if (open) {
         androidx.compose.material3.AlertDialog(
-            onDismissRequest = { open = false },
+            onDismissRequest = { if (!fixing) open = false },
             title = { Text("What's wrong?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "This goes in the debug log with everything the app knows about this entry.",
+                        if (canFix) "Say what's wrong and the AI fixes the entry; you can undo it. It also goes in the debug log."
+                        else "This goes in the debug log with everything the app knows about this entry.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary,
                     )
                     OutlinedTextField(
-                        value = note, onValueChange = { note = it },
-                        placeholder = { Text("e.g. sugar should be 4 g, not 49") },
+                        value = note, onValueChange = { note = it }, enabled = !fixing,
+                        placeholder = { Text("e.g. it was 5 slices of the low-sodium bacon") },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (fixing) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text("Fixing…", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    // A report is worth recording even with debug mode off.
-                    ServiceLocator.debugEvents.always(
-                        "user_report", "note" to note, "entry_id" to entry.id,
-                        "entry" to kotlinx.serialization.json.Json.encodeToJsonElement(Entry.serializer(), entry),
-                        "suspect" to com.nutritionscribe.shared.model.NutrientSanity.codes(entry.nutrients),
-                    )
+                if (canFix) androidx.compose.material3.TextButton(enabled = note.isNotBlank() && !fixing, onClick = {
+                    record(fix = true)
+                    fixing = true
+                    reportScope.launch {
+                        val message = fixWithAi(entry, note)
+                        fixing = false; open = false; note = ""
+                        message.second?.let { before ->
+                            com.nutritionscribe.app.ui.common.AppMessages.sayWithAction(message.first, "Undo") {
+                                reportScope.launch { undoFix(before) }
+                            }
+                        } ?: com.nutritionscribe.app.ui.common.AppMessages.say(message.first, long = true)
+                    }
+                }) { Text("Fix it") }
+                else androidx.compose.material3.TextButton(onClick = {
+                    record(fix = false)
                     open = false; note = ""
                     // Something in it is wrong: what these words were taken to mean is
                     // forgotten, so the same wrong answer is not logged silently again.
                     reportScope.launch {
                         ServiceLocator.logPipeline.forget(entry.rawText, entry.items.map { it.key }, "user_report")
                     }
-                    android.widget.Toast.makeText(context, "Noted. It will check these foods with you next time.", android.widget.Toast.LENGTH_LONG).show()
+                    com.nutritionscribe.app.ui.common.AppMessages.say("Noted. It will check these foods with you next time.", long = true)
                 }) { Text("Save note") }
             },
-            dismissButton = { androidx.compose.material3.TextButton(onClick = { open = false }) { Text("Cancel") } },
+            dismissButton = {
+                Row {
+                    if (canFix) androidx.compose.material3.TextButton(enabled = !fixing, onClick = {
+                        record(fix = false)
+                        open = false; note = ""
+                        reportScope.launch { ServiceLocator.logPipeline.forget(entry.rawText, entry.items.map { it.key }, "user_report") }
+                        com.nutritionscribe.app.ui.common.AppMessages.say("Noted. It will check these foods with you next time.", long = true)
+                    }) { Text("Just note it") }
+                    androidx.compose.material3.TextButton(enabled = !fixing, onClick = { open = false }) { Text("Cancel") }
+                }
+            },
         )
+    }
+}
+
+/**
+ * Has the AI change [entry] to match [complaint], and saves it. The message to show,
+ * and the entry as it was (for Undo) when anything changed.
+ */
+internal suspend fun fixWithAi(entry: Entry, complaint: String): Pair<String, Entry?> {
+    val pipeline = ServiceLocator.logPipeline
+    val events = ServiceLocator.debugEvents
+    val client = ServiceLocator.askClient() ?: return (ServiceLocator.askBlocked() ?: "AI isn't available right now.") to null
+    val drafts = pipeline.toConfirmed(entry).map { com.nutritionscribe.app.ui.confirm.ItemDraft.from(it) }
+    val lines = drafts.map { d ->
+        com.nutritionscribe.shared.resolve.EntryFix.Line(d.name, d.item.said, d.item.amount, d.unitLabel.takeIf { d.item.unit != null }, d.grams, d.nutrients)
+    }
+    val tag = "fix:${entry.id}"
+    val fix = try {
+        withContext(Dispatchers.IO) { ServiceLocator.usageMeter.withTag(tag) { client.fixEntry(entry.rawText.ifBlank { entry.name }, lines, complaint) } }
+    } catch (e: com.nutritionscribe.shared.resolve.OpenAiItemLookup.Failure) {
+        events.event("entry_fix_failed", "entry_id" to entry.id, "error" to e)
+        return (if (e is com.nutritionscribe.shared.resolve.OpenAiItemLookup.Failure.NoNetwork) "No connection. Your note is saved; try Fix it again when you're online."
+            else "The AI couldn't fix it just now. Your note is saved.") to null
+    }
+    events.event("entry_fix", "entry_id" to entry.id, "summary" to fix.summary, "actions" to fix.actions.map { it.toString() })
+    if (fix.actions.isEmpty()) return fix.summary to null
+    val (fixed, notes) = com.nutritionscribe.app.ui.confirm.applyFixTo(drafts, fix, tag)
+    if (fixed.isEmpty() || notes.isEmpty()) return fix.summary to null
+    withContext(kotlinx.coroutines.NonCancellable) {
+        pipeline.confirm(
+            text = entry.rawText.ifBlank { entry.name },
+            items = fixed.map { it.toConfirmed() },
+            replacing = entry, tag = tag, how = "entry_ai_fix",
+        )
+    }
+    return (fix.summary.ifBlank { notes.joinToString(" · ") }) to entry
+}
+
+/** Puts back the entry as it was before an AI fix. */
+internal suspend fun undoFix(before: Entry) {
+    ServiceLocator.debugEvents.event("entry_fix_undo", "entry_id" to before.id)
+    withContext(kotlinx.coroutines.NonCancellable) {
+        ServiceLocator.logPipeline.confirm(text = before.rawText.ifBlank { before.name },
+            items = ServiceLocator.logPipeline.toConfirmed(before), replacing = before, how = "entry_fix_undo")
+        ServiceLocator.currentEntryRepository().update(before)
     }
 }

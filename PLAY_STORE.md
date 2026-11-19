@@ -61,19 +61,30 @@ about the build — the ✅ items were verified on 2026-09-19.
 ## Privacy policy draft
 
 > **Nutrition Scribe — Privacy Policy**
-> Last updated: 19 September 2026
+> Last updated: 14 November 2026
 >
 > Nutrition Scribe stores everything you log — the food, the amounts, and the times
 > — in a database on your own phone. There is no account, no server of ours, and
 > no cloud backup. We cannot see your data, and we do not collect, sell, or share
 > any of it.
 >
-> **If you choose to add an API key**, then each time you log something by voice
-> or text, that text (for example "two eggs and toast") is sent to that provider
-> — OpenAI or Anthropic, whichever you configured — so it can estimate the
-> nutrition. Nothing else is sent: not your name, not your history, not your
-> totals. That provider's own privacy policy governs what they do with it. If you
-> do not add a key, the app makes no network requests at all.
+> **Without an API key** the app reads labels, recognises speech and looks foods up
+> on the phone. The one exception is scanning a barcode the app doesn't know: that
+> barcode number (nothing else) is sent to Open Food Facts to find the product.
+>
+> **If you choose to add an API key** (OpenAI or Anthropic, whichever you set up)
+> and leave offline mode off:
+> - what you say or type to log is sent to that provider to work out the nutrition;
+>   when it isn't sure of a restaurant or packaged item, OpenAI may search the web
+>   for it (you can turn that off in Settings);
+> - with OpenAI and cloud speech on, your voice recording is sent to be transcribed;
+> - Ask, if you use it, sends your question, today's log and totals against your
+>   goals, the foods you log most, your body details if you entered them, and, when
+>   a question needs it, totals from past days worked out on your phone and your
+>   saved foods that match. Never your name or your key.
+>
+> That provider's own privacy policy governs what they do with it. Requests made
+> through OpenAI's Responses API ask it not to store them.
 >
 > **Deleting your data**: uninstalling the app deletes everything. You can also
 > export a copy at any time from Settings → Export and import.

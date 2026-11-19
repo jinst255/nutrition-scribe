@@ -86,22 +86,24 @@ things that no ranking fixes:
 | When | What is sent | Where |
 |---|---|---|
 | AI lookups on (your key) | The words of the entry | The provider you picked |
-| Highest quality speech on | The recording of a spoken entry | OpenAI transcription |
-| Ask | Your question and the foods and targets it needs | The provider you picked |
+| Speech to text set to OpenAI (Settings › Microphone) | The recording of a spoken entry | OpenAI transcription |
+| Ask | Your question and the foods and targets it needs (with Search the web on, OpenAI may search for it) | The provider you picked |
+| "Something's wrong with this entry" › Fix it | What you said is wrong, and that entry's foods and numbers | The provider you picked |
 | A barcode the label pack doesn't have | The barcode number only | Open Food Facts |
 
 Without a key, only that last one happens. Before each AI provider is used for the first
 time, the app shows what it sends and what that provider's data policy says.
-Speech without Highest quality goes through Android's own speech recognizer.
+Speech goes through Android's own speech recognizer unless you choose OpenAI in Settings › Microphone.
 
 ## Beta builds
 
 Builds whose version name contains `test` (now `1.6-test`) are for testers:
 
 - **First open:** the tester's name, the test week in three lines, a practice
-  press-and-hold report, what leaves the phone, and the key step (with a "no key" path).
-- **Press and hold** anything that looks wrong to save a note with a screenshot. Notes
-  stay on the phone until the tester sends their log.
+  shake-to-report, what leaves the phone, and the key step (with a "no key" path).
+- **Shake the phone** when something looks wrong to save a note with a screenshot (on by
+  default; Settings › Beta testing turns it off). Notes stay on the phone until the tester
+  sends their log.
 - **Settings › Beta testing:** the Tester guide (day N of 7, setup, the day-7 questions),
   ideas, what has been sent, and Send my log.
 - **Day 7:** three questions, then "What's in your log": what always goes, and the

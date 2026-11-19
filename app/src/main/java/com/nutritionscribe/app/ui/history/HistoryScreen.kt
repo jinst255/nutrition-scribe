@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.history
 
+import com.nutritionscribe.app.ui.common.shownName
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -81,17 +83,22 @@ class HistoryViewModel : ViewModel() {
         }
     }
 
-    fun deleteMany(ids: List<String>) {
-        ServiceLocator.debugEvents.event("entries_deleted", "where" to "history", "ids" to ids)
-        viewModelScope.launch { repository.deleteMany(ids) }
+    fun deleteMany(entries: List<Entry>) {
+        ServiceLocator.debugEvents.event("entries_deleted", "where" to "history", "ids" to entries.map { it.id })
+        viewModelScope.launch { repository.deleteMany(entries.map { it.id }) }
+    }
+
+    fun restore(entries: List<Entry>) {
+        ServiceLocator.debugEvents.event("entries_restored", "where" to "history", "ids" to entries.map { it.id })
+        viewModelScope.launch { repository.restore(entries) }
     }
 
     /** The selected entries again, now, oldest first so they keep their order. */
-    fun logAgain(entries: List<com.nutritionscribe.shared.model.Entry>, onDone: (Int) -> Unit) {
+    fun logAgain(entries: List<com.nutritionscribe.shared.model.Entry>, onDone: (List<com.nutritionscribe.shared.model.Entry>) -> Unit) {
         ServiceLocator.debugEvents.event("log_again_tap", "where" to "history", "ids" to entries.map { it.id })
         viewModelScope.launch {
-            entries.sortedBy { it.timestampEpochMillis }.forEach { ServiceLocator.logPipeline.logAgain(it) }
-            onDone(entries.size)
+            val added = entries.sortedBy { it.timestampEpochMillis }.map { ServiceLocator.logPipeline.logAgain(it) }
+            onDone(added)
         }
     }
 
@@ -140,7 +147,7 @@ private enum class HistoryFilter(val label: String, val meaning: String) {
     GOALS("Goals", "Only your goals"),
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun HistoryScreen(
     onOpenEntry: (String) -> Unit = {},
@@ -157,6 +164,30 @@ fun HistoryScreen(
     var query by remember { mutableStateOf("") }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     val selecting = selectedIds.isNotEmpty()
+    // Bulk delete asks first, with the count, then offers Undo (review F3: it deleted at once).
+    var confirmDelete by remember { mutableStateOf<List<Entry>?>(null) }
+    val snackbar = remember { androidx.compose.material3.SnackbarHostState() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    confirmDelete?.let { doomed ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text(if (doomed.size == 1) "Delete 1 entry?" else "Delete ${doomed.size} entries?") },
+            text = { Text("They come off your log and your totals. You can undo it straight after.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    confirmDelete = null
+                    selectedIds = emptySet()
+                    viewModel.deleteMany(doomed)
+                    scope.launch {
+                        val r = snackbar.showSnackbar(if (doomed.size == 1) "Deleted 1 entry" else "Deleted ${doomed.size} entries", "Undo",
+                            duration = androidx.compose.material3.SnackbarDuration.Long)
+                        if (r == androidx.compose.material3.SnackbarResult.ActionPerformed) viewModel.restore(doomed)
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
 
     val zone = remember { ZoneId.systemDefault() }
     val today = com.nutritionscribe.shared.model.LogDays.today(zone)
@@ -195,16 +226,18 @@ fun HistoryScreen(
     val allCards = remember(allEntries, allGoals, shownMetrics, range) {
         shownMetrics.map { m -> chartGoal(m, allGoals) to MetricHistory.lastDays(MetricHistory.daily(allEntries, m, zone, today), range) }
     }
+    val goalOn = rememberGoalOn()
     val cards = allCards.filter { (g, days) ->
         when (filter) {
             HistoryFilter.ALL -> true
             HistoryFilter.GOALS -> g.enabled
             HistoryFilter.LIMITS -> g.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT && (g.enabled || g.ceilingValue != null)
-            HistoryFilter.OFF -> days.any { d -> d.epochDay in full && d.value?.let { MetricHistory.standing(g, it) }.let { it == Standing.OVER || it == Standing.PAST || it == Standing.LOW } }
+            HistoryFilter.OFF -> days.any { d -> d.epochDay in full && d.value?.let { MetricHistory.standing(goalOn(g, d.epochDay), it) }.let { it == Standing.OVER || it == Standing.PAST || it == Standing.LOW } }
         }
     }
-    val fullInRange = (1..range).count { today.minusDays(it.toLong()).toEpochDay() in full }
+    val loggedDays = remember(allEntries) { allEntries.map { MetricHistory.dayOf(it, zone) }.toSet() }
 
+    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         if (selecting) {
             Row(
@@ -220,13 +253,13 @@ fun HistoryScreen(
                     IconButton(onClick = {
                         val chosen = entries.filter { it.id in selectedIds }
                         selectedIds = emptySet()
-                        viewModel.logAgain(chosen) { n ->
-                            android.widget.Toast.makeText(context, if (n == 1) "Logged again" else "Logged $n entries again", android.widget.Toast.LENGTH_SHORT).show()
+                        viewModel.logAgain(chosen) { added ->
+                            com.nutritionscribe.app.ui.common.AppMessages.logged(if (added.size == 1) "Logged again" else "Logged ${added.size} entries again", added)
                         }
                     }) {
                         Icon(Icons.Filled.Replay, contentDescription = "Log again now")
                     }
-                    IconButton(onClick = { viewModel.deleteMany(selectedIds.toList()); selectedIds = emptySet() }) {
+                    IconButton(onClick = { confirmDelete = entries.filter { it.id in selectedIds } }) {
                         Icon(Icons.Filled.Delete, contentDescription = "Delete")
                     }
                     IconButton(onClick = { selectedIds = emptySet() }) {
@@ -246,7 +279,8 @@ fun HistoryScreen(
             if (query.isBlank()) {
                 item(key = "filters") {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 8.dp)) {
-                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Review Hi3: chips that scrolled sideways hid "Off target" off the edge; they wrap now.
+                        androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             var rangeMenu by remember { mutableStateOf(false) }
                             androidx.compose.foundation.layout.Box {
                                 FilterChip(
@@ -271,7 +305,7 @@ fun HistoryScreen(
                             }
                         }
                         Text(filter.meaning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
-                        HistoryLegend()
+                        HistoryLegend(MetricHistory.standingsInUse(cards, full, goalOn))
                     }
                 }
                 if (cards.isEmpty()) item(key = "nocards") {
@@ -304,7 +338,7 @@ fun HistoryScreen(
                 item(key = "all") {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "${if (fullInRange == 1) "1 full day" else "$fullInRange full days"} · today is left out until it's over",
+                            MetricHistory.daysLine(range, today, loggedDays, full),
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.weight(1f),
                         )
                         androidx.compose.material3.TextButton(onClick = {
@@ -381,16 +415,22 @@ fun HistoryScreen(
             }
         }
     }
+    androidx.compose.material3.SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
+    }
 
 }
 
 /** The key for every card: ▼ and ▲ so it isn't colour alone. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun HistoryLegend() {
+private fun HistoryLegend(inUse: Set<Standing>) {
     val c = standingColors()
+    val all = listOf(
+        Standing.LOW to (c.low to "▼ Too low"), Standing.IN_RANGE to (c.inRange to "In range"), Standing.OVER to (c.over to "Over target"),
+        Standing.PAST to (c.past to "▲ Past your line"), Standing.NOT_JUDGED to (c.none to "No line set"),
+    )
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        listOf(c.low to "▼ Too low", c.inRange to "In range", c.over to "Over target", c.past to "▲ Past your line", c.none to "No line set").forEach { (col, t) ->
+        all.filter { it.first in inUse }.map { it.second }.forEach { (col, t) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 androidx.compose.foundation.layout.Box(Modifier.padding(end = 5.dp).size(10.dp).background(col, RoundedCornerShape(2.dp)))
                 Text(t, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
@@ -421,6 +461,8 @@ private fun MetricCard(
         modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
+        val goalOnAll = rememberGoalOn()
+        val goalOn: (Long) -> MetricGoal = { day -> goalOnAll(goal, day) }
         Column(modifier = Modifier.padding(horizontal = if (compact) 12.dp else 14.dp, vertical = if (compact) 10.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 if (goal.metric == Metric.SUGAR) "Added sugar" else if (compact) goal.metric.shortLabel else goal.metric.label,
@@ -438,22 +480,22 @@ private fun MetricCard(
                     modifier = Modifier.padding(bottom = 3.dp))
             }
             Text(
-                cardStatus(goal, days, full),
+                cardStatus(goal, days, full, goalOn),
                 style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp),
                 color = MaterialTheme.colorScheme.secondary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            DayStrip(days, goal, full, today, Modifier.fillMaxWidth().height(30.dp).padding(top = 4.dp))
+            DayStrip(days, goal, full, today, Modifier.fillMaxWidth().height(30.dp).padding(top = 4.dp), goalOn = goalOn)
         }
     }
 }
 
 /** "8 of 13 days at 100 g or more", "6 under 2,300 · 4 over · 3 past 3,000", or how to judge it. */
-internal fun cardStatus(goal: MetricGoal, days: List<DayValue>, full: Set<Long>): String {
+internal fun cardStatus(goal: MetricGoal, days: List<DayValue>, full: Set<Long>, goalOn: (Long) -> MetricGoal = { goal }): String {
     val m = goal.metric
     fun f(v: Double) = formatAmount(v, m, withUnit = m.unit == "g")
-    val judged = days.filter { it.epochDay in full }.mapNotNull { d -> d.value?.let { MetricHistory.standing(goal, it) } }
+    val judged = days.filter { it.epochDay in full }.mapNotNull { d -> d.value?.let { MetricHistory.standing(goalOn(d.epochDay), it) } }
     val n = judged.size
     if (n == 0) return "No full days yet"
     val target = goal.target?.takeIf { goal.enabled }
@@ -464,6 +506,12 @@ internal fun cardStatus(goal: MetricGoal, days: List<DayValue>, full: Set<Long>)
     val over = judged.count { it == Standing.OVER }
     val past = judged.count { it == Standing.PAST }
     val low = judged.count { it == Standing.LOW }
+    // The target moved in this range (changed, or plasma days): one number would be wrong.
+    val targets = days.filter { it.epochDay in full && it.value != null }.mapNotNull { goalOn(it.epochDay).target }.distinct()
+    if (target != null && targets.size > 1) {
+        val met = if (goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT) inRange else inRange + over
+        return "$met of $n days met that day's goal" + (past.takeIf { it > 0 }?.let { " · $it past your line" } ?: "")
+    }
     return when {
         target != null && goal.effectiveDirection == com.nutritionscribe.shared.model.GoalDirection.LIMIT && line != null ->
             listOfNotNull("$inRange under ${f(target)}", over.takeIf { it > 0 }?.let { "$it over" }, past.takeIf { it > 0 }?.let { "$it past ${f(line)}" },
@@ -544,7 +592,7 @@ private fun EntryRow(
             color = MaterialTheme.colorScheme.secondary,
             modifier = Modifier.padding(start = if (selecting) 0.dp else 4.dp).width(70.dp),
         )
-        Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Text(entry.shownName(), maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         Text(
             entry.amountOf(lead)?.let { formatAmount(it, lead) } ?: "–",
             style = com.nutritionscribe.app.ui.theme.NumberStyle,
