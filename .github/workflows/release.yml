@@ -1,0 +1,41 @@
+# A GitHub release for each app version whose signed APK is committed.
+#
+# The APK is built and signed on the owner's machine (the signing key and the
+# bundled label pack never leave it) and committed as releases/NutritionScribe-<version>.apk
+# with releases/NOTES-<version>.md. On a push to main this makes release
+# v<version> with that file attached, once. A "-test" version is a pre-release.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ["releases/**", "app/build.gradle.kts"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the committed APK for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ver=$(sed -n 's/^ *versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
+          apk="releases/NutritionScribe-$ver.apk"
+          notes="releases/NOTES-$ver.md"
+          tag="v$ver"
+          if [ -z "$ver" ] || [ ! -f "$apk" ]; then
+            echo "No APK committed for version '$ver'; nothing to release."; exit 0
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released."; exit 0
+          fi
+          args=(--target "$GITHUB_SHA" --title "Nutrition Scribe $ver")
+          case "$ver" in *test*|*beta*) args+=(--prerelease) ;; esac
+          if [ -f "$notes" ]; then args+=(--notes-file "$notes"); else args+=(--generate-notes); fi
+          gh release create "$tag" "$apk" "${args[@]}"

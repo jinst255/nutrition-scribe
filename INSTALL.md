@@ -1,7 +1,8 @@
 # Installing Nutrition Scribe
 
-Send whoever is installing it the file **`nutrition-scribe.apk`** — by email, Google
-Drive, Signal, whatever. Then send them everything below the line.
+Send whoever is installing it the APK — by email, Google Drive, Signal, whatever — or the
+link to the latest release on GitHub (Releases › the newest `v…-test` › the `.apk` under
+Assets). Then send them everything below the line.
 
 ---
 

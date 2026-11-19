@@ -97,7 +97,8 @@ Speech goes through Android's own speech recognizer unless you choose OpenAI in 
 
 ## Beta builds
 
-Builds whose version name contains `test` (now `1.6-test`) are for testers:
+Builds whose version name contains `test` (now `1.8-test`) are for testers. The signed APK is on
+the repository's **Releases** page (pre-releases), with install steps:
 
 - **First open:** the tester's name, the test week in three lines, a practice
   shake-to-report, what leaves the phone, and the key step (with a "no key" path).
@@ -110,7 +111,9 @@ Builds whose version name contains `test` (now `1.6-test`) are for testers:
   personal parts (body stats, activity and aim, plasma days, label photos), ticked by
   default and free to untick. The API key is never in it.
 
-How a round runs: [`docs/BETA_TESTING.md`](./docs/BETA_TESTING.md).
+How a round runs: [`docs/BETA_TESTING.md`](./docs/BETA_TESTING.md). How a release is made:
+build and sign the release APK, commit it as `releases/NutritionScribe-<version>.apk` with
+`releases/NOTES-<version>.md`, and push; `.github/workflows/release.yml` publishes it once.
 
 ## Build
 
