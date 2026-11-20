@@ -139,6 +139,8 @@ class HomeViewModel : ViewModel() {
     private val dao = ServiceLocator.database.entryDao()
 
     private val all: Flow<List<Entry>> = dao.observeAll().map { rows -> rows.map { it.toEntry() } }
+    /** Every entry, for a goal sheet's last two weeks (Home round 2). */
+    val allEntries: Flow<List<Entry>> = all
 
     /** The newest entry of all time (null before the first): Home's "Last:" line and the streak's wait. */
     val lastEntry: Flow<Entry?> = all.map { list -> list.maxByOrNull { it.timestampEpochMillis } }
@@ -150,7 +152,8 @@ class HomeViewModel : ViewModel() {
 
     val goals: Flow<List<MetricGoal>> = ServiceLocator.goalsRepository.goals
     val unprocessedCount = repository.observeUnprocessed().map { it.size }
-    val needsGlance = dao.observeNeedsConfirm().map { rows -> rows.map { it.entry.id } }
+    /** Watch entries waiting on the phone (From your watch, P2/P3). */
+    val needsGlance = dao.observeNeedsConfirm().map { rows -> rows.map { it.toEntry() } }
     val micMode = ServiceLocator.settingsRepository.micMode
     val homeSort = ServiceLocator.settingsRepository.homeSort
     val ideas = com.nutritionscribe.app.ui.ideas.IdeasSource.flow()
@@ -380,6 +383,12 @@ fun HomeScreen(
     onStreakRules: () -> Unit = {},
     /** Ask, full screen, from the bar above the dock. */
     onAsk: () -> Unit = {},
+    /** Settings › Watch, from Home's Watch button (P2). */
+    onOpenWatch: () -> Unit = {},
+    /** From your watch: entries waiting for a check (P3). */
+    onOpenWatchQueue: () -> Unit = {},
+    /** A goal sheet's 2-week chart › the full chart (Home round 2). */
+    onOpenChart: (Metric) -> Unit = {},
     viewModel: HomeViewModel = viewModel(),
 ) {
     val entries by viewModel.todayEntries.collectAsState(initial = emptyList())
@@ -405,6 +414,8 @@ fun HomeScreen(
     val microsPercent by viewModel.microsPercent.collectAsState(initial = false)
     val ideaHidden by viewModel.ideaHidden.collectAsState(initial = null)
     var streakOpen by remember { mutableStateOf(false) }
+    /** Log again's last tile: every food they've logged, in a sheet (Home round 2). */
+    var allFoodsOpen by remember { mutableStateOf(false) }
     val latestChat by viewModel.latestChat.collectAsState(initial = null)
     val duePlan by viewModel.duePlan.collectAsState(initial = null)
     val storeSuggestion by viewModel.storeSuggestion.collectAsState(initial = null)
@@ -487,13 +498,24 @@ fun HomeScreen(
         }
         // Review H1: what was logged last, at the top, one tap from its page.
         val zoneNow = java.time.ZoneId.systemDefault()
-        HomeTop.lastLine(lastEntry, lastEntry?.let { com.nutritionscribe.app.ui.common.logAgainName(it) }.orEmpty(), zoneNow, today)?.let { line ->
+        // P2: a Watch button by the streak when a watch with the app is paired, or something from it waits.
+        val watch by com.nutritionscribe.app.data.WatchLink.status.collectAsState()
+        LaunchedEffect(Unit) { com.nutritionscribe.app.data.WatchLink.refresh(context.applicationContext) }
+        val showWatch = watch.paired || glance.isNotEmpty()
+        val lastText = HomeTop.lastLine(lastEntry, lastEntry?.let { com.nutritionscribe.app.ui.common.logAgainName(it) }.orEmpty(), zoneNow, today)
+        if (lastText != null || showWatch) Row(
+            Modifier.fillMaxWidth().padding(end = 16.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                line, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 1,
+                lastText.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth().clickable(onClickLabel = "Open") { lastEntry?.let { onOpenEntry(it.id) } }
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                modifier = Modifier.weight(1f).clickable(enabled = lastText != null, onClickLabel = "Open") { lastEntry?.let { onOpenEntry(it.id) } }
+                    .padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
             )
+            if (showWatch) com.nutritionscribe.app.ui.watch.WatchButton(glance.size) {
+                ServiceLocator.debugEvents.event("watch_button", "count" to glance.size)
+                if (glance.isNotEmpty()) onOpenWatchQueue() else onOpenWatch()
+            }
         }
         Box(Modifier.fillMaxSize()) {
             val list = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -505,7 +527,7 @@ fun HomeScreen(
                 state = list,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (unprocessedCount > 0) item {
                     Notice(
@@ -513,12 +535,11 @@ fun HomeScreen(
                         MaterialTheme.colorScheme.errorContainer, onClick = onOpenUnprocessed,
                     )
                 }
-                if (glance.isNotEmpty()) item {
-                    Notice(
-                        if (glance.size == 1) "1 entry from your watch needs a quick look"
-                        else "${glance.size} entries from your watch need a quick look",
-                        MaterialTheme.colorScheme.secondaryContainer,
-                    ) { onFixEntry(glance.first()) }
+                if (glance.isNotEmpty()) item(key = "watch_waiting") {
+                    com.nutritionscribe.app.ui.watch.WatchWaitingCard(glance) {
+                        ServiceLocator.debugEvents.event("watch_queue_open", "where" to "home_card", "count" to glance.size)
+                        onOpenWatchQueue()
+                    }
                 }
                 if (nudgeDue) item {
                     Notice(
@@ -591,13 +612,15 @@ fun HomeScreen(
                         }
                     }
                 }
-                if (choices.isNotEmpty()) item {
-                    HomeCard {
-                        LogAgainSection(choices = choices, meals = meals, onLog = { viewModel.logAgain(it, "home") }, onLogMeal = viewModel::logMeal)
-                    }
-                }
+                // Home round 2 (owner, 11-20): Today first, then Log again.
                 item {
                     TodayCard(entries, lead, micMode, onOpen = onOpenEntry)
+                }
+                if (choices.isNotEmpty()) item {
+                    HomeCard {
+                        LogAgainSection(choices = choices, meals = meals, onLog = { viewModel.logAgain(it, "home") }, onLogMeal = viewModel::logMeal,
+                            onMore = { allFoodsOpen = true })
+                    }
                 }
             }
 
@@ -619,6 +642,8 @@ fun HomeScreen(
         }
     }
 
+    if (allFoodsOpen) AllFoodsSheet(choices, onLog = { allFoodsOpen = false; viewModel.logAgain(it, "all_foods") }, onDismiss = { allFoodsOpen = false })
+
     partOf?.let { plan ->
         PartOfSheet(plan, onLog = { shares -> partOf = null; viewModel.answerPlan(plan, shares, onReview) }, onDismiss = { partOf = null })
     }
@@ -638,7 +663,14 @@ fun HomeScreen(
         onDismiss = { NaturalSugar.open.value = false },
     )
     detail?.let { m ->
+        val history by viewModel.allEntries.collectAsState(initial = emptyList())
+        val kcalTarget = goalOf[Metric.CALORIES]?.target ?: refs.getValue(Metric.CALORIES)
+        val two = remember(history, m, kcalTarget) {
+            TwoWeeks.of(history, m, kcalTarget, java.time.ZoneId.systemDefault(), com.nutritionscribe.shared.model.LogDays.today())
+        }
         NutrientSheet(
+            twoWeeks = two,
+            onOpenChart = { detail = null; onOpenChart(m) },
             metric = m,
             total = totals[m] ?: NutrientTotal(m, 0.0, 0.0),
             goal = goalOf[m],
@@ -722,15 +754,11 @@ private fun IdeasCard(result: com.nutritionscribe.shared.model.Ideas.Result, onC
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(onClick = onClick)
             .semantics { contentDescription = "Ideas from your week: $line" },
     ) {
-        Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.size(36.dp).background(scheme.secondaryContainer, CircleShape), contentAlignment = Alignment.Center) {
-                Icon(androidx.compose.material.icons.Icons.Outlined.Lightbulb, contentDescription = null, tint = scheme.primary, modifier = Modifier.size(19.dp))
-            }
-            Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
-                Text("Ideas", style = MaterialTheme.typography.titleSmall)
-                Text(line, style = MaterialTheme.typography.bodySmall, color = scheme.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
+        // Home round 2: one line, not a title and two.
+        Row(Modifier.heightIn(min = 48.dp).padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(androidx.compose.material.icons.Icons.Outlined.Lightbulb, contentDescription = null, tint = scheme.primary, modifier = Modifier.size(20.dp))
+            Text(line, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (onHide != null) IconButton(onClick = onHide) {
                 Icon(Icons.Filled.Close, contentDescription = "Hide this idea", tint = scheme.secondary, modifier = Modifier.size(18.dp))
             }
@@ -950,7 +978,7 @@ private fun ShowSections(
         return
     }
     if (mine.isNotEmpty()) {
-        Label("Your goals", true)
+        Label("Your goals · tap one for its 2 weeks", true)
         mine.forEach { ShowRow(it, totals, goals, row, valueWidth) }
     }
     rest.filter { it.second.isNotEmpty() }.forEachIndexed { i, (label, list) ->
@@ -1131,6 +1159,9 @@ internal fun NutrientSheet(
     onLearnMore: ((have: Double, target: Double) -> Unit)? = null,
     /** A food in "Most of it came from" opens its entry, where it can be changed (note S4). */
     onOpenEntry: ((String) -> Unit)? = null,
+    /** Home round 2: its last two weeks, top right, and the full chart from there. */
+    twoWeeks: TwoWeeks.Data? = null,
+    onOpenChart: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     LaunchedEffect(metric) { ServiceLocator.debugEvents.event("nutrient_open", "metric" to metric.key, "amount" to total.amount, "coverage" to total.coverage) }
@@ -1143,10 +1174,13 @@ internal fun NutrientSheet(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(metric.label, style = MaterialTheme.typography.titleLarge)
-            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(formatAmount(total.amount, metric, withUnit = false), style = NumberStyle.copy(fontSize = 26.sp))
                 Text(metric.unit, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 3.dp))
+            }
                 Text(
                     if (isGoal) "of your ${if ((goal?.effectiveDirection ?: metric.direction) == GoalDirection.LIMIT) "limit" else "goal"}, ${formatAmount(target, metric)}"
                     // A limit is not something anyone needs: 178% of the added sugar "you need" read as praise.
@@ -1157,8 +1191,13 @@ internal fun NutrientSheet(
                     else "today",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(bottom = 4.dp),
                 )
+            }
+            if (twoWeeks != null && onOpenChart != null) {
+                TwoWeekMini(twoWeeks, metric, if (isGoal) target else null) {
+                    ServiceLocator.debugEvents.event("nutrient_full_chart", "metric" to metric.key); onOpenChart()
+                }
+            }
             }
             if (onLearnMore != null) {
                 // The sugar limit is a limit on added sugar, so the page measures that.
@@ -1288,64 +1327,132 @@ private fun LearnMoreRow(metric: Metric, onClick: () -> Unit) {
 // Log again: a few one-tap chips, and a small panel for the rest.
 // ---------------------------------------------------------------------------
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LogAgainSection(
     choices: List<LogAgain.Choice>,
     onLog: (Entry) -> Unit,
     meals: List<com.nutritionscribe.shared.model.UsualMeals.Meal> = emptyList(),
     onLogMeal: (com.nutritionscribe.shared.model.UsualMeals.Meal) -> Unit = {},
+    onMore: () -> Unit = {},
 ) {
     if (choices.isEmpty()) return
-    var expanded by remember { mutableStateOf(false) }
     val now = System.currentTimeMillis()
-    val chips = remember(choices) { LogAgain.smart(choices, now, limit = 6) }
-    Column(Modifier.fillMaxWidth().padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel("Log again", Modifier.weight(1f))
-            TextButton(
-                onClick = {
-                    expanded = !expanded
-                    ServiceLocator.debugEvents.event("log_again_more", "open" to expanded)
-                },
-                contentPadding = PaddingValues(horizontal = 4.dp),
-            ) {
-                Text(if (expanded) "Less" else "More", style = MaterialTheme.typography.labelLarge)
-                Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
+    val tiles = remember(choices) { LogAgain.smart(choices, now, limit = 6) }
+    // Home round 2 (approved 11-20): a two-column grid that fills the width, each with its kcal;
+    // the last tile opens every food they've logged.
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionLabel("Log again")
+        meals.forEach { m -> UsualMealTile(m) { onLogMeal(m) } }
+        tiles.chunked(2).forEach { pair ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                pair.forEach { c -> AgainTile(c, onLog, Modifier.weight(1f)) }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
         }
-        meals.forEach { m -> UsualMealTile(m) { onLogMeal(m) } }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            chips.forEach { c ->
-                // "4 squares": all 4 again, or just 1 more (owner, 10-31).
-                val one = remember(c.entry) { LogAgain.oneOf(c.entry) }
-                var asking by remember { mutableStateOf(false) }
-                Box {
-                    Surface(
-                        shape = RoundedCornerShape(17.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.minimumInteractiveComponentSize().height(36.dp).clip(RoundedCornerShape(17.dp)).clickable { if (one != null) asking = true else onLog(c.entry) }
-                            .semantics { contentDescription = "Log ${c.entry.name} again" },
-                    ) {
-                        Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
-                            Text(shortName(c.entry), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+        val more = (choices.size - tiles.size).coerceAtLeast(0)
+        Surface(
+            onClick = { ServiceLocator.debugEvents.event("log_again_more", "open" to true); onMore() },
+            shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.secondaryContainer,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        ) {
+            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Search, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                Text("  All your foods" + (if (more > 0) " · $more more" else ""), style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.weight(1f))
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+/** One Log again tile: the food and its kcal. "4 squares" asks: all 4 again, or just 1 more (owner, 10-31). */
+@Composable
+private fun AgainTile(c: LogAgain.Choice, onLog: (Entry) -> Unit, modifier: Modifier) {
+    val one = remember(c.entry) { LogAgain.oneOf(c.entry) }
+    var asking by remember { mutableStateOf(false) }
+    Box(modifier) {
+        Surface(
+            onClick = { if (one != null) asking = true else onLog(c.entry) },
+            shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surface,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).semantics { contentDescription = "Log ${c.entry.name} again" },
+        ) {
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(shortName(c.entry), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                c.entry.calories?.let { Text("${Math.round(it)}", style = NumberStyle, color = MaterialTheme.colorScheme.secondary) }
+            }
+        }
+        if (one != null) androidx.compose.material3.DropdownMenu(expanded = asking, onDismissRequest = { asking = false }) {
+            val item = c.entry.items.single()
+            val unit = item.unit ?: "piece"
+            androidx.compose.material3.DropdownMenuItem(
+                text = { Text("All ${com.nutritionscribe.shared.resolve.Units.format(item.amount ?: 1.0)} again") },
+                onClick = { asking = false; onLog(c.entry) })
+            androidx.compose.material3.DropdownMenuItem(
+                text = { Text("Just 1 more $unit") },
+                onClick = { asking = false; ServiceLocator.debugEvents.event("log_again_one", "entry_id" to c.entry.id); onLog(one) })
+        }
+    }
+}
+
+/** Home round 2: every food they've logged, searchable, Recent / Most often / My foods. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun AllFoodsSheet(choices: List<LogAgain.Choice>, onLog: (Entry) -> Unit, onDismiss: () -> Unit) {
+    var tab by remember { mutableIntStateOf(0) }
+    var query by remember { mutableStateOf("") }
+    val mine by remember {
+        ServiceLocator.database.personalFoodDao().observeAll().map { rows -> rows.mapNotNull { ServiceLocator.personalStore.decode(it) }.map { it.key }.toSet() }
+    }.collectAsState(initial = emptySet())
+    val list = remember(choices, tab, query, mine) {
+        val ordered = when (tab) {
+            1 -> LogAgain.often(choices)
+            2 -> LogAgain.often(choices).filter { c -> c.entry.items.isNotEmpty() && c.entry.items.all { it.key in mine } }
+            else -> LogAgain.recent(choices)
+        }
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) ordered else ordered.filter { q in it.entry.name.lowercase() || q in it.entry.rawText.lowercase() }
+    }
+    com.nutritionscribe.app.ui.feedback.ReportableSheet("All your foods", onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column {
+                Text("Log again", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("${choices.size} foods you've logged", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            }
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                placeholder = { Text("Search everything you've logged") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true, shape = RoundedCornerShape(24.dp),
+                keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("Recent", "Most often", "My foods").forEachIndexed { i, t -> ToggleChip(t, tab == i) { tab = i } }
+            }
+            androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+                if (list.isEmpty()) item {
+                    Text("Nothing you've logged matches that.", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(vertical = 12.dp))
+                }
+                items(list.size, key = { list[it].entry.id }) { i ->
+                    val c = list[i]
+                    if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(onClickLabel = "Log it again") { onLog(c.entry) }.padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text(shortName(c.entry), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(listOfNotNull(c.entry.items.singleOrNull()?.portion, if (tab == 1) "${c.count}×" else whenLabel(c.lastAt)).joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 1)
                         }
-                    }
-                    if (one != null) androidx.compose.material3.DropdownMenu(expanded = asking, onDismissRequest = { asking = false }) {
-                        val item = c.entry.items.single()
-                        val unit = item.unit ?: "piece"
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("All ${com.nutritionscribe.shared.resolve.Units.format(item.amount ?: 1.0)} again") },
-                            onClick = { asking = false; onLog(c.entry) })
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("Just 1 more $unit") },
-                            onClick = { asking = false; ServiceLocator.debugEvents.event("log_again_one", "entry_id" to c.entry.id); onLog(one) })
+                        c.entry.calories?.let { Text("${Math.round(it)}", style = NumberStyle, color = MaterialTheme.colorScheme.secondary) }
+                        Icon(Icons.Filled.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     }
                 }
+                item { Spacer(Modifier.height(24.dp)) }
             }
         }
-        if (expanded) MoreFoods(choices, onLog)
     }
 }
 
@@ -1370,69 +1477,6 @@ private fun UsualMealTile(meal: com.nutritionscribe.shared.model.UsualMeals.Meal
             }
             Text("${Math.round(meal.calories)} kcal", style = NumberStyle, color = MaterialTheme.colorScheme.onSecondaryContainer)
             Icon(Icons.Filled.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-        }
-    }
-}
-
-@Composable
-private fun MoreFoods(choices: List<LogAgain.Choice>, onLog: (Entry) -> Unit) {
-    var often by remember { mutableStateOf(false) }
-    var query by remember { mutableStateOf("") }
-    var shown by remember { mutableIntStateOf(6) }
-    val list = remember(choices, often, query) {
-        val ordered = if (often) LogAgain.often(choices) else LogAgain.recent(choices)
-        val q = query.trim().lowercase()
-        if (q.isEmpty()) ordered else ordered.filter { q in it.entry.name.lowercase() || q in it.entry.rawText.lowercase() }
-    }
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                ToggleChip("Recent", !often) { often = false; shown = 6 }
-                ToggleChip("You eat often", often) { often = true; shown = 6 }
-            }
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it; shown = 6 },
-                placeholder = { Text("Search everything you've logged") },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyMedium,
-                keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (list.isEmpty()) {
-                Text("Nothing you've logged matches that.", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(vertical = 8.dp))
-            }
-            list.take(shown).forEachIndexed { i, c ->
-                if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainer)
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Column(Modifier.weight(1f)) {
-                        Text(c.entry.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            listOfNotNull(
-                                if (often) "${c.count}×" else whenLabel(c.lastAt),
-                                c.entry.items.singleOrNull()?.portion,
-                            ).joinToString(" · "),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                            maxLines = 1,
-                        )
-                    }
-                    c.entry.calories?.let { Text("${Math.round(it)}", style = NumberStyle, color = MaterialTheme.colorScheme.primary) }
-                    IconButton(onClick = { onLog(c.entry) }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Filled.Add, contentDescription = "Log ${c.entry.name} now", tint = MaterialTheme.colorScheme.primary)
-                    }
-                }
-            }
-            if (list.size > shown) {
-                TextButton(onClick = { shown += 10 }) { Text("Show more") }
-            }
         }
     }
 }
@@ -1485,7 +1529,9 @@ private fun TodayCard(entries: List<Entry>, lead: Metric, micMode: MicMode, onOp
         Column {
             Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 SectionLabel("Today", Modifier.weight(1f))
-                Text(if (entries.size == 1) "1 entry" else "${entries.size} entries", style = MaterialTheme.typography.labelMedium, color = scheme.secondary)
+                val kcal = entries.sumOf { it.calories ?: 0.0 }
+                Text((if (entries.size == 1) "1 entry" else "${entries.size} entries") + (if (kcal > 0) " · %,d kcal".format(Math.round(kcal)) else ""),
+                    style = MaterialTheme.typography.labelMedium, color = scheme.secondary)
             }
             if (entries.isEmpty()) {
                 Text(

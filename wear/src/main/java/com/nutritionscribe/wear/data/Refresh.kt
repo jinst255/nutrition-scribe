@@ -5,7 +5,7 @@ import android.content.Context
 import androidx.wear.tiles.TileService
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
 
-/** New numbers from the phone: ask the tile and the watch-face slots to redraw. */
+/** New numbers from the phone: ask the tile and every watch-face slot (goal, Say and the shortcuts) to redraw. */
 object Refresh {
     fun all(context: Context) {
         runCatching { TileService.getUpdater(context).requestUpdate(com.nutritionscribe.wear.tile.ProteinTileService::class.java) }
@@ -13,5 +13,6 @@ object Refresh {
             com.nutritionscribe.wear.complication.SayComplicationService::class.java)) {
             runCatching { ComplicationDataSourceUpdateRequester.create(context, ComponentName(context, c)).requestUpdateAll() }
         }
+        com.nutritionscribe.wear.complication.refreshShortcuts(context)
     }
 }

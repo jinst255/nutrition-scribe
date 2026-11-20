@@ -77,6 +77,9 @@ import kotlinx.coroutines.launch
  * Held outside navigation for the same reason PendingEntryHolder is — it is a
  * rich object, and only one is ever in flight.
  */
+/** [LogSession.how] for a watch entry worked out on the phone. */
+const val WATCH_FIX = "watch_fix"
+
 object LogSession {
     var resolution: Resolver.Resolution? = null
     var editing: Entry? = null
@@ -177,6 +180,8 @@ class ConfirmViewModel : ViewModel() {
     val editing: Entry? = LogSession.editing
     val tag: String? = LogSession.tag
     private val how: String = LogSession.how
+    /** From your watch › Work it out with AI (P4, 11-20): the words said on the watch, worked out here. */
+    val fromWatch: Boolean = how == WATCH_FIX
     var text by mutableStateOf(LogSession.resolution?.text ?: editing?.rawText.orEmpty())
         private set
     var aiProblem by mutableStateOf(LogSession.resolution?.aiProblem)
@@ -606,6 +611,9 @@ fun ConfirmScreen(
                         viewModel.recipeMode?.batchOf != null -> "This week's ${viewModel.recipeMode!!.name}. What's different from the recipe is marked; " +
                             "leftovers use this batch for ${com.nutritionscribe.shared.resolve.Recipes.BATCH_DAYS} days."
                         viewModel.recipeMode != null -> "A recipe: check each ingredient once. Amounts are for the whole pot; you log a portion of it later."
+                        viewModel.fromWatch -> "From your watch, at ${viewModel.editing?.let { java.time.Instant.ofEpochMilli(it.timestampEpochMillis)
+                            .atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.US)) } ?: "the time you said it"}. " +
+                            "Split into ${viewModel.drafts.size} ${if (viewModel.drafts.size == 1) "food" else "foods"}: nothing is logged until you tap Log."
                         viewModel.editing != null -> "Fix it once and it stays fixed: the next time you log this, it uses what you set here."
                         fresh == 0 -> "All of these are your usual."
                         else -> "First time for ${if (fresh == 1) "this" else "these"} — check once. After this ${if (fresh == 1) "it logs" else "they log"} without asking."
@@ -720,6 +728,8 @@ fun ConfirmScreen(
                 else Text(LogGate.label(checking, viewModel.handEdited, waiting, when {
                     recipe?.batchOf != null -> "Save this batch"
                     recipe != null -> "Save recipe"
+                    viewModel.fromWatch -> "Log it at " + java.time.Instant.ofEpochMilli(viewModel.editing?.timestampEpochMillis ?: System.currentTimeMillis())
+                        .atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.US))
                     viewModel.editing != null -> "Save fix"
                     else -> "Log it"
                 }))

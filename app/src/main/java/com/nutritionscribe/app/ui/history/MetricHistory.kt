@@ -246,6 +246,27 @@ object MetricHistory {
         return if (recorded.isEmpty()) null else recorded.average()
     }
 
+    /**
+     * History round 2 (approved 11-20): the average over the last [range] days against
+     * the [range] days before, in percent (+6 means up 6%). Full days only, like the
+     * averages themselves; null when either stretch has none, or the earlier one was 0.
+     */
+    fun change(daily: List<DayValue>, full: Set<Long>, range: Int, today: LocalDate): Double? {
+        val t = today.toEpochDay()
+        val now = daily.filter { it.epochDay in (t - range + 1)..t }
+        val before = daily.filter { it.epochDay in (t - 2 * range + 1)..(t - range) }
+        val a = averageFull(now, full) ?: return null
+        val b = averageFull(before, full)?.takeIf { it > 0 } ?: return null
+        return (a - b) / b * 100
+    }
+
+    /** "▼ 4%", "▲ 6%", "same": arrows as well as colour (UI guidelines §5). */
+    fun changeText(pct: Double): String = when {
+        Math.round(pct) == 0L -> "same"
+        pct < 0 -> "▼ ${Math.round(-pct)}%"
+        else -> "▲ ${Math.round(pct)}%"
+    }
+
     /** Longest span worth zooming out to: all of history, but never under a week. */
     fun maxSpan(firstDay: Long, today: Long): Double = max(MIN_SPAN_DAYS, (today - firstDay + 1).toDouble())
 

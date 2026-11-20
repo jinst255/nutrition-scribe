@@ -35,6 +35,7 @@ class UsualMealsTest {
         assertEquals(listOf("Veggie bag", "Greek yogurt", "Bean burrito"), m.names)
         assertEquals(3, m.days)
         assertEquals(760.0, m.calories, 1e-9)   // two burritos, as last time
+        assertEquals(12.0, m.hour, 1e-9)          // its usual time, for the watch's "usual meal now"
     }
 
     @Test

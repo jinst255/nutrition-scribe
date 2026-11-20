@@ -75,8 +75,12 @@ class WearMessageListenerService : com.google.android.gms.wearable.WearableListe
                 }
                 WatchProtocol.Kind.LOG -> {
                     val r = pending.remove(req.id) ?: pipeline.resolve(req.text.orEmpty(), tag = req.id, how = "watch")
-                    val e = if (r.silent) pipeline.logNow(r, timestamp = req.at, tag = req.id)
-                        else pipeline.logProvisional(r, timestamp = req.at, tag = req.id)
+                    val e = when (WatchReplies.logAs(r.silent, WatchReplies.tooTricky(r), req.seen)) {
+                        WatchReplies.LogAs.REMEMBERED -> pipeline.logNow(r, timestamp = req.at, tag = req.id)
+                        WatchReplies.LogAs.CHECKED -> pipeline.confirm(r.text, r.items.map(com.nutritionscribe.app.data.resolve.LogPipeline::confirmedFrom),
+                            timestamp = req.at, tag = req.id, how = "watch")
+                        WatchReplies.LogAs.WAITS -> pipeline.logProvisional(r, timestamp = req.at, tag = req.id)
+                    }
                     WatchProtocol.Reply(req.id, WatchProtocol.Kind.LOGGED, loggedIds = listOf(e.id), lines = WatchReplies.lines(r))
                 }
                 WatchProtocol.Kind.LOG_AGAIN -> {

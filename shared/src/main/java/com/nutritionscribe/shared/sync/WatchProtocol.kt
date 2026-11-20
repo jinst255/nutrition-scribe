@@ -55,6 +55,12 @@ object WatchProtocol {
         val at: Long,
         /** Entry ids, for Log again (one or a whole usual meal) and Undo. */
         val ids: List<String> = emptyList(),
+        /**
+         * The person saw the foods on the watch's check screen before Log it: as good
+         * as the phone's confirm card. False for words kept while the phone was away,
+         * which nobody has looked at yet: those wait on the phone (From your watch).
+         */
+        val seen: Boolean = false,
     )
 
     @Serializable
@@ -91,22 +97,44 @@ data class WatchState(
     /** Phone in debug mode: the watch sends its events too. */
     val debug: Boolean = false,
     val updatedAt: Long = 0,
+    /** What the watch home shows, picked on the phone (Settings › Watch): [Home]. Null: the watch's own choice. */
+    val home: String? = null,
+    /** For [Home.ONE]: the one goal it shows. */
+    val one: Goal? = null,
+    /** When the latest entry was logged, for the "since you logged" slot. */
+    val lastAt: Long? = null,
+    /** Watch entries waiting on the phone for a check. */
+    val toCheck: Int = 0,
 ) {
+    object Home {
+        const val GOALS = "goals"
+        const val NEED = "need"
+        const val ONE = "one"
+    }
+
     @Serializable
     data class Goal(val name: String, val value: Double, val target: Double, val unit: String, val limit: Boolean) {
         val fraction: Float get() = if (target <= 0) 0f else (value / target).toFloat().coerceIn(0f, 1f)
     }
 
     @Serializable
-    data class Need(val name: String, val value: Double, val target: Double, val unit: String, val tip: String? = null) {
+    data class Need(
+        val name: String, val value: Double, val target: Double, val unit: String, val tip: String? = null,
+        /** Their own foods that close part of the gap, most eaten first: one tap logs one. */
+        val foods: List<Fill> = emptyList(),
+    ) {
         val left: Double get() = (target - value).coerceAtLeast(0.0)
     }
 
-    /** One food to log again: the entry it copies. */
+    /** A food that closes the gap: the entry it copies and what it gives ("Protein shake", 30 g). */
     @Serializable
-    data class Again(val id: String, val name: String, val sub: String)
+    data class Fill(val id: String, val name: String, val amount: Double, val kcal: Int = 0)
 
-    /** "Your usual lunch": its entries, logged with one tap. */
+    /** One food to log again: the entry it copies. [hour]: when in the day it's usually logged. */
     @Serializable
-    data class Meal(val ids: List<String>, val label: String, val names: List<String>, val kcal: Int)
+    data class Again(val id: String, val name: String, val sub: String, val kcal: Int = 0, val hour: Double? = null)
+
+    /** "Your usual lunch": its entries, logged with one tap. [hour]: its usual time of day. */
+    @Serializable
+    data class Meal(val ids: List<String>, val label: String, val names: List<String>, val kcal: Int, val hour: Double? = null)
 }

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Watch
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ReceiptLong
@@ -93,6 +94,7 @@ fun SettingsScreen(
     onOpenFeedback: () -> Unit = {},
     onOpenMyLabels: () -> Unit = {},
     onOpenStoreFoods: () -> Unit = {},
+    onOpenWatch: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenIdea: () -> Unit = {},
     onOpenSent: () -> Unit = {},
@@ -198,6 +200,23 @@ fun SettingsScreen(
                 if (stores.isEmpty()) "Extra labels for the stores you shop at, like Costco or Walmart"
                 else stores.joinToString(", ") { it.store.title } + " on this phone",
                 onClick = { ServiceLocator.debugEvents.event("store_foods_open", "where" to "settings"); onOpenStoreFoods() },
+            )
+        }
+
+        // ---- Watch (P1, 11-20) ---------------------------------------------------
+        SectionHeader("Watch")
+        val watch by com.nutritionscribe.app.data.WatchLink.status.collectAsState()
+        val watchCtx = androidx.compose.ui.platform.LocalContext.current
+        androidx.compose.runtime.LaunchedEffect(Unit) { com.nutritionscribe.app.data.WatchLink.refresh(watchCtx.applicationContext) }
+        SettingsCard {
+            IconRow(
+                Icons.Outlined.Watch, "Watch",
+                when {
+                    watch.connected -> "${watch.name ?: "Watch"} connected · its home and watch-face shortcuts"
+                    watch.paired -> "${watch.name ?: "Watch"} not in reach · its home and watch-face shortcuts"
+                    else -> "What the watch home shows, and its watch-face shortcuts"
+                },
+                onClick = { ServiceLocator.debugEvents.event("watch_settings_open", "where" to "settings"); onOpenWatch() },
             )
         }
 

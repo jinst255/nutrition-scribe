@@ -33,4 +33,21 @@ class NeedTipTest {
         assertEquals("Small Curd Cottage Chee… covers 22 g.",
             NeedTip.of(Metric.PROTEIN, 40.0, listOf(e("Great Value — Small Curd Cottage Cheese", 22.0, 1)), now))
     }
+
+    @Test
+    fun `the one-tap foods are their own, most eaten first, each the latest amount`() {
+        val log = listOf(e("Protein shake", 30.0, 1), e("Protein shake", 32.0, 3), e("Greek yogurt", 17.0, 4),
+            e("Almonds", 6.0, 1), e("Steak dinner", 90.0, 2))
+        val picks = NeedTip.foods(Metric.PROTEIN, 53.0, log, now)
+        assertEquals(listOf("Protein shake", "Greek yogurt"), picks.map { it.name })
+        assertEquals(30.0, picks.first().amount, 1e-9)
+        assertEquals("e1", picks.first().entry.id)
+        assertEquals(emptyList<NeedTip.Pick>(), NeedTip.foods(Metric.PROTEIN, 0.0, log, now))
+    }
+
+    @Test
+    fun `a watch guess nobody has checked is never offered`() {
+        val unchecked = e("Mystery bowl", 30.0, 1).copy(needsConfirm = true)
+        assertEquals(emptyList<NeedTip.Pick>(), NeedTip.foods(Metric.PROTEIN, 53.0, listOf(unchecked), now))
+    }
 }

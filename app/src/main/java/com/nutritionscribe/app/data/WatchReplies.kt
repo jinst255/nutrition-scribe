@@ -13,6 +13,22 @@ object WatchReplies {
     fun tooTricky(r: Resolver.Resolution): Boolean =
         r.items.isEmpty() || r.items.any { it.status == Resolver.Status.UNKNOWN }
 
+    /** How a watch Log it is saved. */
+    enum class LogAs {
+        /** All their own foods: logged and remembered, as on the phone. */
+        REMEMBERED,
+        /** They saw the foods on the watch's check screen: that was the glance, so it's learned (11-20). */
+        CHECKED,
+        /** Nobody has looked (kept while the phone was away, or too tricky): counted on a best guess, waits in From your watch. */
+        WAITS,
+    }
+
+    fun logAs(silent: Boolean, tricky: Boolean, seen: Boolean): LogAs = when {
+        silent -> LogAs.REMEMBERED
+        seen && !tricky -> LogAs.CHECKED
+        else -> LogAs.WAITS
+    }
+
     fun lines(r: Resolver.Resolution): List<WatchProtocol.Line> = r.items.map { i ->
         WatchProtocol.Line(
             name = shortName(i.displayName),

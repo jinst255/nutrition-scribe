@@ -91,23 +91,46 @@ class WearMainActivity : ComponentActivity() {
         const val EXTRA_SAY = "say"
         /** Debug builds only: fill the screens with sample numbers, for screenshots. */
         const val EXTRA_DEMO = "demo"
+        /** From a watch-face shortcut: which screen to open ([OPEN_NEED], [OPEN_AGAIN], [OPEN_QUEUE]). */
+        const val EXTRA_OPEN = "open"
+        const val OPEN_NEED = "need"
+        const val OPEN_AGAIN = "again"
+        const val OPEN_QUEUE = "queue"
+        /** From a watch-face shortcut: log these entries again at once (Usual meal, Again, Close the gap). */
+        const val EXTRA_LOG_IDS = "log_ids"
+        const val EXTRA_LOG_KCAL = "log_kcal"
+        /** Which shortcut it was, for the debug log. */
+        const val EXTRA_LOG_WHAT = "log_what"
     }
 
     private val sayNow = mutableStateOf(0)
+    private val launch = mutableStateOf(Launch())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val repository = WearRepository(applicationContext)
-        if (intent.getBooleanExtra(EXTRA_SAY, false)) sayNow.value++
+        read(intent)
         val demo = com.nutritionscribe.wear.BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_DEMO, false)
-        setContent { MaterialTheme { WearApp(repository, sayNow.value, demo) } }
+        setContent { MaterialTheme { WearApp(repository, sayNow.value, launch.value, demo) } }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        read(intent)
+    }
+
+    private fun read(intent: Intent) {
         if (intent.getBooleanExtra(EXTRA_SAY, false)) sayNow.value++
+        val ids = intent.getStringArrayExtra(EXTRA_LOG_IDS)?.toList().orEmpty()
+        val open = intent.getStringExtra(EXTRA_OPEN)
+        if (ids.isNotEmpty() || open != null) {
+            launch.value = Launch(launch.value.seq + 1, open, ids, intent.getIntExtra(EXTRA_LOG_KCAL, 0), intent.getStringExtra(EXTRA_LOG_WHAT))
+        }
     }
 }
+
+/** A watch-face shortcut's tap: a screen to open, or entries to log again. [seq] makes each tap count once. */
+data class Launch(val seq: Int = 0, val open: String? = null, val ids: List<String> = emptyList(), val kcal: Int = 0, val what: String? = null)
 
 private object W {
     val green = Color(0xFF4E9873)
@@ -133,6 +156,8 @@ private object R {
     const val TRICKY = "tricky"
     const val SAVED = "saved"
     const val SENT = "sent"
+    const val NEED = "need"
+    const val QUEUE = "queue"
 }
 
 /** What was just said, from Done to Log it. */
@@ -146,7 +171,7 @@ private class Said {
 }
 
 @Composable
-private fun WearApp(repo: WearRepository, sayNow: Int, demo: Boolean) {
+private fun WearApp(repo: WearRepository, sayNow: Int, launch: Launch, demo: Boolean) {
     val nav = rememberSwipeDismissableNavController()
     val scope = rememberCoroutineScope()
     val said = remember { Said() }
@@ -164,6 +189,27 @@ private fun WearApp(repo: WearRepository, sayNow: Int, demo: Boolean) {
         }
     }
     LaunchedEffect(sayNow) { if (sayNow > 0) say() }
+
+    /** One tap logs these entries again; home shows Logged · Undo for 5 seconds. */
+    fun logAgain(ids: List<String>, kcal: Int, what: String) {
+        val id = java.util.UUID.randomUUID().toString()
+        WearRepository.lastLogged.value = WearRepository.Logged(id, kcal, System.currentTimeMillis())
+        repo.debug("again_tap", "kind" to what, "foods" to ids.size.toString())
+        scope.launch { repo.request(WatchProtocol.Request(id, WatchProtocol.Kind.LOG_AGAIN, at = System.currentTimeMillis(), ids = ids)) }
+        home()
+    }
+
+    // A watch-face shortcut was tapped (B2/B3, 11-20).
+    LaunchedEffect(launch.seq) {
+        if (launch.seq == 0) return@LaunchedEffect
+        repo.debug("shortcut", "what" to (launch.what ?: launch.open ?: "?"))
+        when {
+            launch.ids.isNotEmpty() -> logAgain(launch.ids, launch.kcal, launch.what ?: "shortcut")
+            launch.open == WearMainActivity.OPEN_NEED -> { home(); nav.navigate(R.NEED) { launchSingleTop = true } }
+            launch.open == WearMainActivity.OPEN_AGAIN -> { home(); nav.navigate(R.AGAIN) { launchSingleTop = true } }
+            launch.open == WearMainActivity.OPEN_QUEUE -> { home(); nav.navigate(R.QUEUE) { launchSingleTop = true } }
+        }
+    }
 
     /** Words from the mic or the keyboard: off to the phone, or kept for later. */
     fun send(text: String, at: Long) {
@@ -197,7 +243,8 @@ private fun WearApp(repo: WearRepository, sayNow: Int, demo: Boolean) {
                     val kcal = said.reply?.kcal ?: 0
                     WearRepository.lastLogged.value = WearRepository.Logged(said.id, kcal, System.currentTimeMillis())
                     scope.launch {
-                        val r = WatchProtocol.Request(said.id, WatchProtocol.Kind.LOG, said.text, said.at)
+                        // Seen on the check screen: the phone saves it as checked, not as one to look at later.
+                        val r = WatchProtocol.Request(said.id, WatchProtocol.Kind.LOG, said.text, said.at, seen = true)
                         if (!repo.request(r)) repo.keepForLater(said.text, said.at)
                     }
                     // Straight back home (owner, 11-19), where the Logged chip offers Undo.
@@ -205,12 +252,7 @@ private fun WearApp(repo: WearRepository, sayNow: Int, demo: Boolean) {
                 })
             }
             composable(R.AGAIN) {
-                AgainScreen(repo, onPick = { ids, kcal ->
-                    val id = java.util.UUID.randomUUID().toString()
-                    WearRepository.lastLogged.value = WearRepository.Logged(id, kcal, System.currentTimeMillis())
-                    scope.launch { repo.request(WatchProtocol.Request(id, WatchProtocol.Kind.LOG_AGAIN, at = System.currentTimeMillis(), ids = ids)) }
-                    home()
-                }, onSay = ::say)
+                AgainScreen(repo, onPick = { ids, kcal -> logAgain(ids, kcal, "list") }, onSay = ::say)
             }
             composable(R.TODAY) { TodayScreen(repo) }
             composable(R.NOT_HEARD) { NotHeardScreen(said.problem, onSay = ::say, onTyped = { send(it, System.currentTimeMillis()) }) }
@@ -220,6 +262,12 @@ private fun WearApp(repo: WearRepository, sayNow: Int, demo: Boolean) {
             composable(R.SAVED) {
                 val waiting by repo.pendingCount.collectAsState(initial = 1)
                 Notice(Icons.Filled.Smartphone, W.blue, "Saved on watch", "Goes to your phone when it's back in range.", note = "$waiting waiting", onOk = ::home)
+            }
+            composable(R.NEED) { NeedScreen(repo, onSay = ::say, onPick = { f -> logAgain(listOf(f.id), f.kcal, "need_food") }) }
+            composable(R.QUEUE) {
+                val state by repo.state.collectAsState(initial = WatchState())
+                Notice(Icons.Filled.Smartphone, W.blue, if (state.toCheck > 0) "${state.toCheck} to check" else "All checked",
+                    if (state.toCheck > 0) "On your phone: Home › Watch, or From your watch." else "Nothing from your watch is waiting.", onOk = ::home)
             }
             composable(R.SENT) {
                 Notice(Icons.Filled.Check, W.green, "Sent to your phone", "It's taking a while, so the phone will log it when it's done.", onOk = ::home)
@@ -285,7 +333,10 @@ private fun buzz(context: android.content.Context, ms: Long) {
 @Composable
 private fun HomeScreen(repo: WearRepository, onSay: () -> Unit, onAgain: () -> Unit, onToday: () -> Unit) {
     val state by repo.state.collectAsState(initial = WatchState())
-    val showNeed by repo.homeShowsNeed.collectAsState(initial = false)
+    val watchChoice by repo.homeShowsNeed.collectAsState(initial = false)
+    // Picked on the phone (Settings › Watch) wins over the watch's own toggle.
+    val mode = state.home ?: if (watchChoice) WatchState.Home.NEED else WatchState.Home.GOALS
+    val showNeed = mode == WatchState.Home.NEED
     val waiting by repo.pendingCount.collectAsState(initial = 0)
     val logged by WearRepository.lastLogged.collectAsState()
     val scope = rememberCoroutineScope()
@@ -296,7 +347,7 @@ private fun HomeScreen(repo: WearRepository, onSay: () -> Unit, onAgain: () -> U
         if (left <= 0) return@LaunchedEffect
         chip = true; delay(left); chip = false
     }
-    LaunchedEffect(Unit) { repo.debug("screen", "name" to "home", "mode" to if (showNeed) "need" else "goals") }
+    LaunchedEffect(Unit) { repo.debug("screen", "name" to "home", "mode" to mode) }
     Centered {
         if (chip && logged != null) {
             Row(
@@ -326,7 +377,16 @@ private fun HomeScreen(repo: WearRepository, onSay: () -> Unit, onAgain: () -> U
             Modifier.clickable(onClickLabel = "Open today", onClick = onToday).padding(vertical = 2.dp),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            if (showNeed && need != null) {
+            val one = state.one
+            if (mode == WatchState.Home.ONE && one != null) {
+                Text("${one.name.uppercase()} ›", fontSize = 11.sp, color = W.dim, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("%,d".format(Math.round(one.value)), fontSize = 34.sp, fontFamily = W.mono, fontWeight = FontWeight.Medium)
+                    Text("/ %s%,d %s".format(if (one.limit) "≤" else "", Math.round(one.target), one.unit), fontSize = 12.sp, color = W.dim,
+                        modifier = Modifier.padding(bottom = 6.dp))
+                }
+                Bar(one.fraction, if (one.limit) W.green else W.blue)
+            } else if (showNeed && need != null) {
                 Text("MOST BEHIND ›", fontSize = 11.sp, color = W.dim, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold)
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(need.name, fontSize = 16.sp, fontWeight = FontWeight.Bold)
@@ -345,6 +405,45 @@ private fun HomeScreen(repo: WearRepository, onSay: () -> Unit, onAgain: () -> U
         Pill("Say", onSay, Icons.Filled.Mic, label = "Say what you ate", width = 120.dp)
         Pill("Log again", onAgain, Icons.Filled.Refresh, primary = false, width = 128.dp)
         if (waiting > 0) Text("$waiting waiting for your phone", fontSize = 11.sp, color = W.blue)
+    }
+}
+
+/**
+ * B2 · From the Need most + Say slot (11-20): what you're furthest behind on, Say,
+ * and one-tap foods of your own that close the gap (picked on the phone, no AI).
+ */
+@Composable
+private fun NeedScreen(repo: WearRepository, onSay: () -> Unit, onPick: (WatchState.Fill) -> Unit) {
+    val state by repo.state.collectAsState(initial = WatchState())
+    LaunchedEffect(Unit) { repo.debug("screen", "name" to "need", "foods" to (state.need?.foods?.size ?: 0).toString()) }
+    val n = state.need?.takeIf { it.left >= 0.5 }
+    val list = rememberScalingLazyListState()
+    // A list, like Log again: on the round screen the foods scroll up into view instead of being cut off.
+    Scaffold(positionIndicator = { PositionIndicator(scalingLazyListState = list) }) {
+        ScalingLazyColumn(Modifier.fillMaxSize().background(Color.Black), state = list,
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            item {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
+                    if (n != null) {
+                        Text(n.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
+                        Text("%,d %s to go".format(Math.round(n.left), n.unit), fontSize = 12.sp, fontFamily = W.mono, color = W.dim)
+                        Bar((n.value / n.target).toFloat(), W.blue, Modifier.fillMaxWidth(0.7f))
+                    } else {
+                        Text("Every goal met today", fontSize = 14.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                    }
+                }
+            }
+            item { Pill("Say", onSay, Icons.Filled.Mic, label = "Say what you ate", width = 120.dp) }
+            val foods = n?.foods.orEmpty().take(2)
+            if (foods.isNotEmpty()) {
+                item { Text("Or one tap, from your log", fontSize = 11.sp, color = W.dim, textAlign = TextAlign.Center) }
+                items(foods) { f ->
+                    AgainRow(f.name, listOfNotNull("+%d %s %s".format(Math.round(f.amount), n?.unit.orEmpty(), n?.name?.lowercase().orEmpty()),
+                        f.kcal.takeIf { it > 0 }?.let { "$it kcal" }).joinToString(" · ")) { onPick(f) }
+                }
+            }
+        }
     }
 }
 
@@ -485,7 +584,7 @@ private fun AgainScreen(repo: WearRepository, onPick: (List<String>, Int) -> Uni
             items(state.again) { a ->
                 AgainRow(a.name, a.sub) {
                     repo.debug("again_tap", "kind" to "food")
-                    onPick(listOf(a.id), Regex("""(\d+) kcal""").find(a.sub)?.groupValues?.get(1)?.toIntOrNull() ?: 0)
+                    onPick(listOf(a.id), a.kcal.takeIf { it > 0 } ?: Regex("""(\d+) kcal""").find(a.sub)?.groupValues?.get(1)?.toIntOrNull() ?: 0)
                 }
             }
             if (state.again.isEmpty() && state.meals.isEmpty()) item {
@@ -533,9 +632,13 @@ private fun TodayScreen(repo: WearRepository) {
                 }
             }
             item {
-                Pill(if (showNeed) "Home: most behind" else "Home: your goals", {
-                    scope.launch { repo.setHomeShowsNeed(!showNeed); repo.debug("home_mode", "need" to (!showNeed).toString()) }
-                }, primary = false, width = 160.dp)
+                if (state.home != null) {
+                    Text("Change what home shows on your phone: Settings › Watch.", fontSize = 11.sp, color = W.dim, textAlign = TextAlign.Center)
+                } else {
+                    Pill(if (showNeed) "Home: most behind" else "Home: your goals", {
+                        scope.launch { repo.setHomeShowsNeed(!showNeed); repo.debug("home_mode", "need" to (!showNeed).toString()) }
+                    }, primary = false, width = 160.dp)
+                }
             }
         }
     }
@@ -578,10 +681,12 @@ private object Demo {
     val state = WatchState(
         goals = listOf(WatchState.Goal("Protein", 92.0, 160.0, "g", false), WatchState.Goal("Calories", 1420.0, 2200.0, "kcal", true),
             WatchState.Goal("Fiber", 14.0, 30.0, "g", false)),
-        need = WatchState.Need("Protein", 92.0, 160.0, "g", "Protein shake covers 30 g."),
-        again = listOf(WatchState.Again("d1", "Greek yogurt", "1 cup · 150 kcal"), WatchState.Again("d2", "Protein shake", "1 bottle · 160 kcal"),
-            WatchState.Again("d3", "Chicken rice bowl", "1 bowl · 520 kcal")),
-        meals = listOf(WatchState.Meal(listOf("d4", "d5", "d6"), "Your usual lunch", listOf("Veggie bag", "Greek yogurt", "Bean burrito"), 460)),
+        need = WatchState.Need("Protein", 92.0, 160.0, "g", "Protein shake covers 30 g.",
+            foods = listOf(WatchState.Fill("d2", "Protein shake", 30.0, 160), WatchState.Fill("d1", "Greek yogurt", 17.0, 150))),
+        again = listOf(WatchState.Again("d1", "Greek yogurt", "1 cup · 150 kcal", 150), WatchState.Again("d2", "Protein shake", "1 bottle · 160 kcal", 160),
+            WatchState.Again("d3", "Chicken rice bowl", "1 bowl · 520 kcal", 520)),
+        meals = listOf(WatchState.Meal(listOf("d4", "d5", "d6"), "Your usual lunch", listOf("Veggie bag", "Greek yogurt", "Bean burrito"), 460, 12.5)),
+        lastAt = System.currentTimeMillis() - 4 * 3_600_000L, toCheck = 2,
         updatedAt = 1,
     )
 

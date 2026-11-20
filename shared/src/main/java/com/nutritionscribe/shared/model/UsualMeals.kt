@@ -28,6 +28,8 @@ object UsualMeals {
         /** On how many different days they were logged together. */
         val days: Int,
         val lastAt: Long,
+        /** The usual hour of day it is eaten (13.5 = half past one): the watch's "usual meal now". */
+        val hour: Double = 12.0,
     ) {
         val calories: Double get() = entries.sumOf { it.nutrients["calories"] ?: 0.0 }
     }
@@ -57,7 +59,8 @@ object UsualMeals {
             if (days < MIN_DAYS) return@mapNotNull null
             val latest = same.maxBy { it.last().timestampEpochMillis }
             val hours = same.map { Instant.ofEpochMilli(it.first().timestampEpochMillis).atZone(zone).let { t -> t.hour + t.minute / 60.0 } }
-            Meal(labelFor(hours.sorted()[hours.size / 2]), latest.map { short(it.name) }, latest, days, latest.last().timestampEpochMillis)
+            val usual = hours.sorted()[hours.size / 2]
+            Meal(labelFor(usual), latest.map { short(it.name) }, latest, days, latest.last().timestampEpochMillis, usual)
         }
         // A smaller set inside a bigger usual one is the same habit: keep the bigger.
         val kept = meals.filter { m -> meals.none { o -> o !== m && o.days >= m.days && o.entries.size > m.entries.size &&

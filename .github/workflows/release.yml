@@ -2,8 +2,10 @@
 #
 # The APK is built and signed on the owner's machine (the signing key and the
 # bundled label pack never leave it) and committed as releases/NutritionScribe-<version>.apk
-# with releases/NOTES-<version>.md. On a push to main this makes release
-# v<version> with that file attached, once. A "-test" version is a pre-release.
+# with releases/NOTES-<version>.md, and the watch app as
+# releases/NutritionScribe-Watch-<version>.apk when there is one. On a push to main
+# this makes release v<version> with those files attached, once. A "-test" version
+# is a pre-release.
 name: Release
 
 on:
@@ -27,6 +29,7 @@ jobs:
           set -euo pipefail
           ver=$(sed -n 's/^ *versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
           apk="releases/NutritionScribe-$ver.apk"
+          watch="releases/NutritionScribe-Watch-$ver.apk"
           notes="releases/NOTES-$ver.md"
           tag="v$ver"
           if [ -z "$ver" ] || [ ! -f "$apk" ]; then
@@ -38,4 +41,6 @@ jobs:
           args=(--target "$GITHUB_SHA" --title "Nutrition Scribe $ver")
           case "$ver" in *test*|*beta*) args+=(--prerelease) ;; esac
           if [ -f "$notes" ]; then args+=(--notes-file "$notes"); else args+=(--generate-notes); fi
-          gh release create "$tag" "$apk" "${args[@]}"
+          files=("$apk")
+          if [ -f "$watch" ]; then files+=("$watch"); fi
+          gh release create "$tag" "${files[@]}" "${args[@]}"

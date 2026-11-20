@@ -214,13 +214,14 @@ object ServiceLocator {
         backgroundScope.launch {
             settingsRepository.profile.collect { profileCache.value = it }
         }
-        // The watch's state follows the log, goals and debug mode, a couple of seconds
+        // The watch's state follows the log, goals, debug mode and Settings › Watch, a couple of seconds
         // after the last change. WatchSync does nothing when no watch is connected.
         @OptIn(kotlinx.coroutines.FlowPreview::class)
         backgroundScope.launch {
             kotlinx.coroutines.flow.combine(
                 currentEntryRepository().observeEntries(), goalsRepository.goals, settingsRepository.debugMode,
-            ) { _, _, _ -> Unit }
+                settingsRepository.watchHome, settingsRepository.watchOne,
+            ) { _, _, _, _, _ -> Unit }
                 .debounce(2_000)
                 .collect { com.nutritionscribe.app.data.WatchSync.push(appContext) }
         }

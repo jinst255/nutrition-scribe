@@ -33,6 +33,11 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.foundation.combinedClickable
+import kotlinx.coroutines.flow.first
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -84,8 +89,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class FoodFilter(val label: String) { ALL("All"), RECIPES("Recipes"), MEALS("Meals"), KINDS("With kinds") }
-private enum class FoodSort(val label: String) { USED("Most used"), RECENT("Recent"), NAME("A–Z") }
+private enum class FoodSort(val label: String) { USED("Most eaten first"), RECENT("Newest first"), NAME("A to Z") }
 
 /**
  * Everything the app has learned from the user (note B1): what each phrase means
@@ -100,15 +104,18 @@ fun MyFoodsScreen(
     /** Check it once in recipe mode, set up in LogSession. */
     onRecipe: () -> Unit = {},
     startOnLabels: Boolean = false,
+    /** "See when you ate it" › one of those entries. */
+    onOpenEntry: (String) -> Unit = {},
 ) {
     val store = ServiceLocator.personalStore
     val events = ServiceLocator.debugEvents
     val foods by remember {
         ServiceLocator.database.personalFoodDao().observeAll().map { rows -> rows.mapNotNull { store.decode(it) } }
     }.collectAsState(initial = null)
-    var tab by remember { mutableStateOf(if (startOnLabels) 1 else 0) }
     var query by remember { mutableStateOf("") }
-    var filter by remember { mutableStateOf(FoodFilter.ALL) }
+    /** null is All (My foods round 2, approved 11-20). */
+    var filter by remember { mutableStateOf<FoodKinds.Kind?>(if (startOnLabels) FoodKinds.Kind.LABEL else null) }
+    var held by remember { mutableStateOf<String?>(null) }
     var sort by remember { mutableStateOf(FoodSort.USED) }
     var sortOpen by remember { mutableStateOf(false) }
     var open by remember { mutableStateOf<String?>(null) }
@@ -137,19 +144,9 @@ fun MyFoodsScreen(
         return
     }
 
-    val labels = all.filter { isLabel(it) }
+    val counts = FoodKinds.counts(all)
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp)) {
-                listOf("Foods · ${all.size}", "Labels · ${labels.size}").forEachIndexed { i, t ->
-                    SegmentedButton(selected = tab == i, onClick = { tab = i }, shape = SegmentedButtonDefaults.itemShape(i, 2), icon = {},
-                        modifier = Modifier.heightIn(min = 44.dp)) { Text(t) }
-                }
-            }
-            if (tab == 1) {
-                MyLabelsScreen()
-                return@Column
-            }
             if (all.isEmpty()) {
                 Text("Nothing yet. Every food you confirm is remembered here, so the next time you log it, it goes straight in. " +
                     "Or add one now with Add a food.", modifier = Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.secondary)
@@ -157,7 +154,7 @@ fun MyFoodsScreen(
             }
             val shown = all
                 .filter { query.isBlank() || "${it.name} ${it.phrase} ${it.candidate?.brand.orEmpty()}".contains(query.trim(), ignoreCase = true) }
-                .filter { when (filter) { FoodFilter.ALL -> true; FoodFilter.RECIPES -> it.isRecipe; FoodFilter.MEALS -> it.isMeal; FoodFilter.KINDS -> it.allKinds.size > 1 } }
+                .filter { filter == null || FoodKinds.of(it) == filter }
                 .let { list -> when (sort) {
                     FoodSort.USED -> list.sortedByDescending { it.timesUsed }
                     FoodSort.RECENT -> list.sortedByDescending { it.updatedAt }
@@ -165,6 +162,16 @@ fun MyFoodsScreen(
                 } }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
                 item {
+                    // My foods round 2: the kinds as chips with their counts, in place of the Foods / Labels tabs.
+                    Row(Modifier.fillMaxWidth().padding(top = 4.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("All · ${all.size}", maxLines = 1) })
+                        FoodKinds.Kind.entries.forEach { k ->
+                            FilterChip(selected = filter == k, onClick = { filter = k; events.event("my_foods_filter", "kind" to k.name) },
+                                label = { Text("${k.label} · ${counts[k] ?: 0}", maxLines = 1) })
+                        }
+                    }
+                }
+                if (all.size > 8) item {
                     OutlinedTextField(
                         value = query, onValueChange = { query = it }, singleLine = true,
                         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
@@ -172,56 +179,60 @@ fun MyFoodsScreen(
                     )
                 }
                 item {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // The chips scroll in their own space: with Recipes added, the sort button was
-                        // squeezed to nothing and its text stood one letter a line, a tall gap above and below.
-                        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FoodFilter.entries.forEach { f -> FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label, maxLines = 1) }) }
-                        }
-                        Box {
-                            TextButton(onClick = { sortOpen = true }) {
-                                Text(sort.label, maxLines = 1, softWrap = false); Icon(Icons.Filled.ArrowDropDown, null)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) {
+                            TextButton(onClick = { sortOpen = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp)) {
+                                Text(sort.label.uppercase(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.secondary, maxLines = 1)
+                                Icon(Icons.Filled.ArrowDropDown, null, tint = MaterialTheme.colorScheme.secondary)
                             }
                             DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
                                 FoodSort.entries.forEach { s -> DropdownMenuItem(text = { Text(s.label) }, onClick = { sort = s; sortOpen = false }) }
                             }
                         }
+                        Text("Hold one for more", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
                     }
                 }
-                item {
-                    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(horizontal = 12.dp)) {
-                            if (shown.isEmpty()) Text("Nothing matches.", modifier = Modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.secondary)
-                            shown.forEachIndexed { i, f ->
-                                if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                Row(
-                                    Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable { events.event("my_food_open", "key" to f.key); open = f.key }
-                                        .padding(vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                ) {
-                                    FoodThumb(f, Modifier.size(44.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(com.nutritionscribe.app.ui.common.shownFoodName(f.name), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(rowSub(f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis)
-                                    }
-                                    Text("${f.timesUsed}×", style = NumberStyle, color = MaterialTheme.colorScheme.secondary)
-                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
-                                }
-                            }
-                        }
-                    }
+                if (shown.isEmpty()) item { Text("Nothing matches.", modifier = Modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.secondary) }
+                items(shown, key = { it.key }) { f ->
+                    FoodCard(f,
+                        onOpen = { events.event("my_food_open", "key" to f.key); open = f.key },
+                        onHold = { events.event("my_food_hold", "key" to f.key); held = f.key })
                 }
-                // Room under the last row, so the button never covers it.
+                // Room under the last card, so the button never covers it.
                 item { Spacer(Modifier.height(88.dp)) }
             }
         }
-        if (tab == 0) ExtendedFloatingActionButton(
+        ExtendedFloatingActionButton(
             onClick = { adding = true },
             icon = { Icon(Icons.Filled.Add, null) }, text = { Text("Add a food") },
             modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
         )
+    }
+
+    held?.let { key ->
+        val f = all.firstOrNull { it.key == key }
+        if (f == null) { held = null; return@let }
+        HoldSheet(f,
+            onLog = { held = null; events.event("my_food_log_now", "key" to f.key, "where" to "hold"); onLog(f.phrase) },
+            onEdit = { held = null; open = f.key },
+            onOpenEntry = { id -> held = null; onOpenEntry(id) },
+            onDelete = {
+                held = null
+                events.event("my_food_forgot", "key" to f.key, "where" to "hold")
+                scope.launch {
+                    withContext(Dispatchers.IO) { store.remove(f.key) }
+                    com.nutritionscribe.app.ui.common.AppMessages.sayWithAction("Forgot ${com.nutritionscribe.app.ui.common.shownFoodName(f.name)}", "Undo") {
+                        ServiceLocator.backgroundScope.launch(Dispatchers.IO) { events.event("my_food_forgot_undo", "key" to f.key); store.put(f) }
+                    }
+                    // The label photo goes once Undo has had its chance.
+                    if (f.photo != null) ServiceLocator.backgroundScope.launch(Dispatchers.IO) {
+                        kotlinx.coroutines.delay(15_000)
+                        if (store.get(f.key) == null) com.nutritionscribe.app.ui.scan.ScanPhotos.delete(f.photo)
+                    }
+                }
+            },
+            onDismiss = { held = null })
     }
 
     if (adding) {
@@ -278,6 +289,115 @@ fun MyFoodsScreen(
             scope.launch { withContext(Dispatchers.IO) { store.put(f) } }
             events.event("food_saved", "how" to "numbers", "name" to f.name, "nutrients" to f.nutrients)
         }, onDismiss = { addHow = null })
+    }
+}
+
+/** My foods round 2: a card with a coloured letter (or the label photo), its portion, kcal, protein and how often it's eaten. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun FoodCard(f: PersonalFood, onOpen: () -> Unit, onHold: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val kind = FoodKinds.of(f)
+    Surface(shape = RoundedCornerShape(16.dp), color = scheme.surface, border = BorderStroke(1.dp, scheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+            .combinedClickable(onClickLabel = "Open", onLongClickLabel = "More for this food", onClick = onOpen, onLongClick = onHold)) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LetterThumb(f, Modifier.size(48.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(com.nutritionscribe.app.ui.common.shownFoodName(f.name), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (kind != FoodKinds.Kind.FOOD) Text(if (kind == FoodKinds.Kind.LABEL) "Label" else if (f.isRecipe) "Recipe" else "Meal",
+                        style = MaterialTheme.typography.labelSmall, color = scheme.onSecondaryContainer,
+                        modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(scheme.secondaryContainer).padding(horizontal = 6.dp, vertical = 1.dp))
+                }
+                (if (f.isRecipe) recipeLine(f) else if (f.isMeal) f.parts.joinToString(", ") { it.name.substringAfter(" — ") } else usual(f))?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = scheme.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    f.nutrients[Metric.CALORIES.key]?.let { Text("${Math.round(it)} kcal", style = NumberStyle) }
+                    f.nutrients[Metric.PROTEIN.key]?.let { Text("${fmt1(it)} g protein", style = NumberStyle, color = scheme.secondary) }
+                }
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text("${f.timesUsed}×", style = NumberStyle.copy(fontSize = 16.sp), fontWeight = FontWeight.SemiBold)
+                Text("eaten", style = MaterialTheme.typography.labelSmall, color = scheme.secondary)
+            }
+        }
+    }
+}
+
+/** The label photo, or the first letter on a colour picked from the name, so the same food keeps its colour. */
+@Composable
+private fun LetterThumb(f: PersonalFood, modifier: Modifier) {
+    if (f.photo != null) return LabelPhoto(f.photo, modifier.clip(RoundedCornerShape(12.dp)))
+    val palette = listOf(0xFF2F6F4F, 0xFF3E6FA8, 0xFFB7791F, 0xFF8A4FA0, 0xFFB5523B, 0xFF2B7A86)
+    val c = androidx.compose.ui.graphics.Color(palette[Math.floorMod(f.key.hashCode(), palette.size)])
+    Box(modifier.clip(RoundedCornerShape(12.dp)).background(c.copy(alpha = 0.18f)), contentAlignment = Alignment.Center) {
+        if (f.isMeal || f.isRecipe) Icon(Icons.Outlined.Layers, null, tint = c, modifier = Modifier.size(22.dp))
+        else Text(f.name.trim().take(1).uppercase(), fontWeight = FontWeight.Bold, fontSize = 20.sp, color = c)
+    }
+}
+
+/** Hold a food (My foods round 2): log it now, edit, see when you ate it, or forget it with Undo. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HoldSheet(f: PersonalFood, onLog: () -> Unit, onEdit: () -> Unit, onOpenEntry: (String) -> Unit, onDelete: () -> Unit, onDismiss: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val eaten by androidx.compose.runtime.produceState<List<com.nutritionscribe.shared.model.Entry>?>(null, f.key) {
+        value = withContext(Dispatchers.IO) { FoodKinds.eaten(f, ServiceLocator.currentEntryRepository().observeEntries().first()) }
+    }
+    var showEaten by remember { mutableStateOf(false) }
+    val now = remember { java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.US)) }
+    val dayFmt = remember { java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a", java.util.Locale.US) }
+    com.nutritionscribe.app.ui.feedback.ReportableSheet(f.name, onDismissRequest = onDismiss) {
+        // Scrolls: a food eaten often lists many days, and Delete must stay reachable.
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                LetterThumb(f, Modifier.size(48.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(com.nutritionscribe.app.ui.common.shownFoodName(f.name), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(listOfNotNull(usual(f), f.nutrients[Metric.CALORIES.key]?.let { "${Math.round(it)} kcal" },
+                        f.nutrients[Metric.PROTEIN.key]?.let { "${fmt1(it)} g protein" },
+                        if (FoodKinds.of(f) == FoodKinds.Kind.LABEL) "from its label" else null).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall, color = scheme.secondary)
+                }
+            }
+            Surface(shape = RoundedCornerShape(16.dp), color = scheme.surfaceContainer) {
+                Column(Modifier.padding(horizontal = 6.dp)) {
+                    AddOption(Icons.Filled.Add, "Log it now", listOfNotNull(usual(f), "at $now").joinToString(", ")) { onLog() }
+                    HorizontalDivider(color = scheme.outlineVariant)
+                    AddOption(Icons.Outlined.Edit, "Edit", "Name, serving and numbers") { onEdit() }
+                    HorizontalDivider(color = scheme.outlineVariant)
+                    val list = eaten
+                    AddOption(Icons.Outlined.History, "See when you ate it", when {
+                        list == null -> "Looking…"
+                        list.isEmpty() -> "Not in your log yet"
+                        else -> "${list.size} ${if (list.size == 1) "time" else "times"} since " +
+                            java.time.Instant.ofEpochMilli(list.last().timestampEpochMillis).atZone(java.time.ZoneId.systemDefault())
+                                .format(java.time.format.DateTimeFormatter.ofPattern("MMM d", java.util.Locale.US))
+                    }) { showEaten = !showEaten }
+                    if (showEaten) list.orEmpty().take(12).forEach { e ->
+                        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { onOpenEntry(e.id) }.padding(start = 48.dp, end = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text(java.time.Instant.ofEpochMilli(e.timestampEpochMillis).atZone(java.time.ZoneId.systemDefault()).format(dayFmt),
+                                style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            e.calories?.let { Text("${Math.round(it)} kcal", style = NumberStyle, color = scheme.secondary) }
+                        }
+                    }
+                }
+            }
+            Surface(shape = RoundedCornerShape(16.dp), color = scheme.surfaceContainer) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(onClick = onDelete).padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Icon(Icons.Outlined.Delete, null, tint = scheme.error)
+                    Column {
+                        Text("Delete", style = MaterialTheme.typography.bodyLarge, color = scheme.error, fontWeight = FontWeight.SemiBold)
+                        Text("Past entries keep their numbers. You can undo for a few seconds.", style = MaterialTheme.typography.bodySmall, color = scheme.secondary)
+                    }
+                }
+            }
+        }
     }
 }
 

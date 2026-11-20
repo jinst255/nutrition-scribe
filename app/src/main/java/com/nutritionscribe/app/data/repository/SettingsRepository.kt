@@ -127,6 +127,9 @@ class SettingsRepository(
         val GOAL_LINES_V2 = booleanPreferencesKey("goal_lines_v2")
         val SHOW_ADVANCED = booleanPreferencesKey("show_advanced")
         val DEBUG_MODE = booleanPreferencesKey("debug_mode")
+        /** Settings › Watch: what the watch home shows ("goals", "need", "one") and, for "one", which goal. */
+        val WATCH_HOME = stringPreferencesKey("watch_home")
+        val WATCH_ONE = stringPreferencesKey("watch_one_metric")
         val SHAKE_TO_REPORT = booleanPreferencesKey("shake_to_report")
         val SPEECH_ON_PHONE = booleanPreferencesKey("speech_on_phone")
         val STORE_SUGGEST = booleanPreferencesKey("store_suggest")
@@ -420,6 +423,13 @@ class SettingsRepository(
     }
 
     val debugMode: Flow<Boolean> = store.data.map { it[Keys.DEBUG_MODE] ?: true }
+
+    /** Settings › Watch (owner, 11-20): null until picked, then the watch home follows the phone. */
+    val watchHome: Flow<String?> = store.data.map { it[Keys.WATCH_HOME] }
+    suspend fun setWatchHome(mode: String) { store.edit { it[Keys.WATCH_HOME] = mode } }
+    /** The goal "One number" shows, by [com.nutritionscribe.shared.model.Metric.key]; null is the first goal. */
+    val watchOne: Flow<String?> = store.data.map { it[Keys.WATCH_ONE] }
+    suspend fun setWatchOne(metricKey: String) { store.edit { it[Keys.WATCH_ONE] = metricKey } }
 
     suspend fun setDebugMode(value: Boolean) {
         store.edit { it[Keys.DEBUG_MODE] = value }

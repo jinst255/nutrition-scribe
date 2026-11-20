@@ -9,7 +9,7 @@ UI rules for every new or changed screen (phone and watch): [docs/UI_GUIDELINES.
 ## Commands
 
 ```bash
-# JVM tests (seconds; no device). Expect shared 365 (10 skipped), app 164.
+# JVM tests (seconds; no device). Expect shared 379 (10 skipped), app 178.
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :shared:testDebugUnitTest :app:testDebugUnitTest
 # The label-pack test runs only when given an unzipped pack:
 #   gunzip -c app/src/main/assets-pack/labels.db.gz > /tmp/labels.db

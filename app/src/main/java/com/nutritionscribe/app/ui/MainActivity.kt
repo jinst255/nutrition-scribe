@@ -111,6 +111,10 @@ private object Routes {
     const val MY_LABELS = "my_labels"
     const val STORE_FOODS = "store_foods"
     const val ABOUT = "about"
+    const val WATCH = "watch"
+    const val WATCH_QUEUE = "watch_queue"
+    /** The check card for a watch entry worked out on the phone; Log goes back to the list. */
+    const val FIX_REVIEW = "watch_queue/review"
     fun fix(id: String) = "fix/$id"
     fun scan(index: Int) = "scan/$index"
     const val METRIC_CHART = "history/metric/{metric}"
@@ -197,6 +201,9 @@ private fun titleFor(route: String?, args: Bundle?): String = when (route) {
     Routes.MY_LABELS -> "My labels"
     Routes.STORE_FOODS -> "Store foods"
     Routes.ABOUT -> "About"
+    Routes.WATCH -> "Watch"
+    Routes.WATCH_QUEUE -> "From your watch"
+    Routes.FIX_REVIEW -> "Check and log"
     Routes.UNPROCESSED -> "Needs attention"
     Routes.HISTORY -> "History"
     Routes.GOALS -> "Goals"
@@ -421,6 +428,25 @@ private fun MainNavScaffold() {
                     onScanKind = { navController.navigate(Routes.scan(Routes.SCAN_KIND)) },
                     onStreakRules = { navController.navigate(Routes.STREAK) },
                     onAsk = { navController.navigate(Routes.ASK) },
+                    onOpenWatch = { navController.navigate(Routes.WATCH) },
+                    onOpenWatchQueue = { navController.navigate(Routes.WATCH_QUEUE) },
+                    onOpenChart = { m -> navController.navigate(Routes.metricChart(m)) },
+                )
+            }
+            composable(Routes.WATCH) {
+                com.nutritionscribe.app.ui.watch.WatchSettingsScreen(onOpenQueue = { navController.navigate(Routes.WATCH_QUEUE) })
+            }
+            composable(Routes.WATCH_QUEUE) {
+                com.nutritionscribe.app.ui.watch.WatchQueueScreen(
+                    onReview = { navController.navigate(Routes.FIX_REVIEW) },
+                    onFix = { id -> navController.navigate(Routes.fix(id)) },
+                )
+            }
+            composable(Routes.FIX_REVIEW) {
+                // A watch entry worked out here: the card replaces it, then back to the list.
+                com.nutritionscribe.app.ui.confirm.ConfirmScreen(
+                    onLogged = { navController.popBackStack() },
+                    onScan = { i -> navController.navigate(Routes.scan(i)) },
                 )
             }
             composable(Routes.IDEAS) { com.nutritionscribe.app.ui.ideas.IdeasScreen() }
@@ -559,6 +585,7 @@ private fun MainNavScaffold() {
                         }
                     },
                     onScanToSave = { navController.navigate(Routes.scan(Routes.SCAN_SAVE)) },
+                    onOpenEntry = { id -> navController.navigate(Routes.entryDetail(id)) },
                 )
             }
             composable(Routes.MY_LABELS) { com.nutritionscribe.app.ui.myfoods.MyLabelsScreen() }
@@ -647,6 +674,7 @@ private fun MainNavScaffold() {
                     onOpenMyLabels = { navController.navigate(Routes.MY_LABELS) },
                     onOpenStoreFoods = { navController.navigate(Routes.STORE_FOODS) },
                     onOpenAbout = { navController.navigate(Routes.ABOUT) },
+                    onOpenWatch = { navController.navigate(Routes.WATCH) },
                     onOpenIdea = { navController.navigate(Routes.feedback(idea = true)) },
                     onOpenSent = { navController.navigate(Routes.BETA_SENT) },
                     onOpenCheckIn = { navController.navigate(Routes.feedback(checkIn = true)) },

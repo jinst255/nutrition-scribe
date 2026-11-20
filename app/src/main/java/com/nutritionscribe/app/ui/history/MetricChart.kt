@@ -135,8 +135,9 @@ internal fun DayStrip(days: List<DayValue>, goal: MetricGoal, full: Set<Long>, t
     }
 }
 
+/** Over time round 2 (approved 11-20): 1W to All. */
 private enum class Preset(val label: String, val days: Double?) {
-    WEEK("Week", 7.0), MONTH("Month", 30.0), QUARTER("3 months", 91.0), YEAR("Year", 365.0), ALL("All", null)
+    WEEK("1W", 7.0), TWO("2W", 14.0), MONTH("1M", 30.0), QUARTER("3M", 91.0), ALL("All", null)
 }
 
 /**
@@ -198,43 +199,34 @@ fun MetricChartScreen(
                 },
                 modifier = Modifier.padding(bottom = 10.dp),
             )
-            Text(
-                (if (metric == com.nutritionscribe.shared.model.Metric.SUGAR) "Added sugar" else metric.label) + " · " + rangeLabel(viewport),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    average?.let { formatAmount(it, metric, withUnit = false) } ?: "–",
-                    style = MaterialTheme.typography.displaySmall,
-                    color = MaterialTheme.colorScheme.onBackground,
-                )
-                Text(
-                    " ${metric.unit} a day, on average",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
+            // Over time round 2: the average on the left, how it compares and how the days did on the right.
+            val spanDays = kotlin.math.round(viewport.spanDays).toInt().coerceAtLeast(1)
+            val pct = remember(days, full, spanDays, viewport.endDay) {
+                if (viewport.endDay >= todayDay + 0.5) MetricHistory.change(days, full, spanDays, today) else null
             }
-            Text(
-                buildString {
-                    append(if (loggedCount == 1) "1 full day" else "$loggedCount full days")
-                    goal.target?.let {
-                        append(" · ")
-                        append(
-                            when {
-                                !goal.enabled && goal.metric.direction == GoalDirection.LIMIT -> "limit "
-                                !goal.enabled -> if (com.nutritionscribe.app.di.ServiceLocator.profileNow() != null) "you need " else "Daily Value "
-                                goal.effectiveDirection == GoalDirection.LIMIT -> "limit "
-                                else -> "goal "
-                            },
-                        )
-                        append(formatAmount(it, metric))
+            Text("Daily average · " + rangeLabel(viewport), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text(average?.let { formatAmount(it, metric, withUnit = false) } ?: "–", style = MaterialTheme.typography.displaySmall,
+                            color = MaterialTheme.colorScheme.onBackground)
+                        Text(" ${metric.unit}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(bottom = 6.dp))
                     }
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
+                }
+                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.padding(bottom = 6.dp)) {
+                    pct?.let {
+                        Text(MetricHistory.changeText(it) + " vs the ${if (spanDays == 14) "2 weeks" else if (spanDays == 7) "week" else "$spanDays days"} before",
+                            style = MaterialTheme.typography.bodySmall, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                    }
+                    Text(
+                        if (goal.target != null || goal.ceilingValue != null || goal.floorValue != null) cardStatus(goal, visibleDays, full)
+                        else if (loggedCount == 1) "1 full day" else "$loggedCount full days",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 2,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    )
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
@@ -273,6 +265,7 @@ fun MetricChartScreen(
             onSelect = { selected = it },
             firstDay = firstDay,
             today = todayDay,
+            average = average,
             // Shorter than it was: the nutrient picker sits above it now, and the
             // tapped bar's foods still need room underneath.
             modifier = Modifier.fillMaxWidth().height(230.dp).padding(top = 8.dp),
@@ -308,6 +301,10 @@ fun MetricChartScreen(
             },
             onOpenEntry = onOpenEntry,
             onAdd = onAddToDay,
+            sourcesRange = remember(entries, viewport.startDay, viewport.endDay) {
+                entries.filter { val d = MetricHistory.dayOf(it, zone); d + 1 > viewport.startDay && d < viewport.endDay }
+            },
+            sourcesLabel = rangeLabel(viewport),
             onZoomTo = { b ->
                 val span = max(MetricHistory.MIN_SPAN_DAYS, b.days.toDouble())
                 val center = (b.startEpochDay + b.endEpochDay + 1) / 2.0
@@ -386,8 +383,11 @@ internal fun InteractiveChart(
     full: Set<Long>? = null,
     /** The goal as it stood each day (its target then, plasma days included): owner, 11-04. */
     goalOn: (Long) -> MetricGoal = { goal },
+    /** Over time round 2: the daily average as a solid line. */
+    average: Double? = null,
 ) {
     val measurer = rememberTextMeasurer()
+    val avgColor = MaterialTheme.colorScheme.onSurface
     fun targetOf(b: Bucket): Double? =
         if (b.days == 1L) goalOn(b.startEpochDay).target else MetricHistory.bucketTarget(b.startEpochDay, b.endEpochDay, goalOn)
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -501,6 +501,9 @@ internal fun InteractiveChart(
                 }
                 drawPath(path, ruleColor, style = Stroke(width = 1.5.dp.toPx(), pathEffect = dash))
             }
+            average?.let { a ->
+                drawLine(avgColor, Offset(left, y(a)), Offset(left + plotW, y(a)), strokeWidth = 2.dp.toPx())
+            }
             listOfNotNull(goal.floorValue, goal.ceilingValue?.takeIf { it != goal.target }).forEach { t ->
                 drawLine(
                     ruleColor.copy(alpha = 0.6f), Offset(left, y(t)), Offset(left + plotW, y(t)), strokeWidth = 1.dp.toPx(),
@@ -509,6 +512,12 @@ internal fun InteractiveChart(
             }
         }
 
+        // Over time round 2: the goal or limit line says what it is.
+        goal.target?.let { t ->
+            val word = if (goal.effectiveDirection == GoalDirection.LIMIT) "limit" else if (goal.enabled) "goal" else "need"
+            val layout = measurer.measure(word, labelStyle.copy(color = ruleColor))
+            if (y(t) - layout.size.height - 2.dp.toPx() > 0f) drawText(layout, topLeft = Offset(left + 4.dp.toPx(), y(t) - layout.size.height - 2.dp.toPx()))
+        }
         // Date axis.
         drawLine(gridColor, Offset(left, y(0.0)), Offset(left + plotW, y(0.0)), strokeWidth = 1f)
         for ((day, text) in axisTicks(viewport)) {
@@ -647,14 +656,17 @@ private fun SelectionPanel(
     onAdd: (LocalDate) -> Unit,
     onZoomTo: (Bucket) -> Unit,
     modifier: Modifier = Modifier,
+    /** The entries in view, for "Biggest sources" (Over time round 2). */
+    sourcesRange: List<com.nutritionscribe.shared.model.Entry> = emptyList(),
+    sourcesLabel: String = "",
 ) {
     if (bucket == null) {
-        Column(modifier.fillMaxWidth().padding(16.dp)) {
-            Text(
-                "Tap a bar to see what you ate.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.secondary,
-            )
+        // Over time round 2: not half a screen of empty, the biggest sources for what's shown.
+        LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
+            item {
+                Text("Tap a bar to see what you ate.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+            }
+            item { BiggestSources(sourcesRange, metric, sourcesLabel) }
         }
         return
     }
@@ -755,6 +767,32 @@ private fun SelectionPanel(
                     Modifier.fillMaxWidth((amt / dayTop).toFloat().coerceIn(0.01f, 1f)).height(4.dp)
                         .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.RoundedCornerShape(2.dp)),
                 )
+            }
+        }
+        item { BiggestSources(sourcesRange, metric, sourcesLabel) }
+    }
+}
+
+/** "Biggest sources these 2 weeks": which foods gave the most of it, as a share of the total. */
+@Composable
+private fun BiggestSources(entries: List<com.nutritionscribe.shared.model.Entry>, metric: Metric, label: String) {
+    val sources = remember(entries, metric) { com.nutritionscribe.shared.model.NutrientDay.sources(entries, metric) }
+    val total = sources.sumOf { it.second }
+    if (sources.isEmpty() || total <= 0) return
+    Column(Modifier.fillMaxWidth().padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("BIGGEST SOURCES · ${label.uppercase()}", style = MaterialTheme.typography.labelSmall,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+        sources.take(5).forEach { (name, v) ->
+            val share = (v / total).toFloat()
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(name.substringAfter(" — "), style = MaterialTheme.typography.bodyMedium, maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text("${Math.round(share * 100)}%", style = com.nutritionscribe.app.ui.theme.NumberStyle)
+                }
+                androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().height(4.dp).background(MaterialTheme.colorScheme.surfaceContainerHigh, androidx.compose.foundation.shape.RoundedCornerShape(2.dp))) {
+                    androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth(share.coerceIn(0.02f, 1f)).height(4.dp).background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.RoundedCornerShape(2.dp)))
+                }
             }
         }
     }

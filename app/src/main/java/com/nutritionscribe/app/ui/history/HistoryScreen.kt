@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Search
@@ -236,6 +237,13 @@ fun HistoryScreen(
         }
     }
     val loggedDays = remember(allEntries) { allEntries.map { MetricHistory.dayOf(it, zone) }.toSet() }
+    /** History round 2: each card against the same number of days before. */
+    val changes = remember(allEntries, shownMetrics, range, full) {
+        shownMetrics.associateWith { m -> MetricHistory.change(MetricHistory.daily(allEntries, m, zone, today), full, range, today) }
+    }
+    val dayKcal = remember(entries) {
+        entries.groupBy { com.nutritionscribe.shared.model.LogDays.dayOf(it.timestampEpochMillis, zone) }.mapValues { (_, l) -> l.sumOf { it.calories ?: 0.0 } }
+    }
 
     androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
@@ -278,16 +286,29 @@ fun HistoryScreen(
             // what most visits are for.
             if (query.isBlank()) {
                 item(key = "filters") {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 8.dp)) {
-                        // Review Hi3: chips that scrolled sideways hid "Off target" off the edge; they wrap now.
-                        androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                        // History round 2 (approved 11-20): the filters in one row; the range on the line under them, at the right.
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            HistoryFilter.entries.forEach { f ->
+                                FilterChip(selected = filter == f, onClick = {
+                                    filter = f
+                                    ServiceLocator.debugEvents.event("history_filter", "filter" to f.name)
+                                }, label = { Text(f.label, maxLines = 1) })
+                            }
+                        }
+                        if (filter != HistoryFilter.ALL) Text(filter.meaning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "DAILY AVERAGE · VS THE ${if (range == 14) "2 WEEKS" else if (range == 7) "WEEK" else "$range DAYS"} BEFORE",
+                                style = MaterialTheme.typography.labelSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.secondary, modifier = Modifier.weight(1f),
+                            )
                             var rangeMenu by remember { mutableStateOf(false) }
                             androidx.compose.foundation.layout.Box {
-                                FilterChip(
-                                    selected = true, onClick = { rangeMenu = true },
-                                    label = { Text("$range days") },
-                                    leadingIcon = { Icon(Icons.Filled.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                )
+                                androidx.compose.material3.TextButton(onClick = { rangeMenu = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                    Text("$range days", maxLines = 1, softWrap = false)
+                                    Icon(androidx.compose.material.icons.Icons.Filled.ArrowDropDown, contentDescription = null)
+                                }
                                 androidx.compose.material3.DropdownMenu(expanded = rangeMenu, onDismissRequest = { rangeMenu = false }) {
                                     listOf(7, 14, 30, 90).forEach { n ->
                                         androidx.compose.material3.DropdownMenuItem(text = { Text("$n days") }, onClick = {
@@ -297,15 +318,7 @@ fun HistoryScreen(
                                     }
                                 }
                             }
-                            HistoryFilter.entries.forEach { f ->
-                                FilterChip(selected = filter == f, onClick = {
-                                    filter = f
-                                    ServiceLocator.debugEvents.event("history_filter", "filter" to f.name)
-                                }, label = { Text(f.label) })
-                            }
                         }
-                        Text(filter.meaning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
-                        HistoryLegend(MetricHistory.standingsInUse(cards, full, goalOn))
                     }
                 }
                 if (cards.isEmpty()) item(key = "nocards") {
@@ -324,6 +337,7 @@ fun HistoryScreen(
                                     full = full,
                                     today = today.toEpochDay(),
                                     compact = true,
+                                    change = changes[goal.metric],
                                     onClick = {
                                         ServiceLocator.debugEvents.event("history_metric", "metric" to goal.metric.key)
                                         onOpenMetric(goal.metric)
@@ -344,7 +358,7 @@ fun HistoryScreen(
                         androidx.compose.material3.TextButton(onClick = {
                             showAll = !showAll
                             ServiceLocator.debugEvents.event("history_show_all", "open" to showAll)
-                        }) { Text(if (showAll) "Show fewer" else "Show all") }
+                        }) { Text(if (showAll) "Show fewer" else "All nutrients ›") }
                     }
                 }
             }
@@ -392,6 +406,7 @@ fun HistoryScreen(
                     is HistoryListItem.Header -> DayHeader(
                         date = item.date,
                         count = item.count,
+                        kcal = dayKcal[item.date] ?: 0.0,
                         onAdd = { onAddToDay(item.date) },
                         onOpen = { onOpenDay(item.date) },
                     )
@@ -454,6 +469,8 @@ private fun MetricCard(
     modifier: Modifier = Modifier,
     /** Half-width, two to a row: the number, the line, and a few words. */
     compact: Boolean = false,
+    /** Percent against the same number of days before (History round 2). */
+    change: Double? = null,
 ) {
     val average = MetricHistory.averageFull(days, full)
     Card(
@@ -464,13 +481,18 @@ private fun MetricCard(
         val goalOnAll = rememberGoalOn()
         val goalOn: (Long) -> MetricGoal = { day -> goalOnAll(goal, day) }
         Column(modifier = Modifier.padding(horizontal = if (compact) 12.dp else 14.dp, vertical = if (compact) 10.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                if (goal.metric == Metric.SUGAR) "Added sugar" else if (compact) goal.metric.shortLabel else goal.metric.label,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (goal.metric == Metric.SUGAR) "Added sugar" else if (compact) goal.metric.shortLabel else goal.metric.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                change?.let { Text(MetricHistory.changeText(it), style = MaterialTheme.typography.labelMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, color = MaterialTheme.colorScheme.secondary, maxLines = 1) }
+            }
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     average?.let { formatAmount(it, goal.metric, withUnit = false) } ?: "–",
@@ -486,7 +508,7 @@ private fun MetricCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            DayStrip(days, goal, full, today, Modifier.fillMaxWidth().height(30.dp).padding(top = 4.dp), goalOn = goalOn)
+            // History round 2: the number and the sentence; the day-by-day bars are one tap away.
         }
     }
 }
@@ -524,7 +546,7 @@ internal fun cardStatus(goal: MetricGoal, days: List<DayValue>, full: Set<Long>,
 }
 
 @Composable
-private fun DayHeader(date: LocalDate, count: Int, onAdd: () -> Unit, onOpen: () -> Unit) {
+private fun DayHeader(date: LocalDate, count: Int, kcal: Double, onAdd: () -> Unit, onOpen: () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -541,7 +563,8 @@ private fun DayHeader(date: LocalDate, count: Int, onAdd: () -> Unit, onOpen: ()
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (count == 1) "1 entry" else "$count entries",
+                    (if (count == 1) "1 entry" else "$count entries") +
+                        (if (kcal > 0) " · %,d kcal".format(Math.round(kcal)) + (if (date == com.nutritionscribe.shared.model.LogDays.today()) " so far" else "") else ""),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.secondary,
                 )

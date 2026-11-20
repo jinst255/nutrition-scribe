@@ -93,9 +93,15 @@ Both themes are designed; check dark mode on every new screen.
 - After an action finishes (Log it), go straight back to the watch home and confirm there with
   a short chip (Logged · Undo, 5 s), not a separate screen.
 - What the watch home shows is the person's choice (goals, what they need most, or one number),
-  set on the phone in Settings › Watch (until that screen is built, from the watch's Today screen).
+  set on the phone in Settings › Watch (the watch's Today screen toggle only until the phone picks).
   No custom watch face: a tile and watch-face slots (complications: small circle, long bar, ranged
   value for side slots and the big box, and a Say slot) instead.
+- Watch-face shortcuts **do something when tapped**, not just report a number (owner, 11-20).
+  Each is its own entry in the face's slot picker so the person chooses (Need most + Say, Usual
+  meal now, Again, Close the gap, Since you logged, Waiting on phone, Your main goal, Say); Settings
+  › Watch lists them and says how to add one. A one-tap log always lands on home with Undo.
+- A screen with more than three things on the round watch is a `ScalingLazyColumn`, like Log
+  again, so nothing is cut off by the bottom of the circle.
 - The first Say shows a one-time tip; nothing else interrupts.
 - Watch debug events carry counts and timings, never the words said.
 - Text is at least 21 px on the 480 px screen (about 11 sp) and buttons at least 40 dp tall.

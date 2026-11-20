@@ -65,6 +65,9 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -376,6 +379,8 @@ fun EntryDetailScreen(
     var deleting by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf(false) }
     var saying by remember { mutableStateOf(false) }
+    /** The ⋮ menu's Fix it opens the What's wrong sheet. */
+    var fixAsks by remember { mutableIntStateOf(0) }
     /** The last AI fix, for its "Fixed by AI" card: the summary and the entry before it. */
     var fixedBy by remember(entryId) { mutableStateOf<Pair<String, Entry>?>(null) }
     val drafts = remember(current) { viewModel.draftsOf(current) }
@@ -385,20 +390,32 @@ fun EntryDetailScreen(
             EntryTopBar(entryTitle(current), entrySub(current), onBack) {
                 Box {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("Log again now") }, leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = {
+                    // Logging, round 2 (owner, 11-20): a raised card with coloured icons and a hint under each.
+                    val nowText = remember(menu) { java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.US)) }
+                    // This Material version takes the menu's corners from the theme.
+                    MaterialTheme(shapes = MaterialTheme.shapes.copy(extraSmall = RoundedCornerShape(18.dp))) {
+                    DropdownMenu(
+                        expanded = menu, onDismissRequest = { menu = false },
+                        modifier = Modifier.widthIn(min = 260.dp),
+                    ) {
+                        MenuRow(Icons.Filled.Refresh, MaterialTheme.colorScheme.primary, "Log again now", "Same amount, at $nowText") {
                             menu = false
                             ServiceLocator.debugEvents.event("log_again_tap", "where" to "entry_detail", "entry_id" to current.id)
                             scope.launch {
                                 val added = ServiceLocator.logPipeline.logAgain(current)
                                 com.nutritionscribe.app.ui.common.AppMessages.logged("Logged again", listOf(added))
                             }
-                        })
-                        DropdownMenuItem(text = { Text("Change the time") }, leadingIcon = { Icon(Icons.Filled.Schedule, null) }, onClick = { menu = false; retiming = true })
-                        DropdownMenuItem(text = { Text("Rename it") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, onClick = { menu = false; renaming = true })
+                        }
+                        MenuRow(Icons.Filled.Schedule, Color(0xFF3E6FA8), "Change the time", entrySub(current).ifBlank { "When you ate it" }) {
+                            menu = false; retiming = true
+                        }
+                        MenuRow(Icons.Filled.AutoAwesome, Color(0xFFB7791F), "Fix it", "Say what's wrong; you can undo") {
+                            menu = false; ServiceLocator.debugEvents.event("entry_menu_fix", "entry_id" to current.id); fixAsks++
+                        }
+                        MenuRow(Icons.Filled.Edit, MaterialTheme.colorScheme.secondary, "Rename it", null) { menu = false; renaming = true }
                         // A pot they'll eat from all week: its lines become the recipe's ingredients.
                         if (current.items.size > 1) {
-                            DropdownMenuItem(text = { Text("Save as a recipe") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, null) }, onClick = {
+                            MenuRow(Icons.AutoMirrored.Filled.List, MaterialTheme.colorScheme.secondary, "Save as a recipe", "Its foods become the ingredients") {
                                 menu = false
                                 ServiceLocator.debugEvents.event("recipe_from_entry", "entry_id" to current.id, "lines" to current.items.size)
                                 com.nutritionscribe.app.ui.confirm.LogSession.startRecipe(
@@ -406,16 +423,28 @@ fun EntryDetailScreen(
                                     com.nutritionscribe.app.ui.common.shownFoodName(current.name).take(40),
                                 )
                                 onRecipe()
-                            })
+                            }
                         }
                         if (current.items.isEmpty()) {
-                            DropdownMenuItem(text = { Text("Edit the numbers") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, null) }, onClick = { menu = false; editing = true })
+                            MenuRow(Icons.AutoMirrored.Filled.List, MaterialTheme.colorScheme.secondary, "Edit the numbers", null) { menu = false; editing = true }
                         }
-                        DropdownMenuItem(
-                            text = { Text("Delete entry", color = MaterialTheme.colorScheme.error) },
-                            leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                            onClick = { menu = false; deleting = true },
-                        )
+                        HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                        MenuRow(Icons.Filled.Delete, MaterialTheme.colorScheme.error, "Delete entry", "You can undo for a few seconds", danger = true) {
+                            menu = false
+                            // Undo instead of "are you sure" (Logging round 2; UI guidelines §7).
+                            scope.launch {
+                                val gone = current
+                                viewModel.delete(gone)
+                                com.nutritionscribe.app.ui.common.AppMessages.sayWithAction("Deleted ${entryTitle(gone)}", "Undo") {
+                                    ServiceLocator.backgroundScope.launch {
+                                        ServiceLocator.debugEvents.event("entry_delete_undo", "entry_id" to gone.id)
+                                        ServiceLocator.currentEntryRepository().restore(listOf(gone))
+                                    }
+                                }
+                                onBack()
+                            }
+                        }
+                    }
                     }
                 }
             }
@@ -432,6 +461,12 @@ fun EntryDetailScreen(
                     NoNumbersCard(onFix)
                 } else {
                     Header(current)
+                }
+                // Logging round 2: what a person looks for first, right under the total.
+                if (current.items.isNotEmpty()) {
+                    EntryChangeBox(busy = viewModel.busy, last = viewModel.lastChange,
+                        onSubmit = { t -> viewModel.change(current, t, "typed") { undoable(it, viewModel.lastChange ?: "Changed") } },
+                        onSay = { saying = true })
                 }
                 if (current.needsConfirm) {
                     Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
@@ -488,9 +523,6 @@ fun EntryDetailScreen(
                             }
                         }
                     }
-                    EntryChangeBox(busy = viewModel.busy, last = viewModel.lastChange,
-                        onSubmit = { t -> viewModel.change(current, t, "typed") { undoable(it, viewModel.lastChange ?: "Changed") } },
-                        onSay = { saying = true })
                 }
 
                 SectionLabel("Nutrition", Modifier.padding(top = 8.dp))
@@ -501,7 +533,7 @@ fun EntryDetailScreen(
                     Text("AI cost for this entry: ${com.nutritionscribe.app.ui.cost.formatUsd(usage.sumOf { it.costUsd })}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
                 }
-                ReportProblem(current) { summary, before -> fixedBy = summary to before }
+                ReportProblem(current, openAsks = fixAsks) { summary, before -> fixedBy = summary to before }
             }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
@@ -593,18 +625,18 @@ fun EntryDetailScreen(
         TimeDialog(current, onPick = { viewModel.retime(current, it); retiming = false }, onDismiss = { retiming = false })
     }
     if (deleting) {
-        AlertDialog(
-            onDismissRequest = { deleting = false },
-            title = { Text("Delete this entry?") },
-            text = { Text("“${current.name}” will be removed from your log. This cannot be undone.") },
-            confirmButton = {
-                TextButton(onClick = { scope.launch { viewModel.delete(current); deleting = false; onBack() } }) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = { TextButton(onClick = { deleting = false }) { Text("Keep it") } },
-        )
+        // Removing the only food from the "What's in it" sheet: delete, with Undo.
+        LaunchedEffect(Unit) {
+            deleting = false
+            val gone = current
+            viewModel.delete(gone)
+            com.nutritionscribe.app.ui.common.AppMessages.sayWithAction("Deleted ${entryTitle(gone)}", "Undo") {
+                ServiceLocator.backgroundScope.launch { ServiceLocator.currentEntryRepository().restore(listOf(gone)) }
+            }
+            onBack()
+        }
     }
+
 }
 
 /** The page's own top bar: the foods as the title, the day and time under it, and ⋮. */
@@ -825,25 +857,60 @@ private fun SheetAction(icon: androidx.compose.ui.graphics.vector.ImageVector, t
 @Composable
 private fun EntryChangeBox(busy: Boolean, last: String?, onSubmit: (String) -> Unit, onSay: () -> Unit) {
     var text by remember { mutableStateOf("") }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        OutlinedTextField(
-            value = text, onValueChange = { text = it }, enabled = !busy,
-            placeholder = { Text("Say or type a change…") },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { if (text.isNotBlank()) { onSubmit(text.trim()); text = "" } }),
-            trailingIcon = {
-                when {
-                    busy -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    text.isNotBlank() -> TextButton(onClick = { onSubmit(text.trim()); text = "" }) { Text("Go") }
-                    else -> IconButton(onClick = onSay) { Icon(Icons.Filled.Mic, contentDescription = "Say a change") }
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        last?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+    val scheme = MaterialTheme.colorScheme
+    // Logging round 2 (approved 11-20): a big green box with a mic, not a plain text field.
+    Surface(shape = RoundedCornerShape(18.dp), color = scheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Something to change? Say or type it", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
+                color = scheme.onPrimaryContainer)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = text, onValueChange = { text = it }, enabled = !busy,
+                    placeholder = { Text("e.g. \u201cit was two bowls\u201d") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = scheme.surface, unfocusedContainerColor = scheme.surface, disabledContainerColor = scheme.surface,
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { if (text.isNotBlank()) { onSubmit(text.trim()); text = "" } }),
+                    trailingIcon = {
+                        when {
+                            busy -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            text.isNotBlank() -> TextButton(onClick = { onSubmit(text.trim()); text = "" }) { Text("Go") }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                androidx.compose.material3.FilledIconButton(
+                    onClick = onSay, enabled = !busy, modifier = Modifier.size(52.dp),
+                    colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(containerColor = scheme.primary),
+                ) { Icon(Icons.Filled.Mic, contentDescription = "Say a change", tint = scheme.onPrimary) }
+            }
+            last?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = scheme.onPrimaryContainer) }
+        }
     }
+}
+
+/** One line of the entry's ⋮ menu: a coloured icon, what it does, and a hint under it. */
+@Composable
+private fun MenuRow(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color, title: String, hint: String?, danger: Boolean = false, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Column(Modifier.padding(vertical = 4.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold,
+                    color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+                hint?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary) }
+            }
+        },
+        leadingIcon = {
+            Box(Modifier.size(36.dp).background(tint.copy(alpha = 0.15f), CircleShape), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+            }
+        },
+        onClick = onClick,
+        modifier = Modifier.heightIn(min = 56.dp),
+    )
 }
 
 @Composable
@@ -1086,8 +1153,10 @@ private fun amountWords(a: Double): String {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ReportProblem(entry: Entry, onFixed: (summary: String, before: Entry) -> Unit = { _, _ -> }) {
+internal fun ReportProblem(entry: Entry, openAsks: Int = 0, onFixed: (summary: String, before: Entry) -> Unit = { _, _ -> }) {
     var open by remember { mutableStateOf(false) }
+    // The entry page's ⋮ › Fix it opens this same sheet.
+    LaunchedEffect(openAsks) { if (openAsks > 0) open = true }
     var note by remember { mutableStateOf("") }
     var fixing by remember { mutableStateOf(false) }
     var listening by remember { mutableStateOf(false) }

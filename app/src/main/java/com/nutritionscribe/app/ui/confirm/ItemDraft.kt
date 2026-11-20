@@ -84,11 +84,14 @@ data class ItemDraft(
 
     /** The units this line can be counted in, the current one first. */
     val unitOptions: List<com.nutritionscribe.shared.resolve.Units.Option>
-        get() = if (canConvert) com.nutritionscribe.shared.resolve.Units.optionsFor(candidate, item)
+        get() = if (canConvert) com.nutritionscribe.shared.resolve.Units.optionsFor(candidate, item, perPiece)
         else listOf(com.nutritionscribe.shared.resolve.Units.Option(item.unit, unitLabel))
 
     /** "slice", "mL", "whole": the current unit as a stepper shows it. */
-    val unitLabel: String get() = com.nutritionscribe.shared.resolve.Units.label(item.unit, com.nutritionscribe.shared.resolve.Units.pieceOf(candidate))
+    val unitLabel: String get() = com.nutritionscribe.shared.resolve.Units.label(item.unit, com.nutritionscribe.shared.resolve.Units.pieceOf(candidate, perPiece))
+
+    /** What one of it weighs on this line, when it's counted ("2 eggs", 100 g: 50 g each). */
+    private val perPiece: Double? get() = if (item.unit == null) grams?.let { g -> item.amount?.takeIf { it > 0 }?.let { g / it } ?: g } else null
 
     /** Exact grams, typed or picked from a listed portion. */
     fun withGrams(grams: Double): ItemDraft {

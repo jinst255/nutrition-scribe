@@ -25,34 +25,59 @@ import java.time.ZoneId
  */
 object WatchSync {
 
-    fun state(all: List<Entry>, goals: List<com.nutritionscribe.shared.model.MetricGoal>, debug: Boolean, now: Long): WatchState {
-        val zone = ZoneId.systemDefault()
+    fun state(
+        all: List<Entry>,
+        goals: List<com.nutritionscribe.shared.model.MetricGoal>,
+        debug: Boolean,
+        now: Long,
+        home: String? = null,
+        oneKey: String? = null,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): WatchState {
         val today = LogDays.today(zone, now)
         val todays = all.filter { LogDays.dayOf(it.timestampEpochMillis, zone) == today }
         val totals = NutrientDay.totals(todays)
         val on = goals.filter { it.enabled && it.target != null }.sortedBy { it.sortOrder }
-        val goalRows = on.map { g ->
+        fun row(g: com.nutritionscribe.shared.model.MetricGoal) =
             WatchState.Goal(g.metric.shortLabel, totals[g.metric]?.amount ?: 0.0, g.target!!, g.metric.unit,
                 limit = g.effectiveDirection == GoalDirection.LIMIT)
-        }
+        val goalRows = on.map(::row)
         val behind = on.filter { it.effectiveDirection == GoalDirection.REACH }
             .minByOrNull { (totals[it.metric]?.amount ?: 0.0) / it.target!! }
         val need = behind?.let { g ->
             val have = totals[g.metric]?.amount ?: 0.0
             val target = g.target ?: return@let null
+            // Free: picked from their own log, no AI (owner, 11-19). One tap logs one (11-20).
+            val foods = NeedTip.foods(g.metric, target - have, all, now).map { p ->
+                WatchState.Fill(p.entry.id, p.name, p.amount, Math.round(p.entry.nutrients["calories"] ?: 0.0).toInt())
+            }
             WatchState.Need(g.metric.shortLabel, have, target, g.metric.unit,
-                tip = NeedTip.of(g.metric, target - have, all, now))
+                tip = NeedTip.of(g.metric, target - have, all, now), foods = foods)
         }
         val again = LogAgain.smart(LogAgain.choices(all, now, zone), now, limit = 6).map { c ->
             val e = c.entry
             val portion = e.items.singleOrNull()?.portion
+            val kcal = e.nutrients["calories"]?.let { Math.round(it).toInt() }
             WatchState.Again(e.id, com.nutritionscribe.app.ui.common.logAgainName(e),
-                listOfNotNull(portion, e.nutrients["calories"]?.let { "${Math.round(it)} kcal" }).joinToString(" · "))
+                listOfNotNull(portion, kcal?.let { "$it kcal" }).joinToString(" · "), kcal ?: 0,
+                hour = usualHour(all.filter { LogAgain.key(it) == LogAgain.key(e) }, zone))
         }
         val meals = UsualMeals.of(all, now, zone).map { m ->
-            WatchState.Meal(m.entries.map { it.id }, m.label, m.names, Math.round(m.calories).toInt())
+            WatchState.Meal(m.entries.map { it.id }, m.label, m.names, Math.round(m.calories).toInt(), m.hour)
         }
-        return WatchState(goalRows, need, again, meals, debug, now)
+        val one = oneKey?.let { k -> on.firstOrNull { it.metric.key == k } }?.let(::row)
+        return WatchState(goalRows, need, again, meals, debug, now,
+            home = home, one = one ?: goalRows.firstOrNull()?.takeIf { home == WatchState.Home.ONE },
+            lastAt = all.filter { it.timestampEpochMillis <= now }.maxOfOrNull { it.timestampEpochMillis },
+            toCheck = all.count { it.needsConfirm })
+    }
+
+    /** When in the day a food is usually logged (median hour), for the watch's "Again" slot. */
+    fun usualHour(entries: List<Entry>, zone: ZoneId): Double? {
+        val hours = entries.filter { !it.timeUnspecified }
+            .map { java.time.Instant.ofEpochMilli(it.timestampEpochMillis).atZone(zone).let { t -> t.hour + t.minute / 60.0 } }
+            .sorted()
+        return hours.getOrNull(hours.size / 2)
     }
 
     /** Builds and sends the state; quietly does nothing with no watch around. */
@@ -62,8 +87,9 @@ object WatchSync {
             if (nodes.isEmpty()) return
             val all = ServiceLocator.currentEntryRepository().observeEntries().first()
             val goals = ServiceLocator.goalsRepository.goals.first()
-            val debug = ServiceLocator.settingsRepository.debugMode.first()
-            val s = state(all, goals, debug, System.currentTimeMillis())
+            val settings = ServiceLocator.settingsRepository
+            val s = state(all, goals, settings.debugMode.first(), System.currentTimeMillis(),
+                home = settings.watchHome.first(), oneKey = settings.watchOne.first())
             val request = PutDataMapRequest.create(WatchProtocol.DATA_STATE).apply {
                 dataMap.putString("json", WatchProtocol.encode(s))
                 dataMap.putLong("at", s.updatedAt)

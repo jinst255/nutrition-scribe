@@ -27,17 +27,32 @@ object Units {
         else -> unit
     }
 
-    /** The food's own word for one of it, from its portions: "slice", "bar", "medium". */
-    fun pieceOf(c: FoodCandidate?): String? = c?.portions?.firstOrNull { p ->
-        p.label != "1 serving" && Regex("^1 [a-z]").containsMatchIn(p.label) &&
-            Regex("^1 (?:cup|tbsp|tsp|oz|fl|ml|g)\\b").find(p.label) == null
-    }?.label?.removePrefix("1 ")?.substringBefore(",")?.substringBefore(" (")?.trim()?.takeIf { it.length in 2..20 }
+    /**
+     * The food's own word for one of it, from its portions: "slice", "bar", "medium".
+     * [perPiece] is what one was counted as weighing: the word is that portion's
+     * (USDA lists egg's "1 slice" before "1 large"; PieceWordTest). Odd measures
+     * like a cubic inch are never the word.
+     */
+    fun pieceOf(c: FoodCandidate?, perPiece: Double? = null): String? {
+        val pieces = c?.portions?.filter { p ->
+            p.label != "1 serving" && Regex("^1 [a-z]").containsMatchIn(p.label) &&
+                Regex("^1 (?:cup|tbsp|tsp|oz|fl|ml|g)\\b").find(p.label) == null &&
+                !Regex("\\bcubic\\b").containsMatchIn(p.label)
+        }.orEmpty()
+        val near = perPiece?.takeIf { it > 0 }?.let { w ->
+            pieces.minByOrNull { kotlin.math.abs(it.grams - w) }?.takeIf { kotlin.math.abs(it.grams - w) <= w * 0.15 }
+        }
+        return (near ?: pieces.firstOrNull())?.label?.removePrefix("1 ")?.substringBefore(",")?.substringBefore(" (")?.trim()
+            // "medium or regular slice", "small or thin/very thin slice": the thing is the last word.
+            ?.let { w -> if (" or " in w) w.substringAfterLast(" ") else w }
+            ?.takeIf { it.length in 2..20 }
+    }
 
     /** The units worth offering for this line, the current one first. */
-    fun optionsFor(c: FoodCandidate?, item: ItemParser.Item): List<Option> {
+    fun optionsFor(c: FoodCandidate?, item: ItemParser.Item, perPiece: Double? = null): List<Option> {
         val name = c?.name ?: item.food
         val liquid = Liquids.isLiquid(name, c?.labelServingText) || Liquids.isLiquid(item.food)
-        val piece = pieceOf(c)
+        val piece = pieceOf(c, perPiece)
         val out = mutableListOf<Option>()
         fun add(u: String?) { if (out.none { it.unit == u }) out += Option(u, label(u, piece)) }
         add(item.unit)
