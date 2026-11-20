@@ -57,6 +57,7 @@ object ServiceLocator {
     lateinit var personalStore: com.nutritionscribe.app.data.resolve.RoomPersonalStore
         private set
     lateinit var labelPack: com.nutritionscribe.app.data.resolve.LabelPack
+    lateinit var storePacks: com.nutritionscribe.app.data.resolve.StorePacks
         private set
     lateinit var logPipeline: com.nutritionscribe.app.data.resolve.LogPipeline
         private set
@@ -124,6 +125,13 @@ object ServiceLocator {
 
         personalStore = com.nutritionscribe.app.data.resolve.RoomPersonalStore(database.personalFoodDao())
         labelPack = com.nutritionscribe.app.data.resolve.LabelPack(appContext)
+        storePacks = com.nutritionscribe.app.data.resolve.StorePacks(appContext)
+        labelPack.storeFiles = { storePacks.attachments() }
+        storePacks.onChanged = {
+            labelPack.reattach()
+            debugEvents.always("store_packs_changed", "installed" to storePacks.installed.value.map { it.store.id },
+                "attach_problem" to labelPack.storeAttachProblem)
+        }
         logPipeline = com.nutritionscribe.app.data.resolve.LogPipeline(
             entryDao = database.entryDao(),
             personal = personalStore,
@@ -145,6 +153,7 @@ object ServiceLocator {
             onPersonalFoodsCleared = { personalStore.invalidate() },
             aiUsageDao = database.aiUsageDao(),
             labelPack = labelPack,
+            storePacks = storePacks,
         )
         backgroundScope.launch {
             // Carries a pre-Goals-tab protein goal and baseline across from
@@ -317,6 +326,7 @@ object ServiceLocator {
             "has_anthropic_key" to (settingsRepository.getApiKey(AiBackendKind.ANTHROPIC)?.isNotBlank() == true),
             "secure_store" to settingsRepository.secureStoreOutcome,
             "label_pack_installed" to labelPack.isInstalled,
+            "store_packs" to storePacks.installed.value.map { it.store.id },
             "food_db_loaded" to (foodDatabase.reader() != null),
             "speech_recognition_available" to android.speech.SpeechRecognizer.isRecognitionAvailable(appContext),
         )
@@ -444,6 +454,7 @@ object ServiceLocator {
                 else runCatching { s.plasmaDonations.first().map { it.toString() }.sorted() }.getOrNull(),
             "left_out" to leaveOut.sorted(),
             "label_pack" to labelPack.status.value.toString(),
+            "store_packs" to storePacks.installed.value.map { "${it.store.id} (${it.products}, ${it.built})" },
             "goals" to runCatching { goalsRepository.goals.first() }.getOrDefault(emptyList()).map {
                 mapOf("metric" to it.metric.key, "enabled" to it.enabled, "target" to it.target, "floor" to it.floorValue, "ceiling" to it.ceilingValue)
             },

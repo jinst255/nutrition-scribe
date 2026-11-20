@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -291,7 +290,8 @@ fun ScanScreen(
         val t0 = System.currentTimeMillis()
         val inPack = pack.source()?.byBarcode(code)
         if (inPack != null) {
-            events.event("scan_barcode", "code" to code, "source" to "pack", "ms" to System.currentTimeMillis() - t0, "candidate" to describe(inPack))
+            events.event("scan_barcode", "code" to code, "source" to "pack", "ms" to System.currentTimeMillis() - t0,
+                "store" to com.nutritionscribe.shared.stores.StoreCatalog.forCandidate(inPack.id)?.id, "candidate" to describe(inPack))
             // "Crackers" is no name for Goldfish (owner, 10-29): Open Food Facts may know
             // what it is called. Only the barcode is sent; the pack's numbers stay.
             if (com.nutritionscribe.shared.resolve.ShortName.isGeneric(inPack.name, inPack.brand)) {
@@ -504,7 +504,12 @@ fun ScanScreen(
         delay(if (all) 1200 else STILL_MS)
         if (!reading && !done && choices.isEmpty()) { autoRead = true; readLabel(if (all) "auto_all_lines" else "auto_still") }
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    // The camera takes whatever height is left and the buttons stay pinned below it,
+    // so nothing has to be scrolled to while aiming (owner, 11-19: scrolling down to
+    // Read label lost sight of what the camera saw). Only the details under the
+    // camera scroll, inside their own short area.
+    val progressShown = labelMode && (panelSeen || mode == ScanMode.LABEL || newKindOf != null)
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).padding(top = 4.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val base = newKindOf
         if (base != null && newKindName != null) {
             Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer) {
@@ -545,7 +550,7 @@ fun ScanScreen(
         }
         var focusAt by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
         LaunchedEffect(focusAt) { if (focusAt != null) { delay(900); focusAt = null } }
-        Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(16.dp))) {
+        Box(Modifier.fillMaxWidth().weight(1f).heightIn(min = 160.dp).clip(RoundedCornerShape(16.dp))) {
             CameraView(
                 onBarcode = { onBarcode(it) },
                 onText = { l, f -> onText(l, f) },
@@ -611,15 +616,13 @@ fun ScanScreen(
                 )
             }
         }
-        if (labelMode && (panelSeen || mode == ScanMode.LABEL || newKindOf != null)) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 200.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (progressShown) {
             LabelProgress(
                 seen = seen,
                 value = { k -> if (k == "serving") liveServing else votes[k]?.maxByOrNull { it.value }?.key },
                 started = panelSeen,
                 reading = reading,
-                ready = capture != null,
-                onRead = { readLabel("read_now") },
-                onAll = { readLabel("thats_all") },
             )
         } else if (gaveUp && mode == ScanMode.FRONT) {
             Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
@@ -666,11 +669,6 @@ fun ScanScreen(
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
         message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val progressShown = labelMode && (panelSeen || mode == ScanMode.LABEL || newKindOf != null)
-            if (!progressShown && mode != ScanMode.BARCODE) Button(enabled = !reading && capture != null, onClick = { readLabel("button") }) { Text("Read label") }
-            OutlinedButton(onClick = { events.event("scan_cancel", "ms" to System.currentTimeMillis() - openedAt); onCancel() }) { Text("Cancel") }
-        }
         if (newKindOf == null) {
             val labels by remember { ServiceLocator.database.personalFoodDao().observeAll() }.collectAsState(initial = emptyList())
             val mine = remember(labels) { labels.mapNotNull { ServiceLocator.personalStore.decode(it) }.count { !it.isMeal && it.candidate?.origin == Origin.LABEL } }
@@ -687,6 +685,21 @@ fun ScanScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
             )
+        }
+        }
+        // Pinned: always on screen, under the camera.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (progressShown) {
+                Button(onClick = { readLabel("read_now") }, enabled = capture != null && !reading,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Read now") }
+                OutlinedButton(onClick = { readLabel("thats_all") }, enabled = capture != null && !reading && panelSeen,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("That's all it lists", maxLines = 1) }
+            } else {
+                if (mode != ScanMode.BARCODE) Button(enabled = !reading && capture != null, onClick = { readLabel("button") },
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Read label") }
+                OutlinedButton(onClick = { events.event("scan_cancel", "ms" to System.currentTimeMillis() - openedAt); onCancel() },
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Cancel") }
+            }
         }
     }
 
@@ -786,9 +799,6 @@ private fun LabelProgress(
     value: (String) -> Double?,
     started: Boolean,
     reading: Boolean,
-    ready: Boolean,
-    onRead: () -> Unit,
-    onAll: () -> Unit,
 ) {
     val got = REQUIRED.filter { it in seen }
     val missing = REQUIRED - got.toSet()
@@ -834,13 +844,9 @@ private fun LabelProgress(
             }
             Text(
                 if (missing.isEmpty()) "Every line found. Reading it now."
-                else "Hold steady. If nothing new turns up for 8 s, it moves on and you can type the rest. Not every label prints every line.",
+                else "Hold steady. After 8 s with nothing new it moves on, and you can type the rest.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onRead, enabled = ready && !reading, modifier = Modifier.heightIn(min = 44.dp)) { Text("Read now") }
-                OutlinedButton(onClick = onAll, enabled = ready && !reading && started, modifier = Modifier.heightIn(min = 44.dp)) { Text("That's all it lists") }
-            }
         }
     }
 }

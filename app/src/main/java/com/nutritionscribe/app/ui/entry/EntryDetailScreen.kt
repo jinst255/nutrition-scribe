@@ -1,6 +1,11 @@
 package com.nutritionscribe.app.ui.entry
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -371,6 +376,8 @@ fun EntryDetailScreen(
     var deleting by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf(false) }
     var saying by remember { mutableStateOf(false) }
+    /** The last AI fix, for its "Fixed by AI" card: the summary and the entry before it. */
+    var fixedBy by remember(entryId) { mutableStateOf<Pair<String, Entry>?>(null) }
     val drafts = remember(current) { viewModel.draftsOf(current) }
 
     Box(Modifier.fillMaxSize()) {
@@ -416,6 +423,11 @@ fun EntryDetailScreen(
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                fixedBy?.let { (summary, before) ->
+                    FixedCard(summary, before, current,
+                        onUndo = { fixedBy = null; scope.launch { undoFix(before) } },
+                        onClose = { fixedBy = null })
+                }
                 if (current.needsDetail || current.nutrients.isEmpty()) {
                     NoNumbersCard(onFix)
                 } else {
@@ -489,7 +501,7 @@ fun EntryDetailScreen(
                     Text("AI cost for this entry: ${com.nutritionscribe.app.ui.cost.formatUsd(usage.sumOf { it.costUsd })}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
                 }
-                ReportProblem(current)
+                ReportProblem(current) { summary, before -> fixedBy = summary to before }
             }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
@@ -1072,11 +1084,13 @@ private fun amountWords(a: Double): String {
  * With AI on, "Fix it" also has the AI change the entry to match what they said
  * (owner, 11-18: "AI should be able to go in and fix whatever I say"), with Undo.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ReportProblem(entry: Entry) {
+internal fun ReportProblem(entry: Entry, onFixed: (summary: String, before: Entry) -> Unit = { _, _ -> }) {
     var open by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf("") }
     var fixing by remember { mutableStateOf(false) }
+    var listening by remember { mutableStateOf(false) }
     val reportScope = androidx.compose.runtime.rememberCoroutineScope()
     val canFix = remember(open) { ServiceLocator.askClient() != null }
     // Outlined, not grey text: it went unnoticed for days as a text link.
@@ -1091,66 +1105,124 @@ internal fun ReportProblem(entry: Entry) {
             "suspect" to com.nutritionscribe.shared.model.NutrientSanity.codes(entry.nutrients),
         )
     }
-    if (open) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { if (!fixing) open = false },
-            title = { Text("What's wrong?") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    fun justNote() {
+        record(fix = false)
+        open = false; note = ""
+        // Something in it is wrong: what these words were taken to mean is
+        // forgotten, so the same wrong answer is not logged silently again.
+        reportScope.launch { ServiceLocator.logPipeline.forget(entry.rawText, entry.items.map { it.key }, "user_report") }
+        com.nutritionscribe.app.ui.common.AppMessages.say("Noted. It will check these foods with you next time.", long = true)
+    }
+    if (listening) com.nutritionscribe.app.ui.speech.VoiceDialog(
+        title = "What's wrong?", tag = "fix:${entry.id}",
+        onResult = { said -> listening = false; note = listOf(note.trim(), said.trim()).filter { it.isNotEmpty() }.joinToString(" ") },
+        onDismiss = { listening = false },
+    )
+    // A sheet, not a dialog (owner, 11-19: the lone green "Cancel" looked unfinished;
+    // see docs/UI_GUIDELINES.md, sheets over dialogs).
+    if (open) com.nutritionscribe.app.ui.feedback.ReportableSheet("What's wrong", onDismissRequest = { if (!fixing) open = false }) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp).imePadding(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+                Box(Modifier.size(40.dp).background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                    // The sparkle means AI; without a key it's a plain note.
+                    Icon(if (canFix) Icons.Filled.AutoAwesome else Icons.Filled.Edit, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("What's wrong?", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        if (canFix) "Say what's wrong and the AI fixes the entry; you can undo it. It also goes in the debug log."
-                        else "This goes in the debug log with everything the app knows about this entry.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
+                        if (canFix) "Say it in your own words. The AI fixes the entry, and you can undo it."
+                        else "It goes in the debug log with everything the app knows about this entry.",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary,
                     )
-                    OutlinedTextField(
-                        value = note, onValueChange = { note = it }, enabled = !fixing,
-                        placeholder = { Text("e.g. it was 5 slices of the low-sodium bacon") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (fixing) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Text("Fixing…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = note, onValueChange = { note = it }, enabled = !fixing,
+                    placeholder = { Text("e.g. it was two bowls") },
+                    modifier = Modifier.weight(1f),
+                )
+                androidx.compose.material3.FilledTonalIconButton(onClick = { listening = true }, enabled = !fixing, modifier = Modifier.size(52.dp)) {
+                    Icon(Icons.Filled.Mic, contentDescription = "Say what's wrong")
+                }
+            }
+            if (fixing) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Text("Fixing…", style = MaterialTheme.typography.bodyMedium)
+            }
+            if (canFix) {
+                Button(
+                    enabled = note.isNotBlank() && !fixing,
+                    onClick = {
+                        record(fix = true)
+                        fixing = true
+                        reportScope.launch {
+                            val message = fixWithAi(entry, note)
+                            fixing = false; open = false; note = ""
+                            message.second?.let { before -> onFixed(message.first, before) }
+                                ?: com.nutritionscribe.app.ui.common.AppMessages.say(message.first, long = true)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("  Fix it")
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (canFix) androidx.compose.material3.FilledTonalButton(onClick = { justNote() }, enabled = !fixing,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Just note it") }
+                else Button(onClick = { justNote() }, enabled = note.isNotBlank(),
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Save note") }
+                androidx.compose.material3.OutlinedButton(onClick = { open = false }, enabled = !fixing,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Cancel") }
+            }
+        }
+    }
+}
+
+/**
+ * After an AI fix: what changed and Undo, as a card at the top of the entry that
+ * stays until closed (owner, 11-19, round 2 "Fixed by AI").
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun FixedCard(summary: String, before: Entry, now: Entry, onUndo: () -> Unit, onClose: () -> Unit) {
+    val dark = Color(0xFF173A2A); val light = Color(0xFFCFE6D8); val chip = Color(0xFF24513B)
+    Surface(shape = RoundedCornerShape(18.dp), color = dark, contentColor = Color(0xFFF2F1EC), shadowElevation = 4.dp,
+        modifier = Modifier.fillMaxWidth().semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite }) {
+        Column(Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(32.dp).background(Color(0xFF2F6F4F), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = light, modifier = Modifier.size(18.dp))
+                }
+                Text("Fixed by AI", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close", tint = light) }
+            }
+            val parts = summary.split(" · ", "; ").map { it.trim() }.filter { it.isNotEmpty() }.take(4)
+            if (parts.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(end = 8.dp)) {
+                parts.forEach { t ->
+                    Surface(shape = RoundedCornerShape(12.dp), color = chip) {
+                        Text(t, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
                     }
                 }
-            },
-            confirmButton = {
-                if (canFix) androidx.compose.material3.TextButton(enabled = note.isNotBlank() && !fixing, onClick = {
-                    record(fix = true)
-                    fixing = true
-                    reportScope.launch {
-                        val message = fixWithAi(entry, note)
-                        fixing = false; open = false; note = ""
-                        message.second?.let { before ->
-                            com.nutritionscribe.app.ui.common.AppMessages.sayWithAction(message.first, "Undo") {
-                                reportScope.launch { undoFix(before) }
-                            }
-                        } ?: com.nutritionscribe.app.ui.common.AppMessages.say(message.first, long = true)
-                    }
-                }) { Text("Fix it") }
-                else androidx.compose.material3.TextButton(onClick = {
-                    record(fix = false)
-                    open = false; note = ""
-                    // Something in it is wrong: what these words were taken to mean is
-                    // forgotten, so the same wrong answer is not logged silently again.
-                    reportScope.launch {
-                        ServiceLocator.logPipeline.forget(entry.rawText, entry.items.map { it.key }, "user_report")
-                    }
-                    com.nutritionscribe.app.ui.common.AppMessages.say("Noted. It will check these foods with you next time.", long = true)
-                }) { Text("Save note") }
-            },
-            dismissButton = {
-                Row {
-                    if (canFix) androidx.compose.material3.TextButton(enabled = !fixing, onClick = {
-                        record(fix = false)
-                        open = false; note = ""
-                        reportScope.launch { ServiceLocator.logPipeline.forget(entry.rawText, entry.items.map { it.key }, "user_report") }
-                        com.nutritionscribe.app.ui.common.AppMessages.say("Noted. It will check these foods with you next time.", long = true)
-                    }) { Text("Just note it") }
-                    androidx.compose.material3.TextButton(enabled = !fixing, onClick = { open = false }) { Text("Cancel") }
+            }
+            FixDiff.lines(before.nutrients, now.nutrients).takeIf { it.isNotEmpty() }?.let {
+                Text(it.joinToString(" · "), style = NumberStyle.copy(fontSize = 13.5.sp), color = light)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onUndo, colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color(0xFFF2F1EC), contentColor = dark),
+                    modifier = Modifier.heightIn(min = 44.dp)) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp)); Text("  Undo")
                 }
-            },
-        )
+                TextButton(onClick = onClose, modifier = Modifier.heightIn(min = 44.dp)) { Text("Looks right", color = light) }
+            }
+        }
     }
 }
 

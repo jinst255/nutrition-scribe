@@ -90,8 +90,10 @@ things that no ranking fixes:
 | Ask | Your question and the foods and targets it needs (with Search the web on, OpenAI may search for it) | The provider you picked |
 | "Something's wrong with this entry" › Fix it | What you said is wrong, and that entry's foods and numbers | The provider you picked |
 | A barcode the label pack doesn't have | The barcode number only | Open Food Facts |
+| Settings › Store foods › Get (or Download on the Home suggestion) | Nothing about you: a plain download of that store's pack | GitHub (this repo's `store-packs` release) |
 
-Without a key, only that last one happens. Before each AI provider is used for the first
+Without a key, only the last two happen. The "You eat a lot of …" suggestion is worked out on
+the phone from your own log; nothing is sent to decide it. Before each AI provider is used for the first
 time, the app shows what it sends and what that provider's data policy says.
 Speech goes through Android's own speech recognizer unless you choose OpenAI in Settings › Microphone.
 

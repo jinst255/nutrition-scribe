@@ -1,5 +1,6 @@
 package com.nutritionscribe.app.ui.home
 
+import androidx.compose.material3.minimumInteractiveComponentSize
 import com.nutritionscribe.app.ui.common.shownName
 
 import androidx.compose.animation.animateContentSize
@@ -119,6 +120,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -243,6 +245,41 @@ class HomeViewModel : ViewModel() {
         }
     }
 
+    /** "You eat a lot of Great Value": a store pack worth downloading, or null. */
+    val storeSuggestion: Flow<com.nutritionscribe.shared.stores.StoreSuggest.Suggestion?> = kotlinx.coroutines.flow.combine(
+        all,
+        ServiceLocator.storePacks.installed,
+        ServiceLocator.settingsRepository.storeSuggest,
+        ServiceLocator.settingsRepository.storeSnoozes,
+    ) { list, installed, on, snoozes ->
+        if (!on) null else com.nutritionscribe.shared.stores.StoreSuggest.suggest(
+            StoreFoods.of(list), System.currentTimeMillis(), installed.map { it.store.id }.toSet(), snoozes,
+        )
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+
+    val storeJobs = ServiceLocator.storePacks.jobs
+    val storeRemote = ServiceLocator.storePacks.remote
+
+    fun downloadStore(s: com.nutritionscribe.shared.stores.StoreSuggest.Suggestion) {
+        ServiceLocator.debugEvents.event("store_suggest_download", "store" to s.store.id,
+            "store_foods" to s.storeFoods, "packaged_foods" to s.packagedFoods)
+        viewModelScope.launch {
+            val ok = ServiceLocator.storePacks.download(s.store.id)
+            ServiceLocator.debugEvents.event("store_pack_download", "store" to s.store.id, "ok" to ok, "where" to "home",
+                "problem" to (ServiceLocator.storePacks.jobs.value[s.store.id] as? com.nutritionscribe.app.data.resolve.StorePacks.Job.Failed)?.message)
+            if (ok) com.nutritionscribe.app.ui.common.AppMessages.say("${s.store.title} foods are on your phone now.")
+        }
+    }
+
+    fun snoozeStore(s: com.nutritionscribe.shared.stores.StoreSuggest.Suggestion) {
+        ServiceLocator.debugEvents.event("store_suggest_not_now", "store" to s.store.id)
+        viewModelScope.launch {
+            ServiceLocator.settingsRepository.snoozeStore(
+                s.store.id, System.currentTimeMillis() + com.nutritionscribe.shared.stores.StoreSuggest.SNOOZE_DAYS * 86_400_000L,
+            )
+        }
+    }
+
     /** Home's "add your height…" card: false until known, so it never flashes at launch. */
     val profileNudgeDue: Flow<Boolean> = kotlinx.coroutines.flow.combine(
         ServiceLocator.settingsRepository.profile,
@@ -360,6 +397,9 @@ fun HomeScreen(
     var streakOpen by remember { mutableStateOf(false) }
     val latestChat by viewModel.latestChat.collectAsState(initial = null)
     val duePlan by viewModel.duePlan.collectAsState(initial = null)
+    val storeSuggestion by viewModel.storeSuggestion.collectAsState(initial = null)
+    val storeJobs by viewModel.storeJobs.collectAsState()
+    val storeRemote by viewModel.storeRemote.collectAsState()
     var partOf by remember { mutableStateOf<com.nutritionscribe.app.data.chat.MealPlanRow?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val shareScope = rememberCoroutineScope()
@@ -509,6 +549,22 @@ fun HomeScreen(
                             splits = splits, sort = homeSort, onSort = viewModel::setSort,
                             percent = microsPercent, onPercent = viewModel::setMicrosPercent,
                             personal = profile != null, onAboutYou = onOpenGoals,
+                        )
+                    }
+                }
+                storeSuggestion?.let { sug ->
+                    item(key = "store_${sug.store.id}") {
+                        LaunchedEffect(sug.store.id) {
+                            ServiceLocator.debugEvents.event("store_suggest_shown", "store" to sug.store.id,
+                                "store_foods" to sug.storeFoods, "packaged_foods" to sug.packagedFoods,
+                                "guesses_month" to sug.guessesPerMonth, "cents_month" to sug.centsPerMonth)
+                        }
+                        StoreSuggestCard(
+                            sug,
+                            bytes = storeRemote.firstOrNull { it.id == sug.store.id }?.bytes,
+                            job = storeJobs[sug.store.id],
+                            onDownload = { viewModel.downloadStore(sug) },
+                            onNotNow = { viewModel.snoozeStore(sug) },
                         )
                     }
                 }
@@ -1253,7 +1309,7 @@ private fun LogAgainSection(choices: List<LogAgain.Choice>, onLog: (Entry) -> Un
                         shape = RoundedCornerShape(17.dp),
                         color = MaterialTheme.colorScheme.surface,
                         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.height(36.dp).clip(RoundedCornerShape(17.dp)).clickable { if (one != null) asking = true else onLog(c.entry) }
+                        modifier = Modifier.minimumInteractiveComponentSize().height(36.dp).clip(RoundedCornerShape(17.dp)).clickable { if (one != null) asking = true else onLog(c.entry) }
                             .semantics { contentDescription = "Log ${c.entry.name} again" },
                     ) {
                         Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
@@ -1348,7 +1404,7 @@ private fun ToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
         shape = RoundedCornerShape(15.dp),
         color = if (on) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
         border = if (on) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.height(32.dp).clip(RoundedCornerShape(15.dp)).clickable(onClick = onClick),
+        modifier = Modifier.minimumInteractiveComponentSize().height(32.dp).clip(RoundedCornerShape(15.dp)).clickable(onClick = onClick),
     ) {
         Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
             Text(

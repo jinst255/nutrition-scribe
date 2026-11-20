@@ -109,6 +109,8 @@ private object Routes {
     /** A scan from My foods › Add a food: saved, not logged. */
     const val SCAN_SAVE = -4
     const val MY_LABELS = "my_labels"
+    const val STORE_FOODS = "store_foods"
+    const val ABOUT = "about"
     fun fix(id: String) = "fix/$id"
     fun scan(index: Int) = "scan/$index"
     const val METRIC_CHART = "history/metric/{metric}"
@@ -193,6 +195,8 @@ private fun titleFor(route: String?, args: Bundle?): String = when (route) {
     Routes.SCAN -> "Scan the package"
     Routes.MY_FOODS -> "My foods"
     Routes.MY_LABELS -> "My labels"
+    Routes.STORE_FOODS -> "Store foods"
+    Routes.ABOUT -> "About"
     Routes.UNPROCESSED -> "Needs attention"
     Routes.HISTORY -> "History"
     Routes.GOALS -> "Goals"
@@ -558,6 +562,8 @@ private fun MainNavScaffold() {
                 )
             }
             composable(Routes.MY_LABELS) { com.nutritionscribe.app.ui.myfoods.MyLabelsScreen() }
+            composable(Routes.STORE_FOODS) { com.nutritionscribe.app.ui.myfoods.StoreFoodsScreen() }
+            composable(Routes.ABOUT) { com.nutritionscribe.app.ui.about.AboutScreen(onOpenGuide = { navController.navigate(Routes.TESTER_GUIDE) }) }
             composable(Routes.UNPROCESSED) { UnprocessedScreen() }
             composable(Routes.HISTORY) {
                 HistoryScreen(
@@ -639,6 +645,8 @@ private fun MainNavScaffold() {
                     onOpenAiModels = { navController.navigate(Routes.AI_MODELS) },
                     onOpenFeedback = { navController.navigate(Routes.feedback()) },
                     onOpenMyLabels = { navController.navigate(Routes.MY_LABELS) },
+                    onOpenStoreFoods = { navController.navigate(Routes.STORE_FOODS) },
+                    onOpenAbout = { navController.navigate(Routes.ABOUT) },
                     onOpenIdea = { navController.navigate(Routes.feedback(idea = true)) },
                     onOpenSent = { navController.navigate(Routes.BETA_SENT) },
                     onOpenCheckIn = { navController.navigate(Routes.feedback(checkIn = true)) },

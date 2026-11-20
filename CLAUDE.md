@@ -4,11 +4,12 @@ Android phone app with a Wear OS companion. Gradle modules `app`, `wear`, `share
 Kotlin 2.0.21, AGP 8.9.2, Gradle 8.11.1 (wrapper), JDK 17, compileSdk 36.
 What the app does: [README.md](README.md). Setting up a machine: [docs/SETUP.md](docs/SETUP.md).
 Design spec: [nutrition-scribe-blueprint.md](nutrition-scribe-blueprint.md).
+UI rules for every new or changed screen (phone and watch): [docs/UI_GUIDELINES.md](docs/UI_GUIDELINES.md).
 
 ## Commands
 
 ```bash
-# JVM tests (seconds; no device). Expect shared 329 (10 skipped), app 147.
+# JVM tests (seconds; no device). Expect shared 350 (10 skipped), app 163.
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :shared:testDebugUnitTest :app:testDebugUnitTest
 # The label-pack test runs only when given an unzipped pack:
 #   gunzip -c app/src/main/assets-pack/labels.db.gz > /tmp/labels.db
@@ -100,6 +101,12 @@ shell's own command line and the shell kills itself (exit 144).
   - AGP unpacks the `.gz` into `assets/labels.db`. `LabelPack.installBundled()` tries both names and
     only replaces a missing or smaller pack.
   - Builds without the folder work; they just ship no pack.
+- **Store packs** (Settings › Store foods): per-store labels from Open Food Facts, built by
+  `tools/build_store_pack.py` from `tools/store_packs.json` and published by the `store-packs.yml`
+  workflow to the `store-packs` release. A store's `slot` is permanent (its product ids are
+  slot × 1e9 + n and logged foods keep them); never reuse or renumber one. `StoreCatalog.kt`
+  must match the JSON (`StoreSuggestTest` checks). The app ATTACHes packs to the label pack's
+  connection behind TEMP views (`StorePackViews`).
 - **Room:** schema JSONs live in `app/schemas/` (v1 was reconstructed by hand). Migration tests need them.
 - **Emulator won't start:** a corrupt snapshot (`KVM: entry failed, hardware error 0x80000021`) → cold boot with `-no-snapshot-load`.
 - **Seeding the emulator:** `run-as com.nutritionscribe sqlite3 databases/protein-scribe.db < seed.sql`.

@@ -1,5 +1,6 @@
 package com.nutritionscribe.app.ui.confirm
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -27,7 +30,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import kotlinx.coroutines.flow.first
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -559,6 +564,8 @@ fun ConfirmScreen(
 ) {
     val tracked by viewModel.tracked.collectAsState(initial = listOf(Metric.CALORIES, Metric.PROTEIN))
     var editingIndex by remember { mutableStateOf<Int?>(null) }
+    /** "Which cheese was it?": Change opens on their usual ones first (item 7). */
+    var choosingIndex by remember { mutableStateOf<Int?>(null) }
     var breakdownIndex by remember { mutableStateOf<Int?>(null) }
     var adding by remember { mutableStateOf(false) }
     var addingByVoice by remember { mutableStateOf(false) }
@@ -635,7 +642,7 @@ fun ConfirmScreen(
             DraftCard(
                 draft = d,
                 tracked = tracked,
-                onChange = { editingIndex = i },
+                onChange = { if (d.candidate == null && d.nutrients.isEmpty()) editingIndex = i else choosingIndex = i },
                 onRemove = { viewModel.remove(i) },
                 onScan = {
                     LogSession.scanEntry = null
@@ -734,6 +741,26 @@ fun ConfirmScreen(
                 learnDefault = true,
                 onSave = { nd, learn -> viewModel.update(i, nd); viewModel.setLearn(nd.key, learn); editingIndex = null },
                 onDismiss = { editingIndex = null },
+            )
+        }
+    }
+    choosingIndex?.let { i ->
+        drafts.getOrNull(i)?.let { d ->
+            UsualSheet(
+                draft = d,
+                onPick = { c ->
+                    ServiceLocator.debugEvents.event("change_usual_pick", "from" to d.candidate?.id, "to" to c.id)
+                    viewModel.update(i, d.withCandidate(c)); choosingIndex = null
+                },
+                onSearch = { choosingIndex = null; editingIndex = i },
+                onScan = {
+                    choosingIndex = null
+                    LogSession.scanEntry = null
+                    LogSession.scanHint = (d.item.brand?.let { "$it " }.orEmpty() + d.item.food).trim().takeIf { it.isNotBlank() }
+                    onScan(i)
+                },
+                onEmpty = { choosingIndex = null; editingIndex = i },
+                onDismiss = { choosingIndex = null },
             )
         }
     }
@@ -1162,3 +1189,82 @@ internal fun fmt(v: Double): String =
     if (v == v.toLong().toDouble()) v.toLong().toString()
     else if (v >= 10) String.format(java.util.Locale.ROOT, "%.0f", v)
     else String.format(java.util.Locale.ROOT, "%.1f", v)
+
+
+/**
+ * Change, first step (owner, 11-19, item 7): "Which cheese was it?" Their own past
+ * foods for the word, with brands, most eaten first; then the full search, a label
+ * scan, or the amount. With nothing logged before for the word it goes straight on.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UsualSheet(
+    draft: ItemDraft,
+    onPick: (FoodCandidate) -> Unit,
+    onSearch: () -> Unit,
+    onScan: () -> Unit,
+    onEmpty: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val word = remember(draft) { UsualChoices.headWord(draft.item.food) }
+    val choices by androidx.compose.runtime.produceState<List<UsualChoices.Choice>?>(null, draft.key) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val entries = ServiceLocator.currentEntryRepository().observeEntries().first()
+            UsualChoices.of(word, entries, draft.candidate)
+        }
+    }
+    val list = choices ?: return
+    if (list.isEmpty()) { androidx.compose.runtime.LaunchedEffect(Unit) { onEmpty() }; return }
+    LaunchedEffect(Unit) { ServiceLocator.debugEvents.event("change_usual_open", "word" to word, "choices" to list.size) }
+    com.nutritionscribe.app.ui.feedback.ReportableSheet("Which one was it", onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Which ${word ?: "one"} was it?", style = MaterialTheme.typography.titleLarge)
+            com.nutritionscribe.app.ui.home.SectionLabel("Your usual")
+            Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface,
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                Column {
+                    draft.candidate?.let { now ->
+                        UsualRow(product = now.name, brand = now.brand, sub = "now · ${numbersLine(draft.nutrients, listOf(Metric.CALORIES))}",
+                            selected = true, onClick = onDismiss)
+                    }
+                    list.forEach { c ->
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        UsualRow(
+                            product = c.product, brand = c.brand,
+                            sub = listOfNotNull("logged ${c.times}×", c.portion, c.calories?.let { "${Math.round(it)} kcal" }).joinToString(" · "),
+                            selected = false, onClick = { onPick(c.candidate) },
+                        )
+                    }
+                }
+            }
+            OutlinedButton(onClick = onSearch, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("  Search every food, or change the amount")
+            }
+            TextButton(onClick = onScan, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Scan its label") }
+        }
+    }
+}
+
+@Composable
+private fun UsualRow(product: String, brand: String?, sub: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp)
+            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else androidx.compose.ui.graphics.Color.Transparent)
+            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(product, style = MaterialTheme.typography.bodyLarge, maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (brand != null) Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                    Text(brand, style = MaterialTheme.typography.labelSmall, maxLines = 1, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp))
+                }
+            }
+            Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, maxLines = 1)
+        }
+        if (selected) Icon(Icons.Filled.Check, contentDescription = "On the card now", tint = MaterialTheme.colorScheme.primary)
+    }
+}

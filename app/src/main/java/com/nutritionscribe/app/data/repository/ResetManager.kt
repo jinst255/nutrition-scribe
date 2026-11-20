@@ -41,6 +41,8 @@ class ResetManager(
     private val onPersonalFoodsCleared: () -> Unit = {},
     private val aiUsageDao: com.nutritionscribe.app.data.usage.AiUsageDao? = null,
     private val labelPack: com.nutritionscribe.app.data.resolve.LabelPack? = null,
+    /** Store packs go with the label pack: both are downloaded labels. */
+    private val storePacks: com.nutritionscribe.app.data.resolve.StorePacks? = null,
 ) {
 
     /** What a reset will destroy, so the confirmation can say so in numbers. */
@@ -116,6 +118,7 @@ class ResetManager(
         }
         if (scope.labelPack) {
             labelPack?.remove()
+            storePacks?.removeAll()
         }
     }
 }

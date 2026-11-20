@@ -1,5 +1,6 @@
 package com.nutritionscribe.app.ui.history
 
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -91,7 +92,7 @@ fun MetricPicker(
                         shape = RoundedCornerShape(16.dp),
                         color = if (on) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
                         border = if (on) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.height(32.dp).clip(RoundedCornerShape(16.dp)).clickable { onSelect(m) },
+                        modifier = Modifier.minimumInteractiveComponentSize().height(32.dp).clip(RoundedCornerShape(16.dp)).clickable { onSelect(m) },
                     ) {
                         Box(Modifier.padding(horizontal = 11.dp), contentAlignment = Alignment.Center) {
                             Text(

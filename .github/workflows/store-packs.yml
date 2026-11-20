@@ -1,0 +1,64 @@
+# Store packs: extra package labels per store (Great Value, Kirkland Signature, ...)
+# that the app downloads from Settings › Store foods.
+#
+# tools/build_store_pack.py downloads Open Food Facts' daily export (ODbL, about
+# 1.5 GB; the route they ask bulk users to take), picks out each store's US products
+# and writes <store>.db.gz plus stores.json, the catalogue the app reads. They are
+# attached to the release tagged "store-packs", replacing the last build. The app
+# reads https://github.com/<repo>/releases/download/store-packs/stores.json.
+#
+# Runs when the builder or the store list changes, once a month to pick up new
+# products, and by hand.
+name: Store packs
+
+on:
+  push:
+    branches: [main]
+    paths: ["tools/build_store_pack.py", "tools/store_packs.json", "tools/build_label_pack.py", "tools/foodsearch.py"]
+  schedule:
+    - cron: "17 9 3 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: store-packs
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the packs
+        run: python3 -u tools/build_store_pack.py -o store-packs
+      - name: Publish to the store-packs release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -la store-packs
+          test -s store-packs/stores.json
+          cat > notes.md <<'EOF'
+          Store packs for Nutrition Scribe: extra package labels per store, downloaded
+          by the app from Settings › Store foods. Not an app release.
+
+          Data © Open Food Facts contributors (https://openfoodfacts.org), made available
+          under the Open Database License (ODbL 1.0, https://opendatacommons.org/licenses/odbl/1-0/).
+          These packs are derived databases and are shared under the same license.
+          Built by tools/build_store_pack.py.
+          EOF
+          if ! gh release view store-packs >/dev/null 2>&1; then
+            gh release create store-packs --title "Store packs (data, not an app release)" \
+              --notes-file notes.md --prerelease --latest=false --target "$GITHUB_SHA"
+          else
+            gh release edit store-packs --notes-file notes.md
+          fi
+          # Packs first, catalogue last: a phone never sees a catalogue whose packs aren't up yet.
+          gh release upload store-packs store-packs/*.db.gz --clobber
+          gh release upload store-packs store-packs/stores.json --clobber

@@ -260,7 +260,11 @@ data class ItemDraft(
         }
 
         /** Where a food's numbers came from, as the card says it. */
-        fun label(c: FoodCandidate?): String = if (c?.id?.startsWith("web:") == true) "Found online" else label(c?.origin)
+        fun label(c: FoodCandidate?): String = when {
+            c?.id?.startsWith("web:") == true -> "Found online"
+            // A scan the store pack answered says so (owner, 11-19: "Found in your Great Value pack").
+            else -> com.nutritionscribe.shared.stores.StoreCatalog.forCandidate(c?.id)?.let { "Package label · ${it.title} pack" } ?: label(c?.origin)
+        }
 
         fun label(origin: Origin?): String = when (origin) {
             Origin.PERSONAL -> "Your usual"

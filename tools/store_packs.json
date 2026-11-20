@@ -1,0 +1,17 @@
+{
+  "comment": "Store packs: extra package labels per store, from Open Food Facts (ODbL). Built by tools/build_store_pack.py and published to the GitHub release tagged store-packs. 'slot' is permanent: a store's product ids are slot * 1,000,000,000 + n, and logged foods keep those ids, so never reuse or renumber a slot. StoreCatalogParityTest keeps app/.../StoreCatalog.kt in step with this file.",
+  "stores": [
+    {"id": "great-value", "title": "Great Value", "shop": "Walmart", "slot": 1, "tags": ["great-value"], "aliases": ["great value"], "brand_words": []},
+    {"id": "kirkland", "title": "Kirkland Signature", "shop": "Costco", "slot": 2, "tags": ["kirkland-signature", "kirkland"], "aliases": ["kirkland signature", "kirkland"], "brand_words": ["kirkland"]},
+    {"id": "members-mark", "title": "Member's Mark", "shop": "Sam's Club", "slot": 3, "tags": ["member-s-mark", "members-mark"], "aliases": ["member's mark", "members mark"], "brand_words": []},
+    {"id": "trader-joes", "title": "Trader Joe's", "shop": "Trader Joe's", "slot": 4, "tags": ["trader-joe-s", "trader-joes"], "aliases": ["trader joe's", "trader joes"], "brand_words": []},
+    {"id": "kroger", "title": "Kroger and Simple Truth", "shop": "Kroger", "slot": 5, "tags": ["kroger", "simple-truth", "private-selection"], "aliases": ["kroger", "simple truth", "private selection"], "brand_words": ["kroger"]},
+    {"id": "publix", "title": "Publix", "shop": "Publix", "slot": 6, "tags": ["publix"], "aliases": ["publix"], "brand_words": ["publix"]},
+    {"id": "food-club", "title": "Food Club", "shop": "independent grocers", "slot": 7, "tags": ["food-club"], "aliases": ["food club"], "brand_words": []},
+    {"id": "365", "title": "365 by Whole Foods Market", "shop": "Whole Foods", "slot": 8, "tags": ["365-whole-foods-market", "365-everyday-value", "whole-foods-market"], "aliases": ["365 whole foods market", "365 everyday value", "whole foods market", "365"], "brand_words": []},
+    {"id": "good-gather", "title": "Good & Gather", "shop": "Target", "slot": 9, "tags": ["good-gather", "market-pantry"], "aliases": ["good & gather", "good and gather", "good gather", "market pantry"], "brand_words": []},
+    {"id": "western-family", "title": "Western Family", "shop": "independent grocers", "slot": 10, "tags": ["western-family"], "aliases": ["western family"], "brand_words": []},
+    {"id": "heb", "title": "H-E-B", "shop": "H-E-B", "slot": 11, "tags": ["h-e-b", "hill-country-fare"], "aliases": ["h-e-b", "heb", "hill country fare"], "brand_words": []},
+    {"id": "meijer", "title": "Meijer", "shop": "Meijer", "slot": 12, "tags": ["meijer"], "aliases": ["meijer"], "brand_words": ["meijer"]}
+  ]
+}

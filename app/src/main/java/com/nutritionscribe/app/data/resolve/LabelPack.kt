@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import com.nutritionscribe.shared.resolve.LabelPackSource
+import com.nutritionscribe.shared.stores.StorePackViews
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,17 +51,62 @@ class LabelPack(private val context: Context) {
 
     val isInstalled: Boolean get() = file.exists() && _status.value is Status.Installed
 
-    /** The search, or null when no pack is installed. */
+    /**
+     * Installed store packs (slot, file), attached to this pack's connection so one
+     * search reads them all. Set by ServiceLocator; see [StorePacks].
+     */
+    @Volatile var storeFiles: (() -> List<Pair<Int, File>>)? = null
+
+    /** Something went wrong attaching store packs; read by the debug log. */
+    @Volatile var storeAttachProblem: String? = null
+        private set
+
+    /** The search, or null when there is neither a pack nor a store pack. */
     fun source(): LabelPackSource? {
         source?.let { return it }
-        if (!file.exists()) return null
+        val stores = storeFiles?.invoke().orEmpty().filter { it.second.exists() }
+        if (!file.exists() && stores.isEmpty()) return null
         return synchronized(this) {
-            source ?: runCatching {
-                SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY).also { db = it }
-            }.getOrNull()?.let { d ->
-                val micros = (_status.value as? Status.Installed)?.hasMicros ?: false
+            source ?: runCatching { open(stores) }.getOrNull()?.let { (d, micros) ->
                 LabelPackSource(AndroidSql(d), hasMicros = micros).also { s -> source = s }
             }
+        }
+    }
+
+    /**
+     * Opens the pack and ATTACHes the store packs behind TEMP views named like its
+     * tables (StorePackViews). With no built-in pack, an empty in-memory database
+     * holds the views over the stores alone. If attaching fails, the built-in pack
+     * still works on its own: store packs are an extra, never a reason to lose labels.
+     */
+    private fun open(stores: List<Pair<Int, File>>): Pair<SQLiteDatabase, Boolean> {
+        val hasMain = file.exists()
+        val d = if (hasMain) SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY)
+        else SQLiteDatabase.create(null)
+        db = d
+        // Store packs are always format 4; the views follow main's format when there is one.
+        val micros = if (hasMain) (_status.value as? Status.Installed)?.hasMicros ?: false else true
+        storeAttachProblem = null
+        if (stores.isNotEmpty()) {
+            runCatching {
+                for ((slot, f) in stores) d.execSQL("ATTACH DATABASE ? AS ${StorePackViews.schemaName(slot)}", arrayOf<Any>(f.path))
+                StorePackViews.views(micros, stores.map { it.first }, includeMain = hasMain).forEach(d::execSQL)
+            }.onFailure { e ->
+                storeAttachProblem = e.message ?: e.javaClass.simpleName
+                runCatching { StorePackViews.dropViews().forEach(d::execSQL) }
+                if (!hasMain) { d.close(); db = null; throw e }
+            }
+        }
+        return d to micros
+    }
+
+    /** Store packs changed: the next [source] call opens and attaches afresh. */
+    fun reattach() {
+        synchronized(this) {
+            db?.close()
+            db = null
+            source = null
+            front = null
         }
     }
 

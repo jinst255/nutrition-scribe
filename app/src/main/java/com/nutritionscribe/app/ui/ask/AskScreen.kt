@@ -333,7 +333,7 @@ private fun Extra(e: ChatExtra, onPick: (String) -> Unit) {
                 }
                 Text(
                     "${formatAmount(b.now, m, withUnit = false)} → ${formatAmount(b.after, m, withUnit = false)}${if (m != Metric.CALORIES) " / " + formatAmount(b.target, m) else ""}",
-                    style = NumberStyle.copy(fontSize = 11.5.sp), color = scheme.primary, maxLines = 1,
+                    style = NumberStyle.copy(fontSize = 12.sp), color = scheme.primary, maxLines = 1,
                 )
             }
         }

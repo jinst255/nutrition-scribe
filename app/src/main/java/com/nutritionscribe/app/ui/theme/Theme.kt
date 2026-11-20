@@ -233,7 +233,8 @@ private val AppTypography = Base.copy(
     headlineSmall = Base.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
     titleLarge = Base.titleLarge.copy(fontWeight = FontWeight.Bold),
     titleMedium = Base.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-    labelSmall = Base.labelSmall.copy(letterSpacing = Base.labelSmall.letterSpacing * 1.4),
+    // 12 sp, not Material's 11: the app's smallest text (docs/UI_GUIDELINES.md §3, A3).
+    labelSmall = Base.labelSmall.copy(fontSize = 12.sp, letterSpacing = Base.labelSmall.letterSpacing * 1.4),
 )
 
 /** An amount on screen: mono, so "1,364" and "114" line up in a column. */

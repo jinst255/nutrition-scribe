@@ -211,7 +211,7 @@ internal fun BarRow(
                 color = if (indent) scheme.secondary else scheme.onBackground,
                 maxLines = 1,
             )
-            sub?.let { Text(it, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp, fontSize = 11.sp), color = scheme.secondary, maxLines = 2) }
+            sub?.let { Text(it, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.sp, fontSize = 12.sp), color = scheme.secondary, maxLines = 2) }
         }
         HomeBar(bar.fraction, fill, unknown, Modifier.weight(1f), bar.targetTick, bar.lineTick)
         if (met) Box(Modifier.width(16.dp)) { check() }

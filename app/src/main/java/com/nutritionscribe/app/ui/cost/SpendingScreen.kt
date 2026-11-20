@@ -464,7 +464,7 @@ private fun SpendChart(
     val surface = MaterialTheme.colorScheme.surfaceContainerLow
     val lineColor = MaterialTheme.colorScheme.onSurface
     val highlight = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-    val labelStyle = TextStyle(fontSize = 10.sp, color = ink)
+    val labelStyle = TextStyle(fontSize = 11.sp, color = ink)
     val values = if (running) buckets.runningFold(0.0) { acc, b -> acc + b.total }.drop(1) else buckets.map { it.total }
     val maxV = values.maxOrNull()?.takeIf { it > 0 } ?: 0.001
     val step = niceStep(maxV)

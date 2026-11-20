@@ -20,9 +20,11 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Savings
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
@@ -90,6 +92,8 @@ fun SettingsScreen(
     onOpenAiModels: () -> Unit = {},
     onOpenFeedback: () -> Unit = {},
     onOpenMyLabels: () -> Unit = {},
+    onOpenStoreFoods: () -> Unit = {},
+    onOpenAbout: () -> Unit = {},
     onOpenIdea: () -> Unit = {},
     onOpenSent: () -> Unit = {},
     onOpenCheckIn: () -> Unit = {},
@@ -186,6 +190,15 @@ fun SettingsScreen(
                 Modifier.weight(1f), onOpenMyFoods)
             FoodTile(Icons.Outlined.ReceiptLong, "My labels", if (labelCount == 0) "Scan a label to keep it" else "$labelCount labels",
                 Modifier.weight(1f), onOpenMyLabels)
+        }
+        val stores by ServiceLocator.storePacks.installed.collectAsState()
+        SettingsCard {
+            IconRow(
+                Icons.Outlined.Storefront, "Store foods",
+                if (stores.isEmpty()) "Extra labels for the stores you shop at, like Costco or Walmart"
+                else stores.joinToString(", ") { it.store.title } + " on this phone",
+                onClick = { ServiceLocator.debugEvents.event("store_foods_open", "where" to "settings"); onOpenStoreFoods() },
+            )
         }
 
         // ---- AI -------------------------------------------------------------
@@ -388,6 +401,7 @@ fun SettingsScreen(
 
         if (!showAdvanced) {
             LeaveBetaRow()
+            AboutRow(onOpenAbout)
             VersionLine()
             Spacer(Modifier.padding(bottom = 24.dp))
             return@Column
@@ -468,6 +482,7 @@ fun SettingsScreen(
         HorizontalDivider(modifier = Modifier.padding(top = 20.dp, bottom = 12.dp))
         ResetSection(reset = viewModel.reset, onOpenExportImport = onOpenExportImport)
         LeaveBetaRow()
+        AboutRow(onOpenAbout)
         VersionLine()
         Spacer(Modifier.padding(bottom = 32.dp))
     }
@@ -575,6 +590,15 @@ private fun FoodTile(icon: androidx.compose.ui.graphics.vector.ImageVector, titl
             Text(title, style = MaterialTheme.typography.titleSmall)
             Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
+    }
+}
+
+/** About, at the end of Settings with or without the advanced part (items 13–14). */
+@Composable
+private fun AboutRow(onOpen: () -> Unit) {
+    SettingsCard {
+        IconRow(Icons.Outlined.Info, "About", "Help, what leaves your phone, data sources and licences",
+            onClick = { ServiceLocator.debugEvents.event("about_tap", "where" to "settings"); onOpen() })
     }
 }
 

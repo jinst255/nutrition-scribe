@@ -1,5 +1,7 @@
 package com.nutritionscribe.app.ui.history
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.nutritionscribe.app.ui.common.shownName
 
 import com.nutritionscribe.app.di.ServiceLocator
@@ -107,7 +109,9 @@ internal fun DayStrip(days: List<DayValue>, goal: MetricGoal, full: Set<Long>, t
     val colors = standingColors()
     val hollow = MaterialTheme.colorScheme.outline
     val patchy = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-    Canvas(modifier) {
+    // Read out as words (docs/UI_GUIDELINES.md §5): how many days, the average, the goal.
+    val said = remember(days, goal) { ChartWords.strip(days.mapNotNull { it.value }, goal.target) }
+    Canvas(modifier.semantics { contentDescription = said }) {
         if (days.isEmpty()) return@Canvas
         val hi = max(days.mapNotNull { it.value }.maxOrNull() ?: 0.0, listOfNotNull(goal.target, goal.ceilingValue).maxOrNull() ?: 0.0).coerceAtLeast(1.0)
         val gap = 2.dp.toPx()
@@ -389,7 +393,7 @@ internal fun InteractiveChart(
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val ruleColor = MaterialTheme.colorScheme.outline
-    val labelStyle = TextStyle(fontSize = 10.sp, color = labelColor)
+    val labelStyle = TextStyle(fontSize = 11.sp, color = labelColor)
 
     // The gesture handlers are installed once; read the latest state through these
     // so a pinch always starts from where the view is now, not where it began.
@@ -407,8 +411,10 @@ internal fun InteractiveChart(
         label = "chart scale",
     )
 
+    val said = remember(visible, goal) { ChartWords.strip(visible.mapNotNull { it.value }, goal.target) + " Drag to move through time, pinch to zoom, tap a bar to see what you ate." }
     Canvas(
         modifier
+            .semantics { contentDescription = said }
             .pointerInputTransform(vpState, bounds, onViewportChange, plotRightInset = 44.dp)
             .pointerInputTap(vpState, bucketsState, onSelect, plotRightInset = 44.dp),
     ) {
@@ -476,7 +482,7 @@ internal fun InteractiveChart(
                 // ▲ past a line, ▼ too low: the shape says it as well as the colour.
                 val mark = when (standing) { Standing.PAST -> "▲"; Standing.LOW -> "▼"; else -> null }
                 if (mark != null && barW >= 6.dp.toPx()) {
-                    val layout = measurer.measure(mark, TextStyle(fontSize = 9.sp, color = c))
+                    val layout = measurer.measure(mark, TextStyle(fontSize = 11.sp, color = c))
                     drawText(layout, topLeft = Offset(x0 + inset + barW / 2 - layout.size.width / 2, yTop - layout.size.height - 1.dp.toPx()))
                 }
             }

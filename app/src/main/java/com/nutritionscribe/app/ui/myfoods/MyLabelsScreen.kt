@@ -173,12 +173,12 @@ private fun LabelCard(f: PersonalFood, modifier: Modifier, onClick: () -> Unit) 
                     Icon(Icons.Outlined.CameraAlt, null, tint = MaterialTheme.colorScheme.secondary)
                     Text(if (f.candidate?.id?.startsWith("label:") == true) "From the label list" else "No photo",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
-                    Text("Scan it to add one", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                    Text("Scan it to add one", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
                 }
             }
             if (look != null) Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.errorContainer,
                 modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
-                Text("Needs a look", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onErrorContainer,
+                Text("Needs a look", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onErrorContainer,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
             }
         }

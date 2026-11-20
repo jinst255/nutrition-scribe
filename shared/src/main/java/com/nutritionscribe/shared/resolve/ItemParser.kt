@@ -657,6 +657,10 @@ object ItemParser {
     // Set per parse; the parser is single-threaded by construction (one call, one text).
     @Volatile private var brandCheck: (String) -> Boolean = { false }
 
+    /** Store brands of two or more words ("great value", "trader joe's"), longest first. */
+    private val STORE_BRANDS: List<String> = com.nutritionscribe.shared.stores.StoreCatalog.BUILT_IN
+        .flatMap { it.aliases }.filter { ' ' in it }.distinct().sortedByDescending { it.length }
+
     /** One fragment -> one item, or null when nothing food-like is left. */
     private fun readFragment(fragment: String, isFoodWord: (String) -> Boolean = { true }): Item? {
         var t = " ${fragment.trim()} "
@@ -748,6 +752,18 @@ object ItemParser {
             RESTAURANTS.firstOrNull { Regex("\\b${Regex.escape(it)}\\b").containsMatchIn(rest) }?.let { chain ->
                 brand = chain
                 restNoBrand = rest.replace(Regex("\\b${Regex.escape(chain)}\\b"), " ").replace(Regex("^\\s*(?:from|at)\\s+|\\s+(?:from|at)\\s*$"), " ")
+            }
+        }
+        // A store brand of more than one word, taken whole: "great value cottage cheese".
+        // The rule below stops at "great" (labels ignore "value"), which made the food
+        // "value cottage cheese" and lost the label (StoreBrandParseTest).
+        if (brand == null) {
+            STORE_BRANDS.firstOrNull { Regex("\\b${Regex.escape(it)}(?![a-z])").containsMatchIn(rest) }?.let { b ->
+                val left = rest.replace(Regex("\\b${Regex.escape(b)}(?![a-z])"), " ")
+                if (FoodQuery.contentWords(left).isNotEmpty()) {
+                    brand = b
+                    restNoBrand = left
+                }
             }
         }
         // A brand word said up front: "chobani plain greek yogurt", "a kind bar".

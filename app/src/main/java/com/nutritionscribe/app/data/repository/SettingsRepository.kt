@@ -129,6 +129,8 @@ class SettingsRepository(
         val DEBUG_MODE = booleanPreferencesKey("debug_mode")
         val SHAKE_TO_REPORT = booleanPreferencesKey("shake_to_report")
         val SPEECH_ON_PHONE = booleanPreferencesKey("speech_on_phone")
+        val STORE_SUGGEST = booleanPreferencesKey("store_suggest")
+        val STORE_SNOOZES = stringPreferencesKey("store_snoozes")
         val GOAL_CHANGES = androidx.datastore.preferences.core.stringPreferencesKey("goal_changes")
         val PROFILE = stringPreferencesKey("profile_v1")
         val PLASMA_DONATIONS = stringSetPreferencesKey("plasma_donations")
@@ -396,6 +398,25 @@ class SettingsRepository(
 
     suspend fun setSpeechOnPhone(on: Boolean) {
         store.edit { it[Keys.SPEECH_ON_PHONE] = on }
+    }
+
+    /** Settings › Store foods › "Suggest a store from what I eat". On unless switched off. */
+    val storeSuggest: Flow<Boolean> = store.data.map { it[Keys.STORE_SUGGEST] ?: true }
+
+    suspend fun setStoreSuggest(on: Boolean) {
+        store.edit { it[Keys.STORE_SUGGEST] = on }
+    }
+
+    /** Store id → when its "Not now" runs out; see StoreSuggest.parseSnoozes. */
+    val storeSnoozes: Flow<Map<String, Long>> = store.data.map {
+        com.nutritionscribe.shared.stores.StoreSuggest.parseSnoozes(it[Keys.STORE_SNOOZES])
+    }
+
+    suspend fun snoozeStore(id: String, until: Long) {
+        store.edit { prefs ->
+            val now = com.nutritionscribe.shared.stores.StoreSuggest.parseSnoozes(prefs[Keys.STORE_SNOOZES])
+            prefs[Keys.STORE_SNOOZES] = com.nutritionscribe.shared.stores.StoreSuggest.formatSnoozes(now + (id to until))
+        }
     }
 
     val debugMode: Flow<Boolean> = store.data.map { it[Keys.DEBUG_MODE] ?: true }
