@@ -26,6 +26,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.debounce
 
 /**
  * Small manual dependency container. No DI framework — the module count doesn't
@@ -138,6 +139,7 @@ object ServiceLocator {
             usda = { foodDatabase.reader()?.let { com.nutritionscribe.shared.resolve.UsdaFoodSource(it) } },
             labels = labelPack,
             ai = ::currentAiLookup,
+            barcodeOnline = { code -> openFoodFacts.byBarcode(code) },
             debugLogger = debugLogger,
             events = debugEvents,
             meter = usageMeter,
@@ -211,6 +213,16 @@ object ServiceLocator {
         }
         backgroundScope.launch {
             settingsRepository.profile.collect { profileCache.value = it }
+        }
+        // The watch's state follows the log, goals and debug mode, a couple of seconds
+        // after the last change. WatchSync does nothing when no watch is connected.
+        @OptIn(kotlinx.coroutines.FlowPreview::class)
+        backgroundScope.launch {
+            kotlinx.coroutines.flow.combine(
+                currentEntryRepository().observeEntries(), goalsRepository.goals, settingsRepository.debugMode,
+            ) { _, _, _ -> Unit }
+                .debounce(2_000)
+                .collect { com.nutritionscribe.app.data.WatchSync.push(appContext) }
         }
         backgroundScope.launch { settingsRepository.modelLookup.collect { modelLookupCache.value = it } }
         backgroundScope.launch { settingsRepository.webSearch.collect { webSearchCache.value = it } }

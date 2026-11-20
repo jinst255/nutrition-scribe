@@ -313,6 +313,15 @@ class HomeViewModel : ViewModel() {
     /** Everything that could be logged again, ranked on screen. */
     val choices: Flow<List<LogAgain.Choice>> = all.map { LogAgain.choices(it, System.currentTimeMillis(), ZoneId.systemDefault()) }
 
+    /** "Your usual lunch": the same foods logged together on different days, one tap. */
+    val meals: Flow<List<com.nutritionscribe.shared.model.UsualMeals.Meal>> =
+        all.map { com.nutritionscribe.shared.model.UsualMeals.of(it, System.currentTimeMillis()) }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+
+    fun logMeal(meal: com.nutritionscribe.shared.model.UsualMeals.Meal) {
+        LogDay.today()
+        viewModelScope.launch { LogFlow.logMeal(meal, "home") }
+    }
+
     /** The words being looked up after the mic, for the panel above the dock. */
     var lookingUp by mutableStateOf<String?>(null)
         private set
@@ -381,6 +390,7 @@ fun HomeScreen(
     val glance by viewModel.needsGlance.collectAsState(initial = emptyList())
     val unprocessedCount by viewModel.unprocessedCount.collectAsState(initial = 0)
     val choices by viewModel.choices.collectAsState(initial = emptyList())
+    val meals by viewModel.meals.collectAsState(initial = emptyList())
     val micMode by viewModel.micMode.collectAsState(initial = MicMode.HOLD)
     val homeSort by viewModel.homeSort.collectAsState(initial = com.nutritionscribe.app.data.repository.HomeSort.GOALS)
     val profile by viewModel.profile.collectAsState(initial = null)
@@ -583,7 +593,7 @@ fun HomeScreen(
                 }
                 if (choices.isNotEmpty()) item {
                     HomeCard {
-                        LogAgainSection(choices = choices, onLog = { viewModel.logAgain(it, "home") })
+                        LogAgainSection(choices = choices, meals = meals, onLog = { viewModel.logAgain(it, "home") }, onLogMeal = viewModel::logMeal)
                     }
                 }
                 item {
@@ -1280,7 +1290,12 @@ private fun LearnMoreRow(metric: Metric, onClick: () -> Unit) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LogAgainSection(choices: List<LogAgain.Choice>, onLog: (Entry) -> Unit) {
+private fun LogAgainSection(
+    choices: List<LogAgain.Choice>,
+    onLog: (Entry) -> Unit,
+    meals: List<com.nutritionscribe.shared.model.UsualMeals.Meal> = emptyList(),
+    onLogMeal: (com.nutritionscribe.shared.model.UsualMeals.Meal) -> Unit = {},
+) {
     if (choices.isEmpty()) return
     var expanded by remember { mutableStateOf(false) }
     val now = System.currentTimeMillis()
@@ -1299,6 +1314,7 @@ private fun LogAgainSection(choices: List<LogAgain.Choice>, onLog: (Entry) -> Un
                 Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
             }
         }
+        meals.forEach { m -> UsualMealTile(m) { onLogMeal(m) } }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             chips.forEach { c ->
                 // "4 squares": all 4 again, or just 1 more (owner, 10-31).
@@ -1334,6 +1350,29 @@ private fun LogAgainSection(choices: List<LogAgain.Choice>, onLog: (Entry) -> Un
 }
 
 private fun shortName(entry: Entry): String = com.nutritionscribe.app.ui.common.logAgainName(entry)
+
+/** "Your usual lunch · Veggie bag, Greek yogurt, Bean burrito · 760 kcal", one tap for all. */
+@Composable
+private fun UsualMealTile(meal: com.nutritionscribe.shared.model.UsualMeals.Meal, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
+            .semantics { contentDescription = "Log ${meal.label.lowercase()} again: ${meal.names.joinToString(", ")}" },
+    ) {
+        Row(Modifier.padding(start = 14.dp, end = 10.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text(meal.label, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                Text(meal.names.joinToString(", "), style = MaterialTheme.typography.bodySmall, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSecondaryContainer)
+            }
+            Text("${Math.round(meal.calories)} kcal", style = NumberStyle, color = MaterialTheme.colorScheme.onSecondaryContainer)
+            Icon(Icons.Filled.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
 
 @Composable
 private fun MoreFoods(choices: List<LogAgain.Choice>, onLog: (Entry) -> Unit) {

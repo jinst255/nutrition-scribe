@@ -29,6 +29,8 @@ class Resolver(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Which first-time cards the AI fills. See [AiMode]. */
     private val aiMode: AiMode = AiMode.SENTENCE,
+    /** A barcode read out loud that the label pack lacks: Open Food Facts, by number only. */
+    private val barcodeOnline: ((String) -> FoodCandidate?)? = null,
 ) {
 
     /**
@@ -123,6 +125,8 @@ class Resolver(
         // at 0 kcal (a tester's usual oatmeal, three mornings running).
         personal.get(textKey)?.takeIf { it.isMeal }?.let { return Resolution(text, it.parts.map(::partItem), meal = it) }
         usualWithSwap(text)?.let { return it }
+        // "barcode 0 78742 05731 4": looked up like a scan, never guessed (owner, 11-19).
+        SpokenBarcode.parse(text)?.let { return byBarcode(text, it) }
 
         val items = ItemParser.parse(text, ::isFoodWord) { w -> labels?.isBrandWord(w) == true }
         if (items.isEmpty()) return Resolution(text, listOf(unknown(ItemParser.Item(said = text, food = text), PersonalKeys.ofText(text))))
@@ -189,11 +193,33 @@ class Resolver(
      * Layers 1–3 only, at once: the card opens on this while the AI is asked (a
      * tester's one complaint was "Slow": every card waited 1.5 to 7 s for it).
      */
-    fun resolveLocalOnly(text: String): Resolution = Resolver(personal, usda, labels, null, clock, aiMode).resolve(text)
+    fun resolveLocalOnly(text: String): Resolution = Resolver(personal, usda, labels, null, clock, aiMode, barcodeOnline).resolve(text)
+
+    /**
+     * A barcode said out loud: the label pack (store packs included), then Open Food
+     * Facts. A number whose check digit fails, or that neither knows, comes back as a
+     * line to scan instead, with the number shown, so nothing made up is logged.
+     */
+    private fun byBarcode(text: String, code: SpokenBarcode.Code): Resolution {
+        val said = ItemParser.Item(said = "barcode ${code.digits}", food = "barcode ${code.digits}")
+        val key = PersonalKeys.of(said.food)
+        if (!code.valid) return Resolution(text, listOf(unknown(said, key, offerScan = true)))
+        val c = labels?.byBarcode(code.digits)
+            ?: runCatching { barcodeOnline?.invoke(code.digits) }.getOrNull()
+            ?: return Resolution(text, listOf(unknown(said, key, offerScan = true)))
+        val grams = c.labelServingGrams ?: c.defaultGrams
+        val item = said.copy(food = c.name, amount = 1.0, brand = c.brand)
+        return Resolution(text, listOf(ResolvedItem(
+            item = item, status = Status.NEW, choice = c, grams = grams,
+            portionNote = c.labelServingText ?: c.servingLabel, nutrients = c.nutrientsFor(grams),
+            key = PersonalKeys.of(item),
+        )))
+    }
 
     /** Whether [resolve] would ask the AI about [text]: is there a line on the card it would fill? */
     fun wantsAi(text: String): Boolean {
         if (ai == null || text.isBlank()) return false
+        if (SpokenBarcode.parse(text) != null) return false
         if (personal.get(PersonalKeys.ofText(text))?.isMeal == true || usualWithSwap(text) != null) return false
         Recipes.batchSaid(text)?.let { b -> if (Recipes.find(personal.all(), b.name) != null) return b.added?.let { wantsAi(it) } ?: false }
         val items = ItemParser.parse(text, ::isFoodWord) { w -> labels?.isBrandWord(w) == true }

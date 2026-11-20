@@ -51,8 +51,11 @@
         <service
             android:name=".data.WearMessageListenerService"
             android:exported="true">
+            <!-- Wear OS delivers only to a filter that names the wear scheme and a host
+                 (WatchListenerManifestTest). -->
             <intent-filter>
                 <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data android:scheme="wear" android:host="*" />
             </intent-filter>
         </service>
 

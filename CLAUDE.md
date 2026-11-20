@@ -9,7 +9,7 @@ UI rules for every new or changed screen (phone and watch): [docs/UI_GUIDELINES.
 ## Commands
 
 ```bash
-# JVM tests (seconds; no device). Expect shared 350 (10 skipped), app 163.
+# JVM tests (seconds; no device). Expect shared 365 (10 skipped), app 164.
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :shared:testDebugUnitTest :app:testDebugUnitTest
 # The label-pack test runs only when given an unzipped pack:
 #   gunzip -c app/src/main/assets-pack/labels.db.gz > /tmp/labels.db
@@ -111,7 +111,12 @@ shell's own command line and the shell kills itself (exit 144).
 - **Emulator won't start:** a corrupt snapshot (`KVM: entry failed, hardware error 0x80000021`) → cold boot with `-no-snapshot-load`.
 - **Seeding the emulator:** `run-as com.nutritionscribe sqlite3 databases/protein-scribe.db < seed.sql`.
   Tables are `entries`, `entry_nutrient` and `metric_goal`.
-- **Watch relay:** the phone↔watch relay has never been tested. Don't claim it works.
+- **Watch relay:** the phone↔watch relay has never been tested on a real watch. Don't claim it works.
+  The protocol is `shared/.../sync/WatchProtocol.kt` (watch asks, phone answers; `WatchState` is the
+  phone's one data item). Until 11-19 the phone's listener had no `<data>` filter, so watch messages
+  may never have arrived (`WatchListenerManifestTest`). Watch UI runs on the `Wear34` emulator with
+  `adb -e shell am start -n com.nutritionscribe/com.nutritionscribe.wear.ui.WearMainActivity --ez demo true`
+  (debug builds only: sample numbers, and Say answers with a sample reply).
 - **R8:** it is off on purpose. Room, Moshi and serialization keep rules are untested.
 
 ## Files that live outside the repo

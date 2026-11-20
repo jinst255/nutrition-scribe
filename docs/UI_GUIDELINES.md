@@ -93,8 +93,11 @@ Both themes are designed; check dark mode on every new screen.
 - After an action finishes (Log it), go straight back to the watch home and confirm there with
   a short chip (Logged · Undo, 5 s), not a separate screen.
 - What the watch home shows is the person's choice (goals, what they need most, or one number),
-  set on the phone in Settings › Watch. No custom watch face: a tile and a watch-face slot
-  (complication) instead.
+  set on the phone in Settings › Watch (until that screen is built, from the watch's Today screen).
+  No custom watch face: a tile and watch-face slots (complications: small circle, long bar, ranged
+  value for side slots and the big box, and a Say slot) instead.
+- The first Say shows a one-time tip; nothing else interrupts.
+- Watch debug events carry counts and timings, never the words said.
 - Text is at least 21 px on the 480 px screen (about 11 sp) and buttons at least 40 dp tall.
   Swipe right goes back; no Back buttons.
 

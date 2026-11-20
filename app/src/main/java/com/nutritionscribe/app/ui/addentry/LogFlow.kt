@@ -86,6 +86,19 @@ object LogFlow {
         return copy
     }
 
+    /**
+     * "Your usual lunch": each of its foods again, as last time, at the same moment
+     * (owner, 11-19: four taps that could be one). One Undo takes them all back.
+     */
+    suspend fun logMeal(meal: com.nutritionscribe.shared.model.UsualMeals.Meal, where: String): List<Entry> {
+        ServiceLocator.debugEvents.event("usual_meal_tap", "where" to where, "label" to meal.label, "foods" to meal.names.size,
+            "days" to meal.days, "day" to LogDay.date?.toString())
+        val (stamp, unspecified) = LogDay.stamp()
+        val added = meal.entries.map { ServiceLocator.logPipeline.logAgain(it, stamp, unspecified) }
+        if (!LogDay.isPast) com.nutritionscribe.app.ui.common.AppMessages.logged("Logged ${meal.label.removePrefix("Your ").lowercase()}", added)
+        return added
+    }
+
     /** Home's "Logged — Undo" note is about today; a past day's entry is confirmed where it was added. */
     private fun announce(entry: Entry, how: String, undoable: Boolean) {
         if (!LogDay.isPast) LastLogged.show(entry, how, undoable)

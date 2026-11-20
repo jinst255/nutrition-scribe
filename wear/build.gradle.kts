@@ -58,6 +58,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -80,6 +81,7 @@ dependencies {
     implementation("androidx.wear.compose:compose-navigation:1.3.0")
     implementation("androidx.wear.compose:compose-foundation:1.3.0")
 
+    implementation("androidx.wear:wear-input:1.1.0")
     implementation("androidx.wear.tiles:tiles:1.3.0")
     implementation("androidx.wear.protolayout:protolayout:1.1.0")
     implementation("androidx.wear.protolayout:protolayout-material:1.1.0")

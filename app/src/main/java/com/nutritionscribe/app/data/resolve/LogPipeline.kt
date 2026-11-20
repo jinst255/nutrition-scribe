@@ -39,9 +39,11 @@ class LogPipeline(
     private val debugLogger: DebugLogger,
     private val events: com.nutritionscribe.app.ui.debuglog.DebugEvents? = null,
     private val meter: com.nutritionscribe.app.data.usage.UsageMeter? = null,
+    /** A spoken barcode the label pack lacks; Open Food Facts gets the number only. */
+    private val barcodeOnline: ((String) -> com.nutritionscribe.shared.resolve.FoodCandidate?)? = null,
 ) {
 
-    private fun resolver() = Resolver(personal, usda(), labels.source(), ai())
+    private fun resolver() = Resolver(personal, usda(), labels.source(), ai(), barcodeOnline = barcodeOnline)
 
     private fun <T> tagged(tag: String?, block: () -> T): T = meter?.withTag(tag, block) ?: block()
 

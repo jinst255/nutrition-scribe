@@ -27,6 +27,7 @@
         <activity
             android:name=".ui.WearMainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:taskAffinity="">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -54,7 +55,24 @@
             </intent-filter>
             <meta-data
                 android:name="android.support.wearable.complications.SUPPORTED_TYPES"
-                android:value="GOAL_PROGRESS,SHORT_TEXT" />
+                android:value="SHORT_TEXT,LONG_TEXT,RANGED_VALUE,GOAL_PROGRESS" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <service
+            android:name=".complication.SayComplicationService"
+            android:exported="true"
+            android:icon="@drawable/ic_mic"
+            android:label="Say"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT,MONOCHROMATIC_IMAGE" />
             <meta-data
                 android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
                 android:value="0" />
