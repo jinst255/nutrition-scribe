@@ -3,7 +3,7 @@
 # The APK is built and signed on the owner's machine (the signing key and the
 # bundled label pack never leave it) and committed as releases/NutritionScribe-<version>.apk
 # with releases/NOTES-<version>.md, and the watch app as
-# releases/NutritionScribe-Watch-<version>.apk when there is one. On a push to main
+# releases/NutritionScribe-Watch-<version>.apk when there is one (else the newest watch APK). On a push to main
 # this makes release v<version> with those files attached, once. A "-test" version
 # is a pre-release.
 name: Release
@@ -42,5 +42,10 @@ jobs:
           case "$ver" in *test*|*beta*) args+=(--prerelease) ;; esac
           if [ -f "$notes" ]; then args+=(--notes-file "$notes"); else args+=(--generate-notes); fi
           files=("$apk")
-          if [ -f "$watch" ]; then files+=("$watch"); fi
+          # The watch app isn't rebuilt when only the phone changes: attach the newest
+          # one committed, under its own version's name.
+          if [ ! -f "$watch" ]; then
+            watch=$(ls releases/NutritionScribe-Watch-*.apk 2>/dev/null | sort -V | tail -1 || true)
+          fi
+          if [ -n "$watch" ] && [ -f "$watch" ]; then files+=("$watch"); fi
           gh release create "$tag" "${files[@]}" "${args[@]}"

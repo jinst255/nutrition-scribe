@@ -412,6 +412,16 @@ fun SettingsScreen(
             }
         }
 
+        // Shown with or without the advanced part: everyone updates (11-20).
+        SectionHeader("Updates")
+        SettingsCard {
+            com.nutritionscribe.app.ui.update.UpdateSettings(
+                row = { icon, title, sub, onClick, trailing -> IconRow(icon, title, sub, onClick, trailing) },
+                divider = { CardDivider() },
+            )
+        }
+
+        Spacer(Modifier.padding(top = 4.dp))
         SettingsCard {
             IconRow(Icons.Outlined.Tune, "Show advanced settings", "AI models, the label pack, how long data is kept, debug mode and reset.",
                 onClick = { scope.launch { settings.setShowAdvanced(!showAdvanced) } },

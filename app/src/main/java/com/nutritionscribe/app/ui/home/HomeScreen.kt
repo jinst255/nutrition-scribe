@@ -523,6 +523,8 @@ fun HomeScreen(
             // Only taps not yet acted on: coming Back to Home keeps its place.
             var seenTaps by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(HomeTab.taps.value) }
             LaunchedEffect(homeTaps) { if (homeTaps > seenTaps) { seenTaps = homeTaps; HomeTab.reset.value++; list.animateScrollToItem(0) } }
+            val update by ServiceLocator.appUpdater.status.collectAsState()
+            val updateSkipped by ServiceLocator.appUpdater.skipped.collectAsState()
             LazyColumn(
                 state = list,
                 modifier = Modifier.fillMaxSize(),
@@ -534,6 +536,9 @@ fun HomeScreen(
                         if (unprocessedCount == 1) "1 entry needs attention" else "$unprocessedCount entries need attention",
                         MaterialTheme.colorScheme.errorContainer, onClick = onOpenUnprocessed,
                     )
+                }
+                if (com.nutritionscribe.app.ui.update.updateCardShows(update, updateSkipped)) item(key = "app_update") {
+                    com.nutritionscribe.app.ui.update.UpdateCard()
                 }
                 if (glance.isNotEmpty()) item(key = "watch_waiting") {
                     com.nutritionscribe.app.ui.watch.WatchWaitingCard(glance) {

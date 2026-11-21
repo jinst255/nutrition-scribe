@@ -9,7 +9,7 @@ UI rules for every new or changed screen (phone and watch): [docs/UI_GUIDELINES.
 ## Commands
 
 ```bash
-# JVM tests (seconds; no device). Expect shared 379 (10 skipped), app 178.
+# JVM tests (seconds; no device). Expect shared 390 (10 skipped), app 180.
 ./gradlew -Dorg.gradle.jvmargs=-Xmx2g :shared:testDebugUnitTest :app:testDebugUnitTest
 # The label-pack test runs only when given an unzipped pack:
 #   gunzip -c app/src/main/assets-pack/labels.db.gz > /tmp/labels.db
@@ -117,6 +117,11 @@ shell's own command line and the shell kills itself (exit 144).
   may never have arrived (`WatchListenerManifestTest`). Watch UI runs on the `Wear34` emulator with
   `adb -e shell am start -n com.nutritionscribe/com.nutritionscribe.wear.ui.WearMainActivity --ez demo true`
   (debug builds only: sample numbers, and Say answers with a sample reply).
+- **Updates from GitHub** (`AppUpdater`, 1.10+): the phone reads this repo's releases list and
+  offers the newest `NutritionScribe-<version>.apk` whose version numbers are higher than its own
+  (`AppUpdates.compare`: 1.10 > 1.9). So keep releasing as `releases/NutritionScribe-<version>.apk`,
+  and never release a lower-numbered version after a higher one. Debug builds never look by
+  themselves (they couldn't install a release-signed APK anyway).
 - **R8:** it is off on purpose. Room, Moshi and serialization keep rules are untested.
 
 ## Files that live outside the repo

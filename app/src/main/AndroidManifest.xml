@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Updates from the GitHub releases (AppUpdater): Android still asks before installing. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Scanning is an optional assist: the app installs on devices without a camera. -->
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
@@ -47,6 +49,11 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/protein_widget_info" />
         </receiver>
+
+        <!-- Android's answer to an update install. Only the installer, through our own PendingIntent, reaches it. -->
+        <receiver
+            android:name=".data.update.UpdateResultReceiver"
+            android:exported="false" />
 
         <service
             android:name=".data.WearMessageListenerService"

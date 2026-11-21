@@ -40,6 +40,14 @@ The app is in beta. Each version's signed APKs are on the
 
 Already have an earlier version? Install over it and your log is kept.
 
+**Updates come to you.** From 1.10 the phone app looks at this repo's releases when you open
+it (twice a day at most). A newer version shows a card on Home: tap **Update**, and the app
+downloads it from GitHub, checks it's signed with the same key, and hands it to Android to
+install. Android asks once to allow installs from Nutrition Scribe, and on the first update
+asks "Update this app?"; after that, Android 12+ can update it without the extra box. Your log
+stays. Settings › Updates has **Check for updates** and a switch to stop it looking by itself.
+The watch app still installs with `adb`.
+
 ## What it does
 
 **Logging**
@@ -165,15 +173,16 @@ shows what you've spent.
 | "Work it out with AI" on something from your watch | The words you said on the watch | The provider you picked |
 | A barcode the packs don't have | The barcode number only | Open Food Facts |
 | Settings › Store foods › Get | Nothing about you: a plain download of that store's pack | GitHub (this repo's `store-packs` release) |
+| Opening the app (Check by itself on), or Check for updates | Nothing about you: a plain read of the release list, then the APK if you tap Update | GitHub (this repo's releases) |
 | Using the watch app | Your words and the results, between your watch and your phone only | Your own phone, over Wear OS |
 
-Without a key, only the last three happen. Before an AI provider is used for the first
+Without a key, only the last four happen. Before an AI provider is used for the first
 time, the app shows what it sends and what that provider's data policy says. Speech goes
 through Android's own recognizer, on the phone, unless you choose OpenAI.
 
 ## Beta builds
 
-Versions whose name contains `test` (now `1.9-test`) are for testers:
+Versions whose name contains `test` (now `1.10-test`) are for testers:
 
 - **First open:** your first name, the test week in three lines, a practice
   shake-to-report, what leaves the phone, and the key step (with a "no key" path).
@@ -187,7 +196,8 @@ Versions whose name contains `test` (now `1.9-test`) are for testers:
 How a round runs: [`docs/BETA_TESTING.md`](./docs/BETA_TESTING.md). How a release is
 made: build and sign both APKs, commit them to `releases/` with
 `releases/NOTES-<version>.md`, and push; `.github/workflows/release.yml` publishes the
-release once.
+release once. Phones on 1.10 or later find it there and offer it on Home. A version whose
+watch app didn't change can leave the watch APK out: the release attaches the newest one committed.
 
 ## Build
 
@@ -228,7 +238,7 @@ difference only shows up on a device.
 ## Sideloading
 
 ```
-adb install -r NutritionScribe-1.9-test.apk
+adb install -r NutritionScribe-1.10-test.apk
 ```
 
 `-r` installs over the existing app and keeps its data. Updates must be signed with the

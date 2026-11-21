@@ -146,6 +146,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onStart() {
+        super.onStart()
+        ServiceLocator.appUpdater.checkIfDue()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        ServiceLocator.appUpdater.onResume()
+    }
 }
 
 @Composable
@@ -336,6 +346,7 @@ private fun MainNavScaffold() {
     com.nutritionscribe.app.ui.feedback.ShakeToReport(enabled = shakeOn && !betaLeft, screen = { com.nutritionscribe.app.ui.feedback.ShakeReport.screenName(currentDestination?.route, titleFor(currentDestination?.route, backStackEntry?.arguments)) }) {
     // Review L4: one place for short messages, in place of Toasts.
     val snackbar = androidx.compose.runtime.remember { androidx.compose.material3.SnackbarHostState() }
+    com.nutritionscribe.app.ui.update.UpdatePrompts()
     androidx.compose.runtime.LaunchedEffect(Unit) {
         val host: kotlinx.coroutines.CoroutineScope = this
         com.nutritionscribe.app.ui.common.AppMessages.messages.collect { m ->

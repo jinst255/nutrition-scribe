@@ -59,6 +59,7 @@ object ServiceLocator {
         private set
     lateinit var labelPack: com.nutritionscribe.app.data.resolve.LabelPack
     lateinit var storePacks: com.nutritionscribe.app.data.resolve.StorePacks
+    lateinit var appUpdater: com.nutritionscribe.app.data.update.AppUpdater
         private set
     lateinit var logPipeline: com.nutritionscribe.app.data.resolve.LogPipeline
         private set
@@ -127,6 +128,7 @@ object ServiceLocator {
         personalStore = com.nutritionscribe.app.data.resolve.RoomPersonalStore(database.personalFoodDao())
         labelPack = com.nutritionscribe.app.data.resolve.LabelPack(appContext)
         storePacks = com.nutritionscribe.app.data.resolve.StorePacks(appContext)
+        appUpdater = com.nutritionscribe.app.data.update.AppUpdater(appContext, debugEvents)
         labelPack.storeFiles = { storePacks.attachments() }
         storePacks.onChanged = {
             labelPack.reattach()

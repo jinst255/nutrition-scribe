@@ -6,6 +6,7 @@ Android 15 or later) before handing out a build that touches it.
 
 | Check | How | Pass |
 |---|---|---|
+| Update from GitHub | On a real phone on an older version: open the app (or Settings › Updates › Check for updates) › Update on Home's card › allow installs from Nutrition Scribe once › Update in Android's box. Then once more for the next version. | The card shows the new version and its download; Android's box shows; the app closes and reopens on the new version with the log, goals and foods as they were. Settings › Beta testing's version line shows it. The second update (Android 12+) needs no "Update this app?" box. Passed on the A34 emulator 11-20 (1.8.9-test → 1.9-test from GitHub); not yet on a Samsung. |
 | Save above the keyboard | Open any entry › tap a food › tap a nutrient box so the keyboard opens. | The Save bar sits just above the keyboard, not under it. |
 | Shake to report | On a real phone, shake it two or three times on Home, on a sheet, and with the check card open. Then Settings › Beta testing › switch "Shake to report a problem" off and shake again. | "What's wrong here?" opens each time with the screen's name; nothing opens while the mic listens, while walking, or when switched off. On the emulator: `adb emu sensor set acceleration 0:0:30` then `0:0:9.8`, three times within a second. |
 | Pages scroll above the keyboard | Settings › Beta testing › Something's wrong? Tell us; tap the note box. Also the scan form's number boxes. | With the keyboard up, the page scrolls down to Save / Use these. |
